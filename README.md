@@ -1,0 +1,2556 @@
+# nicosgit92/seafile-deploy 13 v4.0-alpha
+
+<details>
+<summary>📋 Quick Navigation — click to expand</summary>
+
+**Introduction & overview**
+[Architecture Overview](#architecture-overview) ·
+[How this deployment is managed](#how-this-deployment-is-managed) ·
+[Disaster recovery is built in](#disaster-recovery-is-built-in) ·
+[The seafile CLI at a glance](#the-seafile-cli-at-a-glance) ·
+[Files in This Repo](#files-in-this-repo)
+
+**Plan Your Deployment**
+[Quick Start (Minimal Install)](#quick-start) ·
+[Deployment mode](#1-deployment-mode) ·
+[Storage type](#2-storage-type) ·
+[Database](#3-database) ·
+[Reverse proxy](#4-reverse-proxy) ·
+[Office suite](#5-office-suite) ·
+[Optional features checklist](#6-optional-features-checklist)
+
+**Setup steps**
+[Step 1 — Provision the VM](#step-1---provision-the-vm) ·
+[Step 2 — Install Debian 13](#step-2---install-debian-13) ·
+[Step 3 — Prepare External Infrastructure](#step-3---prepare-external-infrastructure) ·
+[Step 4 — Run seafile-deploy.sh](#step-4---run-seafile-deploysh) ·
+[Step 5 — Configure Reverse Proxy](#step-5---configure-your-reverse-proxy) ·
+[Step 6 — Verify](#step-6---verify)
+
+**Day-to-day management**
+[Using update.sh](#using-updatesh) ·
+[The seafile CLI](#the-seafile-cli) ·
+[Git-Managed Configuration](#git-managed-configuration) ·
+[Config History](#config-history) ·
+[Image Version Management](#image-version-management)
+
+**Disaster recovery & alternate setups**
+[Disaster Recovery](#disaster-recovery) ·
+[Portainer Integration](#portainer-integration) ·
+[Running on an Existing Docker Host](#running-on-an-existing-docker-host) ·
+[Reverse Proxy — Traefik, Caddy, or Others](#reverse-proxy---traefik-caddy-or-others) ·
+[Storage — Local Disk](#storage---local-disk) ·
+[Storage — Cloud VM and S3](#storage---cloud-vm-and-s3-compatible-object-storage) ·
+[OS — Pre-built Debian Image](#os---using-a-pre-built-debian-image) ·
+[Bulk-enable Extended Properties](#bulk-enable-extended-properties-via-api)
+
+**Reference**
+[Environment Variable Reference](#environment-variable-reference) ·
+[Required — Network Storage](#required--network-storage) ·
+[Database](#database) ·
+[Optional — Office Suite](#optional--office-suite) ·
+[Optional — Email / SMTP](#optional--email--smtp) ·
+[Optional — Backup](#optional--backup) ·
+[Optional — GC](#optional--garbage-collection) ·
+[Optional — Server Settings](#optional--server-settings) ·
+[Multi-Backend Storage](#multi-backend-storage) ·
+[Storage Migration](#storage-migration) ·
+[Database Migration](#database-migration) ·
+[Reverse Proxy Configuration](#reverse-proxy-configuration) ·
+[Do Not Change — Internal Wiring](#do-not-change--internal-wiring) ·
+[Hardcoded Variables in docker-compose.yml](#hardcoded-variables-in-docker-composeyml) ·
+[Troubleshooting](#troubleshooting) ·
+[Developer Guide](#developer-guide) ·
+[Host File Structure](#host-file-structure) ·
+[References](#references)
+
+</details>
+
+
+Self-hosting Seafile should not require you to become a Seafile expert. This project gives you a production-ready Seafile 13 deployment that you can set up in an afternoon and manage confidently for years, even if you have never touched Seafile before.
+
+Everything is controlled through a single `.env` file. Change a value, run one command, and your stack updates itself. Switch office suites, enable antivirus scanning, add LDAP authentication, or move to a different reverse proxy without editing container configs or rewriting scripts. Every change is version-tracked automatically, with full rollback support. The deployment handles the complexity so you can focus on actually using Seafile.
+
+The defaults work out of the box for most homelab setups: a bundled database, NFS storage, and Collabora for document editing. But every major component is swappable. Bring your own database server, use SMB or iSCSI storage, run OnlyOffice instead of Collabora, or manage configuration remotely through a git repository. The Portainer Agent is included for container monitoring in all deployment modes. The same scripts and CLI work regardless of how you configure it.
+
+Disaster recovery is built in from day one. Your file data lives on network storage, database snapshots run automatically, and if the VM ever dies, you provision a new one, run the same deploy script, and pick up where you left off.
+
+> **New to self-hosting?** Try the [Quick Start](#quick-start) — it gets Seafile running in minutes with just two questions. For a production setup with network storage and disaster recovery, start at [Plan Your Deployment](#plan-your-deployment).
+
+---
+
+## Quick Start
+
+Want to try Seafile without making any infrastructure decisions? Select **Just give me Seafile** when you run the deploy script.
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/nicosgit92/seafile-deploy/main/seafile-deploy.sh -o seafile-deploy.sh
+chmod +x seafile-deploy.sh
+sudo ./seafile-deploy.sh
+```
+
+Select **1 — Fresh Install**, then choose **Just give me Seafile**.
+
+The wizard asks for your email address, whether you want local or internet access, and whether you want document editing. Everything else is handled automatically. Your server will be running within a few minutes.
+
+**Default admin password:** `changeme` — you will be prompted to change this on screen after install, but if you miss it, log in with this password and change it under Profile → Password.
+
+This gives you a fully functional Seafile server with local storage and a bundled database. If you want network storage, disaster recovery, email notifications, or other features later, run `seafile config` to reconfigure your deployment at any time.
+
+If you choose internet access, the wizard asks for your domain name and SSL is handled automatically via Let's Encrypt — no reverse proxy setup needed. Just make sure your domain points to this server and ports 80 + 443 are forwarded.
+
+**Ready for a production setup?** Skip this and go straight to [Plan Your Deployment](#plan-your-deployment) — it walks you through all the options.
+
+---
+
+<details>
+<summary>⚠ Disclaimer -- read before deploying</summary>
+
+**This is an unofficial, community-maintained deployment. It is not affiliated with, endorsed by, or supported by Seafile Ltd. or any of the other projects referenced here.**
+
+This repo deviates from the official Seafile Docker deployment in several ways -- custom Caddy routing, external network storage, split sidecar containers, and non-standard config management scripts. These differences have been tested in a specific environment and may not work in yours. That said, if you try this out and find any bugs, feel free to open an issue or fork it. Requests for additional service integrations are welcome too.
+
+**This deployment comes with no guarantees, no warranty, and no support.** Use it at your own risk. Always review scripts before running them on your systems. If that makes you uncomfortable, start from the [official Seafile documentation](https://manual.seafile.com/13.0/) instead.
+
+For support with Seafile itself, use the [Seafile community forum](https://forum.seafile.com).
+
+</details>
+
+---
+
+### How this deployment is managed
+
+Everything site-specific -- your domain, database credentials, storage paths, image versions, and secrets -- lives in a single `.env` file. Both the install scripts and the running containers read from this file, so there is one place to look and one place to change things.
+
+After the initial setup, day-to-day management works like this:
+
+1. Edit your `.env` — run `seafile config` to use the interactive wizard, or `seafile config edit` to open it directly
+2. Run `seafile update`
+
+That command validates your config, shows a diff of what changed, pulls any updated images, re-applies Seafile's config files, restarts the affected containers, and prints a health summary. It handles image updates, timezone changes, domain changes, and anything else that touches `.env` -- all in one step.
+
+### Disaster recovery is built in
+
+All Seafile data lives on your network share. A background service (`seafile-env-sync`) keeps a current copy of your `.env` on that same share at all times, and a nightly `mysqldump` writes your database there too. If the VM is ever destroyed:
+
+1. Provision a fresh Debian 13 VM, download `seafile-deploy.sh`, and select Recovery Mode — the script mounts your share and restores `.env`
+2. The recovery finalizer restores your database from the latest nightly snapshot, then starts the stack automatically
+
+That is the entire recovery process. No manual config reconstruction, no credential hunting — the share has everything needed to be fully operational again. See [Disaster Recovery](#disaster-recovery) for the full walkthrough.
+
+### The `seafile` CLI at a glance
+
+Once deployed, a `seafile` command is available system-wide for all day-to-day management:
+
+| Command | What it does |
+|---|---|
+| `seafile status` | Container health, storage mount, disk usage, and GC schedule |
+| `seafile ping` | HTTP endpoint health check (notification, thumbnail, office suite) |
+| `seafile proxy-config` | Show reverse proxy config ready to paste (NPM Advanced tab) |
+| `seafile metadata --enable-all` | Enable Extended Properties on all libraries |
+| `seafile update` | Apply `.env` changes, pull updated images, restart containers |
+| `seafile update --check` | Preview what changed in `.env` without applying anything |
+| `seafile logs` | Tail container logs (interactive picker) |
+| `seafile restart` | Restart a container or all (interactive picker) |
+| `seafile fix` | Re-apply all Seafile config files from `.env` |
+| `seafile gc` | Run garbage collection interactively |
+| `seafile gc --status` | Show GC schedule, cron status, and last log tail |
+| `seafile version` | Compare running image tags vs what is set in `.env` |
+| `seafile config` | Interactive configuration editor — menu-driven wizard |
+| `seafile config [section]` | Jump to section: `core`, `storage`, `database`, `proxy`, `smtp`, `ldap`, `office`, `features`, `portainer` |
+| `seafile config show` | Display current configuration summary |
+| `seafile config history` | Browse config change history (versioned automatically) |
+| `seafile config rollback` | Revert `.env` to previous version |
+
+See [The `seafile` CLI](#the-seafile-cli) for the full command reference.
+
+---
+
+
+## Architecture Overview
+
+```
+Internet
+   │
+   ▼
+Your reverse proxy  (PROXY_TYPE in .env)
+   │  nginx          → Nginx Proxy Manager on a separate host  [default]
+   │  traefik        → Traefik with Docker labels
+   │  caddy-external → External Caddy instance
+   │  caddy-bundled  → Skip this layer — Caddy handles SSL directly (ports 80/443)
+   │  haproxy        → HAProxy on a separate host
+   │
+   │  Handles SSL termination. Forwards plain HTTP to CADDY_PORT on the Docker host.
+   │  (default port: 7080, configurable via CADDY_PORT in .env)
+   ▼
+Caddy (bundled container, port 7080 by default)
+   │  Internal router — directs traffic to the correct container.
+   │
+   ├── /sdoc-server/*        → SeaDoc REST API
+   ├── /socket.io/*          → SeaDoc WebSocket
+   ├── /notification/*       → Notification Server
+   ├── /metadata/*           → Metadata Server
+   ├── /thumbnail-server/*   → Thumbnail Server
+   ├── /cool/* /lool/*
+   │   /browser/* /hosting/* → Collabora Online
+   └── (everything else)     → Seafile core
+```
+
+---
+
+<details>
+<summary><h2 style="display:inline">Files in This Repo</h2></summary>
+
+> **Build system:** This repo uses a template system to prevent drift between source files and embedded copies. Run `./scripts/build.sh` after editing source files to regenerate the scripts. See [Developer Guide](#developer-guide) for the full workflow.
+
+**`seafile-deploy.sh` — the entry point (repo root):**
+
+| File | Generated? | What it does |
+|---|---|---|
+| `seafile-deploy.sh` | ✓ Yes | **The single entry point.** Run this on a fresh VM — shows the splash screen, then lets you choose Fresh Install, Recovery Mode, or a game of Snake. Embeds all system scripts so you never need to copy multiple files. This is the only file a user needs |
+
+**`src/` — source files and templates (edit these, then run `build.sh`):**
+
+| File | What it does |
+|---|---|
+| `.env.template` | Canonical environment template — embedded into scripts during build |
+| `docker-compose.yml` | Full stack definition (source of truth). Embedded into `setup.sh` and `update.sh` during build |
+| `deploy-header.sh` | Splash screen, mode selection, version display |
+| `shared-lib.sh` | Shared functions — defaults, helpers, normalize, secret writing, menu |
+| `deploy-footer.sh` | Secret generation, .env validation, main entry loop |
+| `guided-setup.sh` | Interactive wizard for Fresh Install — storage selection, .env generation |
+| `setup.template.sh` | Unified setup template (install + recover) — contains `{{EMBED:...}}` markers |
+| `update.template.sh` | Template for `update.sh` — contains `{{EMBED:...}}` markers |
+| `Caddyfile` | Reference placeholder — the actual Caddyfile is generated dynamically by `seafile-config-fixes.sh` based on `PROXY_TYPE` |
+
+**`scripts/` — generated scripts and standalone components:**
+
+| File | Generated? | Deployed to | What it does |
+|---|---|---|---|
+| `build.sh` | No | — | Builds all generated files from templates. Run after editing source files |
+| `setup.sh` | ✓ Yes | (embedded in `seafile-deploy.sh`) | Unified install + recover — handles both fresh installs and disaster recovery |
+| `update.sh` | ✓ Yes | `/opt/update.sh` | Primary update tool — validates `.env`, diffs changes, pulls images, restarts containers |
+| `seafile-cli.sh` | No | `/usr/local/bin/seafile` | Management CLI — `seafile status`, `seafile update`, `seafile logs`, etc. |
+| `seafile-config-fixes.sh` | No | `/opt/seafile-config-fixes.sh` | Writes Seafile config files from `.env` values, sets up cron jobs |
+| `env-sync/seafile-env-sync.sh` | No | `/opt/seafile/seafile-env-sync.sh` | Mirrors `.env` to network share, commits to config history, triggers Portainer webhook |
+| `env-sync/seafile-env-sync.service` | No | `/etc/systemd/system/` | Systemd unit for env sync (inotify watcher) |
+| `config-git-server/seafile-config-server.sh` | No | `/opt/seafile/seafile-config-server.sh` | Local git HTTP server for Portainer integration |
+| `config-git-server/seafile-config-server.service` | No | `/etc/systemd/system/` | Systemd unit for config git server (active when `PORTAINER_MANAGED=true`) |
+| `storage-sync/seafile-storage-sync.sh` | No | `/opt/seafile/seafile-storage-sync.sh` | Background rsync for storage migration |
+| `storage-sync/seafile-storage-sync.service` | No | `/etc/systemd/system/` | Systemd unit for storage migration sync |
+| `recovery-finalize/seafile-recovery-finalize.sh` | No | `/opt/seafile/seafile-recovery-finalize.sh` | Waits for containers, restores DB, runs config fixes after recovery |
+| `recovery-finalize/seafile-recovery-finalize.service` | No | `/etc/systemd/system/` | Systemd unit for recovery finalization (one-shot) |
+| `gitops/seafile-gitops-sync.py` | No | `/opt/seafile/seafile-gitops-sync.py` | Webhook listener for GitOps push events |
+| `gitops/seafile-gitops-sync.service` | No | `/etc/systemd/system/` | Systemd unit for GitOps webhook listener |
+
+**`config/` — reference configs and proxy snippets:**
+
+The `config/` folder contains two kinds of files. The proxy configs are ready to use directly — copy and paste them into your reverse proxy. The Seafile config files are reference copies showing what the scripts generate — they are written to the network share by `seafile-config-fixes.sh` with values substituted from `.env` at deploy time.
+
+| File | Purpose |
+|---|---|
+| `proxy-npm-advanced.conf` | Nginx Proxy Manager — reference template. Use `seafile proxy-config` for a ready-to-paste version |
+| `proxy-traefik.yml` | Traefik — full label reference for the `seafile-caddy` service |
+| `proxy-caddy.conf` | External Caddy — use if Caddy is your external reverse proxy |
+| `seahub_settings.py` | Reference: written to `$SEAFILE_VOLUME/seafile/conf/` — Collabora, Redis, metadata |
+| `seafevents.conf` | Reference: written to `$SEAFILE_VOLUME/seafile/conf/` — background workers |
+| `seafile.conf` | Reference: written to `$SEAFILE_VOLUME/seafile/conf/` — fileserver port |
+| `seafdav.conf` | Reference: written to `$SEAFILE_VOLUME/seafile/conf/` — WebDAV config |
+| `gunicorn.conf.py` | Reference: written to `$SEAFILE_VOLUME/seafile/conf/` — request timeout |
+| `ccnet.conf` | Reference only — explains why this deprecated file is deleted |
+
+> There is no `.gitignore` in this repo — the `.env.template` file in `src/` contains only placeholder values and is safe to commit as-is. The `.env` file with your real values exists only on the deployment machine at `/opt/seafile/.env` and is never part of the repository.
+
+</details>
+
+## Plan Your Deployment
+
+Work through these six decisions before touching any files. Everything else is configuration, and you can always change it later.
+
+### 1. Deployment mode
+
+| | **Minimal** | **Standard** (default) | **Git-managed** |
+|---|---|---|---|
+| **Best for** | Trying Seafile, personal use | Production homelabs | Remote management, teams |
+| **Storage** | Local disk | Network share (NFS, SMB, etc.) | Network share |
+| **Disaster recovery** | No | Yes | Yes |
+| **SSL** | Automatic via Let's Encrypt (internet mode) | Via your reverse proxy | Via your reverse proxy |
+| **Config management** | Local CLI | Local CLI | Git repo (no SSH needed for config) |
+| **Portainer support** | Via toggle after setup | Via toggle after setup | Via toggle after setup |
+
+**Minimal mode** gets Seafile running with the fewest possible decisions. Select **Just give me Seafile** at the deployment mode prompt. It uses local storage and a bundled database. You can add network storage, SSL, email, LDAP, and any other feature later by running `seafile config`. See [Quick Start](#quick-start) for the walkthrough.
+
+**Standard mode** is the default for production use. Docker Compose reads `/opt/seafile/.env` directly. You manage configuration via `seafile config` on the host. Version history is tracked automatically via a local git repo.
+
+**Git-managed mode** stores your `.env` in an external git repository (GitHub, Gitea, GitLab, etc.). Push changes to the repo and they are applied to the server automatically via webhook. This eliminates the need to SSH into the host for routine configuration changes. Ideal for managing multiple Seafile instances from one repo.
+
+**Portainer integration** is available in all modes as an optional toggle. The Portainer Agent is always installed for container monitoring. Set `PORTAINER_MANAGED=true` (via `seafile config portainer`) to have Portainer manage the stack lifecycle. A built-in config git server keeps Portainer automatically in sync with your `.env`. See [Portainer Integration](#portainer-integration) under Alternate Deployment Methods.
+
+### 2. Storage type
+
+| Type | Best for | Recovery? |
+|---|---|---|
+| **NFS** (default) | Shared NAS, clean LAN setup | ✓ Full DR |
+| **SMB/CIFS** | Windows NAS, Synology/QNAP defaults | ✓ Full DR |
+| **GlusterFS** | Distributed/replicated storage | ✓ Full DR |
+| **iSCSI** | Block storage, raw-device performance | ✓ Full DR |
+| **Local disk** | Testing only | ✗ File data lost if VM is destroyed |
+
+Set `STORAGE_TYPE` in `.env`. All network types support full disaster recovery. If the VM is destroyed, provision a new one, run `seafile-deploy.sh`, and select Recovery Mode. Local disk does not support recovery.
+
+> **Recommendation:** NFS for most setups. If your NAS is Windows-first, SMB is fine for file data but keep `DB_INTERNAL_VOLUME` on local disk. Only use iSCSI if you specifically need raw-device block I/O performance. Avoid local disk for anything beyond a test install.
+
+<details>
+<summary>Storage type comparison — pros, cons, and when to use each</summary>
+
+**NFS** `STORAGE_TYPE=nfs` *(default)*
+
+NFS is the right default for the majority of self-hosted setups. It runs as a kernel-level filesystem on Linux, which means lower CPU overhead and better throughput than userspace protocols for Seafile's workload of large sequential reads and writes. There are no credentials to store in `.env` because access control is done on the NAS by IP. All major NAS platforms (Synology, TrueNAS, QNAP, Unraid, Proxmox) expose NFS with a single toggle. DB snapshot cron runs correctly over NFS. Full disaster recovery supported.
+
+- ✓ Lowest protocol overhead on Linux — kernel-native
+- ✓ No credentials in `.env` (access by IP on the NAS side)
+- ✓ Supported by every major NAS OS out of the box
+- ✓ Clean mount — behaves like a local filesystem to Docker
+- ✗ Slightly more NAS-side configuration than SMB for Windows-first users
+- ✗ NFS v3 has no encryption in transit (use a trusted LAN or add a VPN layer)
+
+---
+
+**SMB / CIFS** `STORAGE_TYPE=smb`
+
+SMB is the better choice if your NAS is primarily configured for Windows clients or if your NAS vendor defaults to SMB shares (many Synology and QNAP users are in this camp). It works well for Seafile's large file blob storage. The main caveat is the database: SMB has high latency on the small random I/O that MariaDB generates, so `DB_INTERNAL_VOLUME` should always be set to a local path (`/opt/seafile-db`) rather than the SMB share. This is the default and works correctly. Just do not change it to point at the share.
+
+- ✓ Easy to set up on Windows-first NAS environments
+- ✓ Works well for Seafile's sequential file data
+- ✓ Supports domain auth (`SMB_DOMAIN`) for AD environments
+- ✗ Higher latency for small random I/O — keep DB on local disk
+- ✗ Credentials (`SMB_USERNAME`, `SMB_PASSWORD`) stored in `.env`
+- ✗ Slightly more CPU overhead than NFS on Linux
+
+---
+
+**GlusterFS** `STORAGE_TYPE=glusterfs`
+
+GlusterFS is a distributed, replicated filesystem designed for high availability. Data is striped or replicated across multiple nodes at the storage layer, meaning your Seafile data survives the loss of individual storage nodes, not just the Docker host. This is the right choice if you are running a multi-node storage cluster and need storage-level redundancy on top of the VM-level DR this deployment already provides. The tradeoff is operational complexity: you are maintaining a cluster, not a single NAS.
+
+- ✓ Storage-level redundancy — survives loss of individual storage nodes
+- ✓ Scales horizontally across multiple storage bricks
+- ✓ Good throughput for large files with proper tuning
+- ✗ Significantly more complex to set up and maintain than NFS/SMB
+- ✗ Requires a running GlusterFS cluster — not suitable for single-NAS setups
+- ✗ Metadata operations slower than NFS; latency-sensitive for small files
+
+---
+
+**iSCSI** `STORAGE_TYPE=iscsi`
+
+iSCSI presents a raw block device over the network. The VM formats and mounts it locally as if it were an internal disk. This gives you native filesystem performance (ext4, XFS) with no NFS or SMB protocol overhead. It is the right choice when raw throughput and I/O latency are the primary concern, such as if you are running Seafile as a high-traffic file server and your storage backend is an enterprise SAN or a high-performance NAS with iSCSI support. The tradeoff is that iSCSI is the most involved storage type to configure: you need to set up the target on your NAS, configure IQNs, and optionally set up CHAP authentication (which the deploy script handles, but you need to configure both sides).
+
+- ✓ Best raw throughput and lowest I/O latency of all supported types
+- ✓ Native filesystem on the VM — no NFS/SMB protocol layer
+- ✓ Compatible with enterprise SAN and high-performance NAS iSCSI targets
+- ✓ CHAP authentication support built into the deploy script
+- ✗ Most complex to configure — requires IQN setup on the target
+- ✗ Block device is exclusively attached to one VM (no concurrent access)
+- ✗ Recovery requires re-attaching and mounting the block device — the deploy script handles this automatically, but it adds steps
+
+---
+
+**Local disk** `STORAGE_TYPE=local`
+
+Local disk skips network storage entirely and writes Seafile data to a path on the VM's own disk. This is only appropriate for testing or development. If the VM is destroyed, all file data is gone. The disaster recovery flow does not apply because there is no network share to restore from. DB snapshots are also skipped since there is no remote share to write them to.
+
+- ✓ Zero setup — works immediately with no NAS or storage backend
+- ✓ Best raw I/O performance (NVMe/SSD on the host)
+- ✗ **No disaster recovery** — VM loss = permanent data loss
+- ✗ No DB snapshot backup
+- ✗ Not suitable for production use
+
+</details>
+
+### 3. Database
+
+| | **Bundled** (default) | **External** |
+|---|---|---|
+| **`DB_INTERNAL`** | `true` | `false` |
+| **Setup required** | None — credentials auto-generated | Configure external infrastructure first |
+| **Database lives** | `/opt/seafile-db` (local) or a network share subdirectory | Your existing MySQL/MariaDB server |
+| **Disaster recovery** | Automatic nightly snapshot to share. Max 1 day data loss on VM failure. Zero loss if `DB_INTERNAL_VOLUME` set to share path. | Full DR — database is on a separate server |
+| **Best for** | Most deployments — simpler, self-contained | Shared DB infrastructure, DBA-managed servers |
+
+`DB_INTERNAL=true` is the default. MariaDB runs as a container in the stack; credentials are auto-generated by `seafile-deploy.sh`. No database setup is required before deploying.
+
+> **DR with bundled DB:** Database files default to `/opt/seafile-db` on local disk. A VM loss destroys them, even if Seafile's file data is safely on a network share. To protect against this, a nightly `mysqldump` runs automatically to `${SEAFILE_VOLUME}/db-backup/` on your network share, retaining the last 7 days. With `BACKUP_ENABLED=true`, a full dump also runs at each backup interval. Worst-case data loss on VM failure: one day of database changes. For zero-loss exposure, you can also set `DB_INTERNAL_VOLUME` to a share subdirectory, but note this trades some performance for extra safety, particularly on SMB where small random I/O is slower than local disk.
+
+If `DB_INTERNAL=false`: complete the external database section in [Step 3](#step-3---prepare-external-infrastructure) before running `seafile-deploy.sh`.
+
+### 4. Reverse proxy
+
+| `PROXY_TYPE` | Default? | SSL handled by | Setup step |
+|---|---|---|---|
+| `nginx` | ✓ Yes | Nginx Proxy Manager (separate host) | Step 5 |
+| `traefik` | No | Traefik (Docker labels) | Step 5 |
+| `caddy-external` | No | External Caddy instance | Step 5 |
+| `caddy-bundled` | No | Bundled Caddy container (ACME direct) | Step 5 |
+| `haproxy` | No | HAProxy (separate host) | Step 5 |
+
+Set `PROXY_TYPE` in `.env`. The recommendation is to manage all proxy hosts in one place alongside your other services. Nginx Proxy Manager is the most common choice in homelabs, which is why it is the default.
+
+`caddy-bundled` is the option for a fully self-contained deployment with no external proxy dependency. The bundled Caddy container handles ACME (Let's Encrypt) directly. This requires ports 80 and 443 to be reachable from the internet for the certificate challenge.
+
+Switching proxy type after deploy is safe. Run `seafile fix` after changing `PROXY_TYPE` and the Caddyfile is rewritten accordingly.
+
+### 5. Office suite
+
+| | **Collabora** (default) | **OnlyOffice** |
+|---|---|---|
+| **Minimum RAM** | 4 GB | 8 GB |
+| **Strength** | ODF support, lower footprint | Microsoft Office fidelity, Track Changes |
+| **Setup** | Zero config — all credentials auto-generated | Zero config — all credentials auto-generated |
+| **Best for** | Personal/small team | Teams sharing a lot of `.docx`/`.xlsx` |
+
+Set `OFFICE_SUITE=collabora` or `OFFICE_SUITE=onlyoffice` in `.env`. All office suite credentials (Collabora admin console, OnlyOffice JWT) are auto-generated on first boot. You never need to fill them in. Switching later is safe. Run `seafile update` after changing the value and the old container stops, the new one starts.
+
+### 6. Optional features checklist
+
+Enable or change any of these before running `seafile-deploy.sh`, or any time later with `seafile update`.
+
+| Feature | `.env` key | Default | Notes |
+|---|---|---|---|
+| Email notifications | `SMTP_ENABLED` | **on** | Required for password resets and share notifications. Fill in all `SMTP_*` values. |
+| Garbage collection | `GC_ENABLED` | **on** | Reclaims storage from deleted files. Weekly on Sunday at 3am. |
+| DB snapshot to share | *(automatic)* | **on** | When `DB_INTERNAL=true` and not local storage — nightly `mysqldump` to `${SEAFILE_VOLUME}/db-backup/`. No config needed. |
+| Antivirus scanning | `CLAMAV_ENABLED` | off | Adds ~1 GB RAM. First start is slow while ClamAV downloads definitions. |
+| WebDAV access | `SEAFDAV_ENABLED` | off | Mount as a network drive. LDAP users need a WebDAV token from their profile. |
+| LDAP / Active Directory | `LDAP_ENABLED` | off | Fill in all `LDAP_*` values for your directory. |
+| Full offsite backup | `BACKUP_ENABLED` | off | Rsyncs share + `mysqldump` to `BACKUP_DEST`. Must be a different path from `SEAFILE_VOLUME`. |
+| Guest accounts | `ENABLE_GUEST` | off | Allows read-only external sharing accounts. |
+| Forced 2FA | `FORCE_2FA` | off | Forces all users to enable two-factor auth on next login. |
+| GitOps sync | `GITOPS_INTEGRATION` | off | Auto-pull config changes from a private Git repo. |
+| Traefik labels | `TRAEFIK_ENABLED` | off | Enable if using Traefik as your reverse proxy. |
+---
+
+<details>
+<summary>About the pre-run menus</summary>
+
+Every script in this deployment shows an interactive checklist before running anything. All steps are selected by default -- just press Enter to run as shown. Enter a step number to toggle it off, then press Enter when ready.
+
+```
+  ════════════════════════════════════════════════════════
+   setup.sh
+  ════════════════════════════════════════════════════════
+
+  The following steps will run. Enter a step number to
+  toggle it off (or back on) before proceeding.
+
+    [✓]  1.  Update and upgrade system packages
+    [✓]  2.  Install required packages
+    [✓]  3.  Enable automatic security updates
+    ...
+
+  Press [Enter] to run, enter a number to toggle, or q to quit.
+
+  >
+```
+
+> **Note:** This menu is shown by `seafile-deploy.sh` — you never run `setup.sh` directly. The script name in the header is for reference only.
+
+**Run with all steps selected (the default) in almost all cases.** Steps are ordered intentionally -- skipping one can leave the deployment in a partially-updated state. The main reason to toggle something off is to suppress `apt-get upgrade` on a tightly controlled host, or to run health checks only without applying changes.
+
+Quitting without running prints **"Run me again if you change your mind."** and exits cleanly.
+
+**Non-interactive use:** pass `--yes` to any script to skip the menu and run all steps. This is used internally by `seafile-recovery-finalize.sh` when calling `seafile-config-fixes.sh`, and is available for your own automation:
+
+```bash
+sudo bash /opt/update.sh --yes
+```
+
+</details>
+
+---
+
+## Step 1 - Provision the VM
+
+This stack runs well as a dedicated VM. RAM requirements depend on which office suite you chose in Step 0.
+
+**With Collabora (default):**
+
+| Use Case | CPU | RAM | Local Disk |
+|---|---|---|---|
+| Personal / small team (1–10 users) | 2 cores | 4 GB | 20 GB |
+| Small organisation (10–50 users) | 4 cores | 8 GB | 40 GB |
+| Larger team (50+ users) | 4–8 cores | 16 GB | 60 GB |
+
+**With OnlyOffice:**
+
+| Use Case | CPU | RAM | Local Disk |
+|---|---|---|---|
+| Personal / small team (1–10 users) | 4 cores | 8 GB | 20 GB |
+| Small organisation (10–50 users) | 4 cores | 12 GB | 40 GB |
+| Larger team (50+ users) | 8 cores | 16 GB | 60 GB |
+
+> **Local disk** is for the OS, Docker, thumbnail cache, and metadata index only. Actual file storage lives on the network share and is not counted here.
+
+**Recommended VM settings (Proxmox or similar):**
+- OS: Debian 13 (Trixie) -- 64-bit
+- Disk: thin-provisioned, on SSD-backed storage if possible
+- Network: bridged, static IP or DHCP reservation
+- Enable QEMU Guest Agent if using Proxmox
+
+---
+
+## Step 2 - Install Debian 13
+
+> **Why a dedicated VM?** This stack could technically run alongside other services on a shared Docker host, but if you are already running a hypervisor (Proxmox, ESXi, Unraid, etc.) a dedicated VM is strongly recommended. It keeps Seafile isolated -- if something goes wrong, needs to be rebuilt, or needs to be migrated, you can do it without touching anything else. It also makes the disaster recovery steps at the end of this guide straightforward: provision a new VM, run one command, done.
+
+> **Using a pre-built Debian 13 cloud image or template?** Skip this step entirely. See [OS - Using a Pre-built Debian Image](#os--using-a-pre-built-debian-image) under Alternate Deployment Methods.
+
+For the full official installation reference see the [Debian 13 Installation Guide](https://www.debian.org/releases/trixie/installmanual). The steps below cover the choices that matter for a minimal server VM.
+
+Boot the [Debian 13 netinstall ISO](https://www.debian.org/distrib/netinst) and follow these steps:
+
+> **Using Proxmox or a similar hypervisor?** You can attach the ISO directly to a new VM without creating bootable media. Just upload the ISO to your hypervisor's ISO store and select it as the boot device when creating the VM.
+
+1. Select **Install** (not graphical install) -- the graphical installer is the same process but requires a working display driver, which adds unnecessary complexity for a headless VM.
+
+2. Set your **hostname** (e.g. `seafile`), **domain** (can be left blank or set to your local domain), **root password**, and a **non-root user**. The non-root user is required by the installer but you can manage this machine as root -- all scripts in this guide use `sudo bash` or are run directly as root.
+
+3. **Partitioning:** Choose *Guided -- use entire disk*, then *All files in one partition*. For a single-purpose VM this is the simplest and most appropriate layout. The OS, Docker, and local Seafile caches all live here -- actual file data is on the network share and is not affected by anything that happens to this disk.
+
+4. **Mirror selection:** Choose a Debian archive mirror that is geographically close to you. This is only used during installation and for future `apt` package updates -- a nearby mirror means faster downloads. The default suggestion is usually fine.
+
+5. **Software selection:** Uncheck everything except:
+   - `standard system utilities` -- core command-line tools, required
+   - `SSH server` -- only needed if you will access the VM via SSH rather than your hypervisor's built-in console. If you have console access you can skip SSH and add it later if needed.
+   - Everything else -- no desktop environment, no web server, no print server. Everything Seafile needs will be installed automatically when you run `seafile-deploy.sh`.
+
+6. Install **GRUB** to the primary drive when prompted -- this is the bootloader that starts the OS. Accept the default suggestion.
+
+7. Reboot and log in as root via SSH or your hypervisor console.
+
+---
+
+> **Using a Linux distribution other than Debian 13?** This deployment is built and tested exclusively on Debian 13 (Trixie) and that is the only officially supported OS. Ubuntu 24.04 LTS is likely compatible — the package names, systemd behaviour, and Docker installation method are nearly identical — but is not tested. RHEL/Fedora/Rocky use `dnf` instead of `apt` and have different default firewall rules (`firewalld`), which would require manual adjustments before running the installer. Alpine Linux is not compatible. If you are starting fresh and have a choice, use Debian 13.
+
+
+## Step 3 - Prepare External Infrastructure
+
+> **Using defaults?** If you chose `DB_INTERNAL=true` (bundled database) and `STORAGE_TYPE=nfs`, you only need to configure your NFS share before continuing. Expand the NFS section below and skip the database section.
+
+This step covers infrastructure that must be ready before you run the deploy script. Which sections apply depends on your choices in [Plan Your Deployment](#plan-your-deployment):
+
+| If you chose... | Prepare... |
+|-----------------|------------|
+| `DB_INTERNAL=false` (external database) | Database server, user, and permissions |
+| `STORAGE_TYPE=nfs` | NFS export on your NAS |
+| `STORAGE_TYPE=smb` | SMB share and credentials on your NAS |
+| `STORAGE_TYPE=glusterfs` | GlusterFS volume |
+| `STORAGE_TYPE=iscsi` | iSCSI target on your SAN/NAS |
+| `STORAGE_TYPE=local` | Nothing (not recommended for production) |
+
+---
+
+<details>
+<summary><strong>External Database Setup</strong> (only if <code>DB_INTERNAL=false</code>)</summary>
+
+This section applies only if you chose to use an external MySQL/MariaDB server. If using the bundled database (`DB_INTERNAL=true`, the default), skip this entirely.
+
+### 1 - Verify the root password is set
+
+Seafile uses `INIT_SEAFILE_MYSQL_ROOT_PASSWORD` on first boot to authenticate as root. If root has no password or uses socket-based authentication, the `seafile` container will fail to initialise.
+
+Connect to your database server as root and run:
+
+```sql
+SELECT user, host, plugin, authentication_string
+FROM mysql.user WHERE user = 'root';
+```
+
+If `plugin` is `unix_socket` or `auth_socket`, switch to password auth:
+
+```sql
+ALTER USER 'root'@'localhost' IDENTIFIED BY 'your_root_password';
+FLUSH PRIVILEGES;
+```
+
+### 2 - Allow remote connections from the Seafile VM
+
+MariaDB and MySQL bind to `127.0.0.1` by default. Edit your config to bind to `0.0.0.0`:
+
+**MariaDB:** `/etc/mysql/mariadb.conf.d/50-server.cnf`
+**MySQL:** `/etc/mysql/mysql.conf.d/mysqld.cnf`
+
+```ini
+bind-address = 0.0.0.0
+```
+
+Restart the service and open firewall port 3306 for your Seafile VM's subnet.
+
+### 3 - Create the databases and user
+
+Connect to your database and run:
+
+```sql
+CREATE DATABASE IF NOT EXISTS ccnet_db   CHARACTER SET utf8mb4;
+CREATE DATABASE IF NOT EXISTS seafile_db CHARACTER SET utf8mb4;
+CREATE DATABASE IF NOT EXISTS seahub_db  CHARACTER SET utf8mb4;
+
+CREATE USER IF NOT EXISTS 'seafile'@'192.168.x.%' IDENTIFIED BY 'your_db_password';
+
+GRANT ALL PRIVILEGES ON ccnet_db.*   TO 'seafile'@'192.168.x.%';
+GRANT ALL PRIVILEGES ON seafile_db.* TO 'seafile'@'192.168.x.%';
+GRANT ALL PRIVILEGES ON seahub_db.*  TO 'seafile'@'192.168.x.%';
+
+FLUSH PRIVILEGES;
+```
+
+Replace `192.168.x.%` with your Docker host's subnet and `your_db_password` with a strong password.
+
+**Verify connectivity before continuing:**
+
+```bash
+nc -zv YOUR_DB_IP 3306
+mysql -h YOUR_DB_IP -u seafile -p
+```
+
+</details>
+
+---
+
+<details open>
+<summary><strong>NFS Storage Setup</strong> (default)</summary>
+
+The NFS share **must be exported with `no_root_squash`** so that Docker containers running as root can write to it correctly.
+
+**TrueNAS Scale:**
+1. **Shares → Unix (NFS) Shares → Add**
+2. Set **Path** to your dataset
+3. **Advanced Options** → add your Docker host IP to **Authorized Hosts**
+4. Set **Maproot User** to `root` and **Maproot Group** to `wheel`
+
+**Synology DSM:**
+1. **Control Panel → File Services → NFS** - enable NFS
+2. **Shared Folders** → select folder → **Edit → NFS Permissions → Create**
+3. Hostname/IP: your Docker host IP, Privilege: Read/Write, Squash: No mapping
+4. Check **Allow connections from non-privileged ports**
+
+**Generic Linux:**
+```
+/path/to/export    192.168.x.0/24(rw,sync,no_subtree_check,no_root_squash)
+```
+
+```bash
+exportfs -ra && systemctl restart nfs-kernel-server
+```
+
+</details>
+
+---
+
+<details>
+<summary><strong>SMB Storage Setup</strong></summary>
+
+Create a share on your NAS and a dedicated user with read/write access. You will need:
+- Server IP or hostname
+- Share name
+- Username and password
+- Domain (if applicable)
+
+The wizard or `.env` file will prompt for these values.
+
+</details>
+
+---
+
+<details>
+<summary><strong>GlusterFS Storage Setup</strong></summary>
+
+Ensure your GlusterFS volume is started and accessible:
+
+```bash
+gluster volume status
+```
+
+Configure the server to allow connections from your Docker host IP. You will need:
+- Server IP of any peer node
+- Volume name
+
+</details>
+
+---
+
+<details>
+<summary><strong>iSCSI Storage Setup</strong></summary>
+
+Configure an iSCSI target on your NAS/SAN. You will need:
+- Portal address (IP:port, typically port 3260)
+- Target IQN
+- CHAP credentials (optional but recommended)
+
+**Important:** On first deploy, the installer will format the block device. Ensure no existing data is on the target.
+
+</details>
+
+---
+
+## Step 4 - Run seafile-deploy.sh
+
+Download and run the deployment script:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/nicosgit92/seafile-deploy/main/seafile-deploy.sh -o seafile-deploy.sh
+chmod +x seafile-deploy.sh
+sudo ./seafile-deploy.sh
+```
+
+The splash screen appears. Select **1 - Fresh Install**.
+
+### Deployment mode
+
+If no configuration file exists, the script asks how you want to deploy:
+
+1. **Just give me Seafile** — Minimal setup, two questions, done in minutes. See [Quick Start](#quick-start).
+2. **Standard deployment** — Interactive wizard walks you through every choice (described below)
+3. **Git-managed deployment** — Same as standard, plus manages .env through a git repository
+4. **Quit** — Exit to prepare your configuration offline
+
+### Guided Setup (standard and git-managed deployment)
+
+The guided wizard follows the same structure as [Plan Your Deployment](#plan-your-deployment):
+
+1. **Storage type** - NFS, SMB, GlusterFS, iSCSI, or local
+2. **Storage classes** - Single or multiple storage classes (if network storage selected)
+3. **Database** - Bundled or external
+4. **Reverse proxy** - Nginx Proxy Manager, Traefik, Caddy, or HAProxy
+5. **Office suite** - Collabora, OnlyOffice, or none
+6. **Optional features** - SMTP, LDAP, ClamAV, WebDAV, backups, etc.
+7. **Configuration management** - Local only or git-managed (step appears in standard mode; pre-configured in git-managed mode)
+
+After making your selections, the wizard prompts for required values based on your choices (hostname, admin email, storage credentials, etc.) and generates secrets automatically.
+
+### What the installer does
+
+Once configuration is complete, the installer:
+
+- Updates system packages
+- Installs Docker and Docker Compose
+- Installs the storage client and mounts your network share
+- Installs `unattended-upgrades` and `fail2ban`
+- Creates all required directories under `/opt/`
+- Writes the Caddyfile for internal routing
+- Installs the Portainer Agent
+- Writes `docker-compose.yml` and `update.sh`
+- Installs the `seafile` CLI
+- Starts the stack and waits for initialization
+- Runs `seafile-config-fixes.sh` to apply all configuration
+
+A pre-run checklist appears before any changes are made. Press Enter to run with all steps selected.
+
+---
+
+<details>
+<summary><strong>Manual .env Configuration</strong> (GitOps or advanced setups)</summary>
+
+If you prefer to manage configuration as code, or you are using Portainer management with GitOps, you can prepare your `.env` file manually instead of using the wizard.
+
+### The .env file
+
+The `.env` file is the single source of truth for this entire deployment. It contains every site-specific value: your domain, database credentials, secrets, storage paths, and image tags. All scripts read from it automatically.
+
+### File location
+
+| Path | Purpose |
+|------|---------|
+| `/opt/seafile/.env` | Active configuration read by Docker Compose |
+| `${SEAFILE_VOLUME}/.env` | Backup copy synced automatically |
+
+### Creating your .env manually
+
+1. Copy the template from this repo (`src/.env.template`)
+2. Fill in all required values (see [Environment Variable Reference](#environment-variable-reference))
+3. Place it at `/opt/seafile/.env` on the VM
+
+```bash
+mkdir -p /opt/seafile
+nano /opt/seafile/.env
+```
+
+### What to fill in
+
+**Always required:**
+- `SEAFILE_SERVER_HOSTNAME` - Your public domain
+- `INIT_SEAFILE_ADMIN_EMAIL` - Admin account email
+- Storage-specific variables based on `STORAGE_TYPE`
+
+**If using external database (`DB_INTERNAL=false`):**
+- `SEAFILE_MYSQL_DB_HOST` - Database server IP
+- `SEAFILE_MYSQL_DB_PASSWORD` - Password for the seafile user
+- `INIT_SEAFILE_MYSQL_ROOT_PASSWORD` - Root password for first-boot setup
+
+**Auto-generated secrets (leave blank):**
+- `JWT_PRIVATE_KEY`
+- `REDIS_PASSWORD`
+- `COLLABORA_ADMIN_PASSWORD`, `COLLABORA_ALIAS_GROUP`
+- `ONLYOFFICE_JWT_SECRET`
+- Database credentials when `DB_INTERNAL=true`
+
+The installer will offer to generate these before running.
+
+### Portainer integration
+
+The Portainer Agent is installed in all deployment modes for container monitoring. To have Portainer manage the stack lifecycle (deploy/redeploy), enable `PORTAINER_MANAGED=true` after setup via `seafile config portainer`. See [Portainer Integration](#portainer-integration) under Alternate Deployment Methods.
+
+### Two copies of .env
+
+After setup, two copies exist:
+- `/opt/seafile/.env` - The authoritative copy. Always edit this one.
+- `${SEAFILE_VOLUME}/.env` - Backup copy maintained by `seafile-env-sync` service
+
+All changes to the local `.env` are automatically backed up to the storage share and committed to config history.
+
+</details>
+
+---
+
+## Step 5 - Configure Your Reverse Proxy
+
+The right instructions depend on `PROXY_TYPE` in your configuration. Expand the section for your choice.
+
+<details open>
+<summary>Nginx Proxy Manager (default)</summary>
+
+On your Nginx Proxy Manager host:
+
+1. Go to **Proxy Hosts → Add Proxy Host**
+2. **Details tab:**
+   - Domain Names: your Seafile domain
+   - Scheme: `http`
+   - Forward Hostname/IP: your Docker VM's IP address
+   - Forward Port: `7080` (or your `CADDY_PORT` value)
+   - Enable **Websockets Support**
+3. **SSL tab:** issue or select a Let's Encrypt certificate, enable **Force SSL**
+4. **Advanced tab:** run `seafile proxy-config` on the host — it generates the complete config with your IP and port already filled in. Copy and paste the output.
+5. Save
+
+</details>
+
+<details>
+<summary>Traefik</summary>
+
+Set `TRAEFIK_ENABLED=true`, `TRAEFIK_ENTRYPOINT`, and `TRAEFIK_CERTRESOLVER` in your configuration to match your Traefik setup. Traefik will automatically route traffic for `SEAFILE_SERVER_HOSTNAME` to the `seafile-caddy` container via Docker labels.
+
+The `seafile-caddy` container must be on a Docker network that Traefik can reach.
+
+See `config/proxy-traefik.yml` for the full label reference.
+
+</details>
+
+<details>
+<summary>External Caddy</summary>
+
+See `config/proxy-caddy.conf`. Replace `YOUR_DOCKER_HOST_IP` with your VM's IP and your domain. Caddy handles WebSocket upgrades, timeouts, and SSL automatically.
+
+Forward traffic to port `7080` on the Docker host.
+
+</details>
+
+<details>
+<summary>Bundled Caddy (no external proxy)</summary>
+
+When `PROXY_TYPE=caddy-bundled`, the Caddy container handles ACME (Let's Encrypt) directly. No external reverse proxy is needed.
+
+**Requirements:**
+- Ports **80** and **443** must be reachable from the internet
+- `SEAFILE_SERVER_HOSTNAME` must be a public DNS name pointing to your host's IP
+
+Run `seafile fix` after changing to `PROXY_TYPE=caddy-bundled` to rewrite the Caddyfile.
+
+</details>
+
+<details>
+<summary>HAProxy</summary>
+
+Configure HAProxy as a standard TCP/HTTP reverse proxy forwarding to port `7080` on the Docker host. HAProxy must pass `Host`, `X-Real-IP`, `X-Forwarded-For`, and `X-Forwarded-Proto: https` headers, support WebSocket upgrades, and have no upload size limit.
+
+See the [HAProxy documentation](https://www.haproxy.org/download/2.6/doc/configuration.txt) for configuration details.
+
+</details>
+
+---
+
+## Step 6 - Verify
+
+By the time you reach this step, `seafile-deploy.sh` will have already started the stack and applied config fixes automatically. Use the CLI to confirm everything is healthy:
+
+```bash
+seafile status   # container health, storage mount, and disk usage
+seafile ping     # HTTP endpoint check (notification, thumbnail, office suite)
+```
+
+`seafile status` shows a container status table, storage mount info, and disk usage. `seafile ping` hits all API endpoints and reports whether each is responding correctly.
+
+All core containers should show `running`. The exact list depends on your configuration:
+
+| Container | Role | Active when |
+|---|---|---|
+| `seafile-caddy` | Internal reverse proxy | Always |
+| `seafile-redis` | Cache | Always |
+| `seafile` | Core Seafile server | Always |
+| `seadoc` | SeaDoc collaborative editor | Always |
+| `notification-server` | Real-time notifications | Always |
+| `thumbnail-server` | Image/document previews | Always |
+| `seafile-metadata` | Extended file properties | Always |
+| `seafile-db` | Bundled MariaDB database | `DB_INTERNAL=true` |
+| `seafile-collabora` | Collabora Online | `OFFICE_SUITE=collabora` (default) |
+| `seafile-onlyoffice` | OnlyOffice | `OFFICE_SUITE=onlyoffice` |
+| `seafile-clamav` | ClamAV antivirus | `CLAMAV_ENABLED=true` |
+
+**Extended Properties:**
+
+Extended Properties (metadata indexing) is enabled automatically on all existing libraries during setup. For libraries created after setup, enable them with:
+
+```bash
+seafile metadata --enable-all
+```
+
+Or enable individually: open a library → **Settings** → toggle on **Extended Properties**.
+
+---
+
+
+## Using update.sh
+
+`update.sh` is the update and reconciliation tool for this deployment. In day-to-day use you will reach it through the `seafile` CLI -- `seafile update` and `seafile update --check` -- rather than running it directly.
+
+**Location:** `/opt/update.sh` -- written during Step 4 (`seafile-deploy.sh` → Fresh Install), ready immediately after setup completes. The source in this repo at `scripts/update.sh` is the reference copy.
+
+**Storage backup:** `$SEAFILE_VOLUME/update.sh` -- backed up on first setup, updated automatically on every run, restored by `setup.sh` in recover mode after a VM rebuild.
+
+### How to run it
+
+```bash
+# Via the CLI (recommended)
+seafile update           # interactive -- shows diff and asks to confirm
+seafile update --check   # preview only -- shows what changed, nothing applied
+
+# Direct
+sudo bash /opt/update.sh
+sudo bash /opt/update.sh --check   # diff only
+sudo bash /opt/update.sh --yes     # non-interactive, skip menu
+```
+
+### What it does
+
+- Updates system packages (`apt-get upgrade`)
+- Validates all required `.env` variables
+- Compares `.env` against a saved snapshot — shows exactly what changed, masks passwords. Asks for confirmation before applying. If nothing changed, skips to health checks
+- Pulls updated images for containers whose tag changed — unchanged tags are left alone
+- Calls `seafile-config-fixes.sh` to apply all Seafile config files — this ensures all `.env` conditionals (office suite, SMTP, LDAP, ClamAV, WebDAV, user quotas, 2FA, etc.) are handled correctly
+- Clears `INIT_SEAFILE_MYSQL_ROOT_PASSWORD` if still set
+- Restarts containers with the correct dynamic list (handled by `seafile-config-fixes.sh`)
+- Runs `docker compose up -d` to start/stop containers based on profile changes (e.g., switching office suites, enabling ClamAV)
+- Saves a snapshot for future diff comparisons, backs `update.sh` itself to the network share
+- Runs health checks — container status, Caddy reachability, storage mount, disk usage
+
+### Background services
+
+This deployment uses several systemd services for background tasks. All are installed automatically during setup.
+
+| Service | Purpose | When active |
+|---|---|---|
+| `seafile-env-sync` | Mirrors `.env` to network share, commits config history, triggers Portainer webhook | Always (inotify watcher) |
+| `seafile-config-server` | Local git HTTP server for Portainer stack sync | Only when `PORTAINER_MANAGED=true` |
+| `seafile-storage-sync` | Background rsync during storage migration | Only during migration |
+| `seafile-recovery-finalize` | Restores DB and starts stack after recovery | Once after recovery, then disables |
+| `seafile-gitops-sync` | Webhook listener for GitOps push events | Only when `GITOPS_INTEGRATION=true` |
+
+**Checking service status:**
+
+```bash
+# Environment sync (always running)
+systemctl status seafile-env-sync
+journalctl -u seafile-env-sync -n 20
+
+# Storage migration (only during migration)
+systemctl status seafile-storage-sync
+journalctl -u seafile-storage-sync -f
+
+# GitOps listener (if enabled)
+systemctl status seafile-gitops-sync
+journalctl -u seafile-gitops-sync -n 50
+```
+
+---
+
+## The `seafile` CLI
+
+After `seafile-deploy.sh` completes, you have a `seafile` command available system-wide. It is the primary day-to-day management tool for your deployment.
+
+```bash
+seafile <command> [args]
+```
+
+| Command | What it does |
+|---|---|
+| `seafile status` | Container health table, storage mount status, and disk usage -- all in one view |
+| `seafile ping` | HTTP endpoint health check -- hits notification server, thumbnail server, and office suite. Reports response status for each |
+| `seafile logs [name]` | Tail container logs. Omit the name for an interactive picker |
+| `seafile restart [name]` | Restart one container, or all (with confirmation). Interactive picker if name omitted |
+| `seafile shell [name]` | Open a shell inside a container (bash, or sh for Alpine). Interactive picker if omitted |
+| `seafile update` | Run `update.sh` -- apply `.env` changes and restart affected containers |
+| `seafile update --check` | Preview what has changed in `.env` since the last update, without applying anything |
+| `seafile config` | Interactive configuration editor -- menu-driven wizard with section navigation |
+| `seafile config [section]` | Jump directly to a section: `core`, `storage`, `database`, `proxy`, `smtp`, `ldap`, `office`, `features`, `portainer` |
+| `seafile config storage --status` | Check storage migration progress (when migration is active) |
+| `seafile config storage --cutover` | Finalize storage migration and switch to new backend |
+| `seafile config database` | Database configuration -- update settings or migrate between bundled/external |
+| `seafile config proxy` | Reverse proxy configuration -- nginx, caddy, traefik, haproxy |
+| `seafile config portainer` | Enable/disable Portainer stack management, set webhook URL |
+| `seafile config show` | Display current configuration summary |
+| `seafile config show --secrets` | Display configuration including secret values |
+| `seafile config edit` | Open `/opt/seafile/.env` directly in `$EDITOR` (fallback: nano) |
+| `seafile fix` | Run `seafile-config-fixes.sh` |
+| `seafile proxy-config` | Show reverse proxy config ready to paste (NPM Advanced tab, or general requirements for other proxies) |
+| `seafile metadata --enable-all` | Enable Extended Properties on all existing libraries via API |
+| `seafile gc` | Run garbage collection now (respects `GC_DRY_RUN` from `.env`) |
+| `seafile gc --status` | Show GC schedule, cron status, and last log tail |
+| `seafile gc --dry-run` | Show what GC would collect without removing anything |
+| `seafile backup` | Show storage backup status for `.env`, `update.sh`, and `seafile-config-fixes.sh`. Trigger a manual sync |
+| `seafile version` | Show the running image tag for every container vs the tag set in `.env`. Yellow = stale, needs `seafile update` |
+| `seafile gitops` | GitOps listener status, config summary, and recent journal activity (only useful when `GITOPS_INTEGRATION=true`) |
+| `seafile help` | Full command reference |
+
+**Common workflows:**
+
+```bash
+# Check everything at a glance
+seafile status
+seafile ping
+
+# Interactive configuration -- guided menu
+seafile config
+
+# Jump directly to SMTP settings
+seafile config smtp
+
+# Preview what changed before applying
+seafile update --check
+seafile update
+
+# Tail logs interactively
+seafile logs
+
+# Restart a single container
+seafile restart notification-server
+
+# Check if any containers are running stale images
+seafile version
+```
+
+The CLI is installed to `/usr/local/bin/seafile` during Step 4 and is available to all users immediately after setup completes. Commands that write to the system (update, fix, config) will prompt for sudo if not already root.
+
+---
+
+## Git-Managed Configuration
+
+When you select **Git-managed deployment** (option 3) during setup, or enable `GITOPS_INTEGRATION=true` later, your `.env` is stored in an external git repository. Changes pushed to the repo are automatically applied to the server via a webhook listener. This eliminates the need to SSH into the host for routine configuration changes.
+
+A private git repository (GitHub, Gitea, GitLab, or any provider that supports webhooks) becomes the source of truth for your configuration. When you push a commit, the server pulls the changes and applies them automatically.
+
+### How it works
+
+Your git provider fires a webhook to the Seafile VM on each push. The VM listener handles the entire update sequence:
+
+```
+git push
+   │
+   ▼
+Gitea → VM webhook listener
+           │
+           ├── git pull (fetch latest repo)
+           ├── compare .env hash -- changed?
+           │     no  → skip update.sh
+           │     yes → copy .env to /opt/seafile/.env
+           │           run update.sh --yes
+           │             (writes config files, restarts containers)
+           │
+           └── POST to Portainer webhook URL
+                 Portainer redeploys stack with new env vars
+```
+
+The key here is that **Portainer is notified by the VM, not by Gitea directly.** This is not just a convenience — it is what guarantees correctness. `update.sh` applies config files to the network share and restarts containers via `seafile-config-fixes.sh`. Portainer redeploying during that process would bring containers up against a partially-written config. By wiring Portainer through the VM, the ordering is enforced in code: Portainer is called only after `update.sh` exits successfully. If `update.sh` fails for any reason, Portainer is never notified — the stack stays running on the last known-good config while you investigate.
+
+<details>
+<summary>Pros</summary>
+
+- **One push updates everything.** Edit `.env` (and optionally `docker-compose.yml`) in the repo, commit, push -- the VM applies the change and Portainer is notified automatically if `PORTAINER_STACK_WEBHOOK` is set. No manual steps anywhere.
+- **Complete configuration history.** Every change to `.env` is a git commit with a timestamp and message. Rolling back to any previous state is a single `git revert`. You can see exactly what changed, when, and why -- something no manual process gives you. This benefit applies equally in both native and Portainer management.
+- **Solves the Portainer sync problem automatically** (Portainer management). The VM calls the Portainer webhook after `update.sh` finishes -- Portainer never redeploys against a partially-applied config, and you never forget to propagate a change.
+- **In native mode, the Portainer webhook URL can be left blank.** The VM handles everything; there is nothing else to notify. GitOps still gives you version history and automation, just without the Portainer step.
+- **Gitea goes down? Seafile keeps running.** If the git server is unreachable, the GitOps phase warns and exits cleanly. All other update phases continue normally.
+- **`update.sh` fails? Portainer is never notified.** The Portainer webhook is only called after a fully successful `update.sh` run -- never against a partial or failed state.
+
+</details>
+
+<details>
+<summary>Cons and honest tradeoffs</summary>
+
+- **Gitea becomes a dependency for automated updates.** If Gitea is unavailable, the webhook path does not work. You fall back to running `sudo bash /opt/update.sh` manually on the VM -- which is exactly what you were doing before GitOps. Nothing is worse than the baseline; you just lose the automation temporarily.
+- **Your `.env` is in git.** Even in a private repo, this changes the security model. Right now your credentials exist in two places: `/opt/seafile/.env` (chmod 600) and the network share backup (also 600). In git they live in Gitea's database and in every local clone. If Gitea is breached or a clone leaks, all your credentials are exposed. This is a real consideration -- it is why the repo must be private and on your internal network, not on GitHub or any public host.
+- **Missed pushes are not replayed.** If the webhook listener was down when you pushed (VM rebooting, listener crashed before systemd restarted it), that push will not be automatically re-applied. Push a no-op commit or run `update.sh` manually to catch up.
+- **Portainer redeploys restart the stack.** Every time the VM calls the Portainer webhook, Portainer redeploys -- which restarts all containers. In the manual workflow you control exactly when this happens. With GitOps every push triggers it. For most use cases this is fine; just be aware if you have users who would notice a brief restart.
+
+</details>
+
+### What the private repo contains
+
+Create a new **private** repository in Gitea (e.g. `seafile-config`). It holds two files:
+
+```
+seafile-config/
+  .env                  -- the live, filled-in config for this deployment
+  docker-compose.yml    -- the live stack definition
+```
+
+> **This repo contains every secret in your deployment.** Keep it private. Store it on your internal Gitea instance only. If you ever accidentally push to a public repo, rotate every credential in `.env` immediately.
+
+### Step 1 - Set up the Gitea repo
+
+1. In Gitea, create a new **private** repository named `seafile-config`
+2. Go to **Settings → Applications → Access Tokens** and generate a token with `repository` read/write scope -- this becomes `GITOPS_TOKEN` in `.env`
+
+> **Note:** If you selected git-managed deployment during setup, the wizard already pushed your `.env` and `docker-compose.yml` to the repo as the initial commit. If setting up GitOps after initial deployment, copy these files into the repo manually as your first commit.
+
+### Step 2 - Get the Portainer webhook URL (Portainer management only)
+
+Skip this step if `PORTAINER_MANAGED=false`. In native mode, leave `PORTAINER_STACK_WEBHOOK` blank -- the VM manages the stack entirely and there is nothing else to notify.
+
+If you are using Portainer management, open your `seafile` stack in Portainer and look for a **Webhooks** section in the stack detail page -- Portainer displays a unique pre-authenticated URL here. Copy it. This is `PORTAINER_STACK_WEBHOOK`.
+
+> If you do not see a Webhooks section, the stack may need to be in GitOps/Repository mode first -- see [Portainer Integration](#portainer-integration). You can come back and add the URL to `.env` later, then re-run `update.sh`.
+
+### Step 3 - Enable the VM webhook listener
+
+Edit `/opt/seafile/.env` and fill in the GitOps block:
+
+```bash
+GITOPS_INTEGRATION=true
+GITOPS_REPO_URL=http://YOUR_GITEA_IP:3000/you/seafile-config.git
+GITOPS_TOKEN=your_gitea_personal_access_token
+GITOPS_BRANCH=main
+GITOPS_WEBHOOK_SECRET=    # generate: openssl rand -hex 20
+GITOPS_WEBHOOK_PORT=9002
+GITOPS_CLONE_PATH=/opt/seafile-gitops
+PORTAINER_STACK_WEBHOOK=http://YOUR_PORTAINER_IP:9443/api/stacks/webhooks/...
+```
+
+Then run `update.sh` -- the GitOps phase tests connectivity, clones the repo, installs the listener at `/opt/seafile/seafile-gitops-sync.py`, and starts the `seafile-gitops-sync` systemd service:
+
+```bash
+sudo bash /opt/update.sh
+```
+
+Confirm the listener is running:
+
+```bash
+systemctl status seafile-gitops-sync
+journalctl -u seafile-gitops-sync -n 20
+```
+
+> **Firewall note:** port `9002` only needs to be reachable from your Gitea server's IP. If you have a host firewall, allow TCP `9002` from Gitea's IP only -- not from the internet.
+
+### Step 4 - Configure the Gitea webhook
+
+If you are using Gitea, the installer attempts to create the webhook automatically via the Gitea API. Check the setup output for confirmation.
+
+If auto-creation was not possible (non-Gitea provider, network restrictions, etc.), create the webhook manually in your git provider:
+
+| Field | Value |
+|---|---|
+| Target URL | `http://YOUR_SEAFILE_VM_IP:9002/webhook` |
+| HTTP Method | POST |
+| Content Type | `application/json` |
+| Secret | The value you set for `GITOPS_WEBHOOK_SECRET` |
+| Trigger on | Push events |
+
+To verify, click **Test Delivery** in your git provider and check:
+
+```bash
+journalctl -u seafile-gitops-sync -n 10
+```
+
+You should see the listener receive the request and log `.env is unchanged -- no action needed`.
+
+### Step 5 - Connect Portainer to the repo (Portainer management only)
+
+Skip this step if `PORTAINER_MANAGED=false`.
+
+If using Portainer management, set the webhook URL via `seafile config portainer`. The built-in config git server handles Portainer sync automatically.
+
+### Step 6 - Verify the full loop
+
+Make a small, safe test change in the repo -- for example update `TIME_ZONE` to a different valid timezone:
+
+```bash
+cd /path/to/your/local/seafile-config/
+# edit .env -- change TIME_ZONE
+git add .env
+git commit -m "test: update TIME_ZONE"
+git push
+```
+
+Watch the VM listener handle the full sequence:
+
+```bash
+journalctl -u seafile-gitops-sync -f
+```
+
+You should see: git pull → `.env` hash change detected → file copied → `update.sh --yes` running → `update.sh` completed → Portainer notified. The whole process takes 30-60 seconds depending on how fast `update.sh` runs.
+
+### Day-to-day workflow
+
+After setup, managing the deployment looks like this:
+
+1. Edit `.env` or `docker-compose.yml` in the local clone of `seafile-config`
+2. `git commit -am "description of change"`
+3. `git push`
+4. Done
+
+The VM applies the change, Portainer redeploys, and the git log is a permanent record of every configuration decision ever made.
+
+<details>
+<summary>Failure behaviour and security considerations</summary>
+
+**Failure behaviour**
+
+If Gitea is unreachable when `update.sh` runs, the GitOps phase warns and exits cleanly. All other phases continue -- Seafile is unaffected. Re-run `update.sh` manually or push a new commit once Gitea is back to catch up.
+
+If the Portainer webhook call fails after a successful `update.sh`, the failure is logged as a warning. Seafile is fully updated and running correctly -- only Portainer's stored copy of the env vars is out of date. Log into Portainer and manually trigger a stack update to resync, or wait for the next push.
+
+If the listener crashes, systemd restarts it automatically. Pushes that arrive while it was down are not replayed -- run `sudo bash /opt/update.sh` manually or push a no-op commit to re-trigger.
+
+**Security considerations**
+
+- Keep `seafile-config` **private and on your internal network** -- it contains every credential in this deployment
+- Always set `GITOPS_WEBHOOK_SECRET` -- without it, any HTTP client that can reach port `9002` on your VM can trigger `update.sh`
+- `GITOPS_TOKEN` is stored in `/opt/seafile/.env` with chmod 600. Scope it to read-only repository access
+- `PORTAINER_STACK_WEBHOOK` is pre-authenticated by Portainer -- treat it as a credential, do not log it publicly
+
+</details>
+
+---
+
+## Disaster Recovery
+
+If the VM is lost but your network share data and database are intact, use Recovery Mode (option 2 in `seafile-deploy.sh`) which fully restores the machine and the Seafile configuration automatically. The only things you need to know in advance are your storage connection details (server IP and export path for NFS, or equivalent for SMB/GlusterFS/iSCSI).
+
+> **Prerequisite:** Recovery mode restores `seafile-config-fixes.sh` from a backup on the network share. This backup is written automatically every time `seafile-config-fixes.sh` is run. As long as it has been run at least once on the original deployment (Step 4), the backup will exist and recovery is fully automatic.
+
+> **Minimal installs:** If you used the "Just give me Seafile" quick setup with local storage, disaster recovery is not available — your data lives on the VM's disk. To enable recovery, first migrate to network storage using `seafile config` or `seafile migrate-storage`, then recovery will work normally.
+
+### Steps
+
+1. Provision a new Debian 13 VM.
+
+2. Download and run the deployment script, then select **2 - Recovery Mode**:
+   ```bash
+   curl -fsSL https://raw.githubusercontent.com/nicosgit92/seafile-deploy/main/seafile-deploy.sh -o seafile-deploy.sh
+   chmod +x seafile-deploy.sh
+   sudo ./seafile-deploy.sh
+   ```
+
+   The script will prompt for your storage details before anything runs:
+
+   ```
+   NFS server IP   (e.g. 10.0.0.5): 10.0.0.5
+   Storage export path  (e.g. /volume1/seafile): /volume1/seafile
+   Mount point  [/mnt/seafile_nfs]:
+   ```
+
+   That is the only input required. The recovery script mounts the network share, restores `/opt/seafile/.env` and all scripts from the storage backup, completes full machine setup, then installs the `seafile-recovery-finalize` background service. **You can safely close the terminal at this point.**
+
+3. **Native mode (PORTAINER_MANAGED=false):** The recovery finalizer starts `seafile-db` first (if `DB_INTERNAL=true`), restores your databases from the latest nightly snapshot on the share, then brings up the full stack via `docker compose up -d`.
+
+   **Portainer management:** Redeploy the stack in Portainer. A manual DB restore helper is written to `/opt/seafile-db-restore.sh` — run it after `seafile-db` is running but before deploying the rest of the stack. See the on-screen instructions from the recovery script.
+
+4. The `seafile-recovery-finalize` service handles the rest automatically — waits for all containers to come up, waits for Seafile's init to complete, then runs `seafile-config-fixes.sh`. Follow its progress at any time with:
+   ```bash
+   journalctl -u seafile-recovery-finalize -f
+   ```
+   When it finishes, recovery is complete and the service disables itself.
+
+5. Extended Properties are re-enabled automatically on all libraries during recovery. For any libraries where this fails, run: `seafile metadata --enable-all`
+
+All libraries, files, and user accounts will be fully restored. Worst-case data loss is one day of database changes (library names, shares, permissions) — file content is never at risk since it lives on the share. With `BACKUP_ENABLED=true` pointing to an offsite destination, an additional full backup runs on your configured schedule for belt-and-suspenders coverage.
+
+<details>
+<summary>What regenerates automatically, reading .env from storage, and storage backup missing</summary>
+
+**What regenerates automatically if lost:**
+- `/opt/seafile/.env` — restored from network share backup during recovery
+- `seafile-config-fixes.sh` — restored from network share backup during recovery
+- **Database** (`DB_INTERNAL=true`) — restored from nightly snapshot at `${SEAFILE_VOLUME}/db-backup/` by `seafile-recovery-finalize`. Last 7 days retained. First snapshot is written at 1am on day 1.
+- `THUMBNAIL_PATH` (default `/opt/seafile-thumbnails`) — thumbnail cache, rebuilt on demand
+- `METADATA_PATH` (default `/opt/seafile-metadata`) — metadata index, rebuilt automatically when Extended Properties are re-enabled during recovery
+
+**If you need to read the `.env` directly from the network share** -- for example to recover credentials after losing both the VM and Portainer -- the file is stored at `$SEAFILE_VOLUME/.env` and has `chmod 600` permissions, so it is only readable as root. From any Linux machine that can reach the storage server:
+```bash
+mkdir -p /mnt/recovery
+mount -t nfs YOUR_NFS_SERVER:YOUR_NFS_EXPORT /mnt/recovery  # adjust command for SMB/GlusterFS/iSCSI as appropriate
+sudo cat /mnt/recovery/.env
+umount /mnt/recovery
+```
+
+**If the storage backup is also lost:** the `.env` backup at `$SEAFILE_VOLUME/.env` is only missing if the network share itself was destroyed. In that case, recreate `/opt/seafile/.env` manually from the repo template and run `seafile-deploy.sh` → Fresh Install as if it were a new deployment. Your Portainer copy of the environment variables may also still be intact and can serve as a reference.
+
+</details>
+
+<details>
+<summary>Going further -- snapshots and offsite backups</summary>
+
+Beyond what this guide provides:
+- **Proxmox VM snapshots:** Schedule under **Datacenter → Backup** to capture OS, Docker, and local config
+- **Network share backups:** Use your NAS's built-in snapshot or replication (TrueNAS periodic snapshots, Synology Hyper Backup)
+- **Database snapshots (automatic when `DB_INTERNAL=true`):** Nightly `mysqldump` at 1am writes to `${SEAFILE_VOLUME}/db-backup/` — last 7 days retained. With `BACKUP_ENABLED=true`, an additional dump is written to your `BACKUP_DEST` on each full backup run.
+- **External DB users:** Schedule your own `mysqldump` against your database server. See the [Seafile backup guide](https://manual.seafile.com/13.0/administration/backup_recovery/).
+- **Offsite `.env` copy:** Store your filled-in `.env` in a password manager or encrypted offsite location as a last resort if both VM and network share are lost -- in that scenario recovery mode cannot restore it automatically
+
+</details>
+
+---
+
+## Image Version Management
+
+All images in this deployment are pinned to specific stable versions verified against the official Seafile 13 documentation and Docker Hub as of March 2026. All image tags live in `.env`. To update an image, change its tag there and run `update.sh` -- it will pull the new image, re-apply config, and restart the affected container.
+
+<details>
+<summary>seafileltd/seafile-mc -- pinned to 13.0.18</summary>
+
+Seafile publishes immutable patch tags (e.g. `13.0.18`, `13.0.19`). You can safely update to newer `13.0.x` patches as they appear on Docker Hub, as these are bugfix-only releases. Read the [Seafile changelog](https://manual.seafile.com/13.0/changelog/server-changelog/) before bumping. Never jump a major version (e.g. `13` to `14`) without following the official upgrade guide -- major upgrades require database migrations. As an alternative, `13.0-latest` always points to the current patch and is safe to use if you accept floating updates within the 13.0 line.
+
+</details>
+
+<details>
+<summary>seafileltd/notification-server -- pinned to 13.0.10</summary>
+
+Same release pattern as `seafile-mc`: immutable patch tags are published. Safe to update to newer `13.0.x` patches. Keep this in sync with the Seafile main image major version.
+
+</details>
+
+<details>
+<summary>seafileltd/sdoc-server -- pinned to 2.0-latest</summary>
+
+Seafile does **not** publish immutable patch tags for this image -- `2.0-latest` is the only stable production tag per the official Seafile 13 docs. Leave it as `2.0-latest` until Seafile releases a new major SeaDoc version alongside a Seafile major version bump (e.g. sdoc 3.0 with Seafile 14). **Risk: medium** -- it will float within 2.0.x, but Seafile controls this tag and does not use it for breaking changes within a major line.
+
+</details>
+
+<details>
+<summary>seafileltd/thumbnail-server and seafileltd/seafile-md-server -- pinned to 13.0-latest</summary>
+
+Like `sdoc-server`, Seafile only publishes a rolling tag for these images -- no immutable patch tags exist on Docker Hub. `13.0-latest` is the correct stable tag. Leave these as-is; update only when upgrading Seafile's major version. **Risk: low** -- these are simple sidecar servers that Seafile treats as stable components within a major release line.
+
+</details>
+
+<details>
+<summary>redis -- pinned to 7-alpine</summary>
+
+Seafile 13 was built and tested against Redis 7. Redis 8 became generally available in mid-2025 but has not yet been validated against Seafile 13 by the upstream project. **Leave this as `7-alpine` until Seafile explicitly documents Redis 8 support.** The `7-alpine` tag will receive Redis 7.x security and bugfix patches automatically. **Risk of upgrading to `8-alpine`: high** -- the Redis 7 to 8 jump includes protocol and configuration changes.
+
+</details>
+
+<details>
+<summary>caddy -- pinned to 2.11.1-alpine</summary>
+
+Caddy is extremely stable within v2. Patch updates (e.g. `2.11.2`) are safe to apply and only fix bugs or security issues. The `2-alpine` floating tag is also safe to use if you prefer automatic patch updates. Never jump to Caddy v3 without verifying Caddy's compatibility with the Caddy Docker Proxy plugin used in this stack. **Risk of minor/patch updates: low.**
+
+</details>
+
+<details>
+<summary>collabora/code -- pinned to 25.04.8.1.1</summary>
+
+Collabora releases frequently and does not guarantee backwards-compatible behaviour across minor versions. **This is the highest-risk image to update.** Only update to a new Collabora version when: (1) you have tested document editing after the update, and (2) you have reviewed Collabora's release notes for WOPI API or configuration changes. To update, find the latest tag on [Docker Hub](https://hub.docker.com/r/collabora/code/tags) and update `COLLABORA_IMAGE` in `.env`. The `latest` tag is not recommended -- it can pull a breaking release silently on any Portainer redeploy.
+
+</details>
+
+---
+
+## Alternate Deployment Methods
+
+### Portainer Integration
+
+Portainer is available in all deployment modes as an optional configuration toggle. The Portainer Agent (installed by default in every mode) provides web-based container monitoring, logs, exec shell, and restart controls. Enabling `PORTAINER_MANAGED=true` additionally has Portainer manage the stack lifecycle — deploy, redeploy, and teardown are handled through the Portainer UI instead of Docker Compose on the host.
+
+Run `seafile config portainer` to enable or disable Portainer management at any time.
+
+<details>
+<summary>Pros and cons vs host-managed</summary>
+
+**Portainer management gives you:**
+- Central management of multiple stacks and multiple hosts through one UI
+- Visual container logs, exec shell, resource graphs, and restart controls without SSH
+- Stack-level deploy/rollback through the Portainer UI
+
+**The tradeoffs:**
+- Portainer pulls its stack definition from a local git server on the VM. This is automatic but adds one more service (`seafile-config-server`) running on the host
+- One more UI to keep open during deployments
+- Automated DB restore during disaster recovery is not supported (startup order can't be controlled). A manual restore helper is provided.
+
+If you are only managing Seafile and have no other Docker stacks, host-managed (default) is simpler. If Portainer is already central to how you manage other services, Portainer management keeps everything in one place.
+
+</details>
+
+#### Enabling Portainer management
+
+1. Run `seafile config portainer` and select "Enable"
+2. The CLI will guide you through setting the webhook URL
+
+#### Connecting your Portainer server
+
+1. Open your Portainer server (e.g. `https://YOUR_PORTAINER_IP:9443`)
+2. Go to **Environments → Add Environment**
+3. Select **Agent** as the environment type
+4. Set **Agent URL** to `YOUR_SEAFILE_VM_IP:9001`
+5. Give it a name (e.g. `seafile`) and click **Connect**
+
+#### Deploying the stack in Portainer
+
+1. In Portainer, select your **seafile** environment
+2. Go to **Stacks → Add Stack**, name it `seafile`
+3. Select **Repository** as the build method
+4. Set **Repository URL** to `http://YOUR_SEAFILE_VM_IP:9418/`
+5. Set **Compose path** to `docker-compose.yml`
+6. Check **Enable GitOps updates** and enable the **Webhook** toggle
+7. Copy the webhook URL that Portainer shows — you will need it in a moment
+8. Click **Deploy the stack**
+
+All containers should reach running status within about 60 seconds.
+
+Now add the webhook URL to your `.env` so changes are pushed to Portainer automatically:
+
+```bash
+seafile config edit
+# Add: PORTAINER_STACK_WEBHOOK=https://your-portainer:9443/api/stacks/webhooks/...
+```
+
+Run `seafile update` to apply. From now on, every `.env` change is automatically pushed to Portainer via the local config git server.
+
+#### How Portainer sync works
+
+A local git server runs on your Seafile VM (port 9418 by default, configurable via `CONFIG_GIT_PORT`). It serves a git repository containing your `docker-compose.yml` and `.env`. Portainer is configured to pull its stack definition from this repository.
+
+When you edit `.env` (via `seafile config`, `nano`, or any other method):
+
+1. **env-sync** detects the change and commits it to the local git repo
+2. **env-sync** pings Portainer's stack webhook URL
+3. **Portainer** pulls the updated repo and redeploys with the new values
+
+This is fully automatic — no manual Portainer UI interaction required for `.env` changes. The GitOps integration (`GITOPS_INTEGRATION`) is not needed for this and remains available as a separate feature for multi-site or team-based workflows.
+
+> **`INIT_SEAFILE_MYSQL_ROOT_PASSWORD`:** `seafile-config-fixes.sh` and `update.sh` clear this from `/opt/seafile/.env` automatically after first boot. The change is synced to Portainer automatically via the mechanism above.
+
+> **Always edit `/opt/seafile/.env` directly — never edit the NFS copy.** The NFS file at `$SEAFILE_VOLUME/.env` is a backup maintained by `seafile-env-sync`. It treats the local file as authoritative and overwrites the NFS copy whenever you save `/opt/seafile/.env`.
+
+#### Portainer with external GitOps (advanced)
+
+If you are using both Portainer management and git-managed configuration, the two work together automatically. When you push to your GitOps repo, the VM webhook listener applies the change and then pings the Portainer stack webhook. Portainer pulls the updated stack from the local git server and redeploys.
+
+No additional Portainer configuration is needed beyond the standard setup described above. The local git server already serves the latest `docker-compose.yml` and `.env` to Portainer.
+
+#### Portainer API upload (advanced)
+
+You can also update Portainer's stored environment variables programmatically via the API -- useful for scripted deployments. Generate an API token under **Account Settings → Access Tokens** in Portainer, and note your stack's numeric ID from the URL when you open the stack:
+
+```bash
+curl -s -X PUT "https://YOUR_PORTAINER_IP:9443/api/stacks/STACK_ID/file" \
+  -H "X-API-Key: YOUR_API_TOKEN" \
+  -F "env=$(cat /opt/seafile/.env)" \
+  -F "stackFile=@/opt/seafile/docker-compose.yml"
+```
+
+See the [Portainer API docs](https://app.swaggerhub.com/apis/portainer/portainer-ce) for the full reference.
+
+---
+
+### Running on an Existing Docker Host
+
+<details>
+<summary>What seafile-deploy.sh will and won't touch on a shared host</summary>
+
+`seafile-deploy.sh` is safe to run on a host that already has Docker and other running services. Here is exactly what it will and won't touch:
+
+**What it checks before acting:**
+- Docker -- skipped entirely if already installed (`command -v docker` check)
+- Portainer Agent -- skipped if a container named `portainer_agent` already exists
+- Storage mount -- skipped if the mount point is already mounted
+- fstab entry -- skipped if an entry for the mount point already exists
+- `seafile-config-fixes.sh` -- skipped if the file already exists at `/opt/seafile-config-fixes.sh`
+
+**What it always does regardless:**
+- Runs `apt-get update` and `apt-get upgrade` -- this updates all packages on the host, not just Seafile ones. If you are on a tightly controlled host this may be unwelcome -- toggle step 1 off in the pre-run checklist before proceeding
+- Installs any missing packages from the apt list (Docker, nfs-common, fail2ban, etc.)
+- Creates directories under `/opt/` -- these are new Seafile-specific paths and will not conflict with other services
+- Writes and enables `seafile-env-sync` as a systemd service (script and unit file are embedded in the installer)
+
+**What it will not do:**
+- Touch any existing Docker containers, networks, or volumes
+- Modify any existing systemd services
+- Change any existing fstab entries other than appending the new NFS line
+
+The main risks on a shared host are the `apt-get upgrade` step and port conflicts. Two ports are used by this stack on the host:
+
+| Port | Service | Configurable? |
+|---|---|---|
+| `7080` | Caddy (external proxy target) | Yes -- set `CADDY_PORT` in `.env` |
+| `9001` | Portainer Agent | No -- hardcoded in the agent run command |
+
+Check for conflicts before running:
+```bash
+ss -tlnp | grep -E "7080|9001"
+```
+
+If port 7080 is in use, change `CADDY_PORT` in `/opt/seafile/.env` to a free port before running the script. You will also need to update the port in your reverse proxy config.
+
+If port 9001 is in use, the Portainer Agent step will fail. You can either free the port or install the agent manually with a different port:
+```bash
+docker run -d -p YOUR_FREE_PORT:9001 --name portainer_agent --restart=always \
+  -v /var/run/docker.sock:/var/run/docker.sock \
+  -v /var/lib/docker/volumes:/var/lib/docker/volumes \
+  portainer/agent:latest
+```
+Then add the environment in Portainer using `YOUR_VM_IP:YOUR_FREE_PORT`.
+
+</details>
+
+---
+
+### Reverse Proxy - Traefik, Caddy, or Others
+
+Any reverse proxy that supports WebSocket passthrough works in place of Nginx Proxy Manager. The requirements for Step 7 are: forward traffic to port `7080` on the Docker host (or whatever `CADDY_PORT` is set to); pass `Host`, `X-Real-IP`, `X-Forwarded-For`, and `X-Forwarded-Proto: https` headers; support WebSocket upgrades; no upload size limit; and a read timeout of at least 1200s.
+
+**Traefik** -- Traefik labels are built into `src/docker-compose.yml` and controlled by `.env`. To enable:
+
+```bash
+# In /opt/seafile/.env:
+TRAEFIK_ENABLED=true
+TRAEFIK_ENTRYPOINT=websecure      # must match your Traefik config
+TRAEFIK_CERTRESOLVER=letsencrypt  # must match your Traefik config
+```
+
+Traefik will automatically route traffic for `SEAFILE_SERVER_HOSTNAME` to the `seafile-caddy` container. The `seafile-caddy` container must be on a network that Traefik can reach -- if Traefik uses an external Docker network, add it to the `caddy` service in `docker-compose.yml`.
+
+See `config/proxy-traefik.yml` for the full label reference and inline documentation.
+
+**Caddy as external proxy** -- see `config/proxy-caddy.conf` for the template. Run `seafile proxy-config` for the required forwarding details. Caddy handles WebSocket upgrades, timeouts, and SSL automatically.
+
+**NPM** -- run `seafile proxy-config` on the host to get the complete config with your IP and port filled in. Paste the output into the Advanced tab of your proxy host in NPM.
+
+---
+
+### Storage - Local Disk
+
+Local disk is a first-class option — set `STORAGE_TYPE=local` in `.env`. The installer will create `SEAFILE_VOLUME` as a plain local directory and skip all network mount steps.
+
+Be aware that local storage is tied to the VM. If the VM is lost, so is your data — Recovery Mode will refuse to run with `STORAGE_TYPE=local`. Local mode is suitable for testing or for single-machine setups where you accept that tradeoff. See the [Seafile backup guide](https://manual.seafile.com/13.0/administration/backup_recovery/) for backing up your actual data.
+
+---
+
+### Storage - Cloud VM and S3-Compatible Object Storage
+
+Seafile supports S3-compatible backends (AWS S3, Backblaze B2, MinIO, Hetzner Object Storage, etc.) instead of a local or NFS volume. Good fit for cloud-hosted VMs. See the [Seafile S3 storage backend docs](https://manual.seafile.com/13.0/administration/setup_with_s3/). The Caddy routing, config scripts, and the rest of this deployment remain the same.
+
+---
+
+### OS - Using a Pre-built Debian Image
+
+If your hypervisor provides a Debian 13 cloud image or template (Proxmox helper scripts, Hetzner, DigitalOcean, etc.), skip Step 2 entirely. Just ensure it is Debian 13 (Trixie) 64-bit with root or sudo access and `curl` installed. Run `seafile-deploy.sh` directly after provisioning.
+
+---
+
+### Bulk-enable Extended Properties via API
+
+The recommended way to enable Extended Properties across all libraries is the CLI command:
+
+```bash
+seafile metadata --enable-all
+```
+
+This is run automatically during setup and recovery. For custom automation or scripted deployments, the underlying API calls are shown below for reference:
+
+```bash
+# Get an auth token
+TOKEN=$(curl -s -d "username=YOUR_ADMIN_EMAIL&password=YOUR_ADMIN_PASSWORD" \
+  https://seafile.yourdomain.com/api2/auth-token/ \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['token'])")
+
+# Enable metadata for every library
+curl -s -H "Authorization: Token $TOKEN" \
+  "https://seafile.yourdomain.com/api/v2.1/repos/?type=admin" \
+  | python3 -c "import sys,json; [print(r['id']) for r in json.load(sys.stdin)['repos']]" | while read REPO_ID; do
+  curl -s -X PUT -H "Authorization: Token $TOKEN" \
+    -H "Content-Type: application/json" \
+    -d '{"enabled": true}' \
+    "https://seafile.yourdomain.com/api/v2.1/repos/$REPO_ID/metadata/"
+  echo "Enabled: $REPO_ID"
+done
+```
+
+See the [Seafile Web API docs](https://manual.seafile.com/13.0/develop/web_api_v2.1/).
+
+---
+
+## Troubleshooting
+
+<details>
+<summary>Collabora won't open documents</summary>
+
+- Confirm `OFFICE_WEB_APP_BASE_URL` in `seahub_settings.py` matches your public domain
+- Check that `COLLABORA_ALIAS_GROUP` was auto-generated correctly (should be `https://your\.domain\.com:443` with escaped dots). If your hostname changed after initial setup, re-run `seafile fix` to regenerate it.
+- Do NOT manually add `Upgrade`/`Connection` headers in Caddy's Collabora blocks -- Caddy handles WebSocket natively and these will break it
+- Check Collabora logs: `docker logs seafile-collabora 2>&1 | tail -30`
+
+</details>
+
+<details>
+<summary>SeaDoc shows "server disconnected"</summary>
+
+- Confirm the `/socket.io/*` block is in the Caddyfile
+- If using NPM, confirm WebSocket headers are present — run `seafile proxy-config` for the correct config
+- Run `docker restart seafile-caddy` after any Caddyfile change
+
+</details>
+
+<details>
+<summary>Extended Properties toggle not showing</summary>
+
+- Confirm `[METADATA] enabled = true` is in `seafevents.conf`
+- Confirm `[REDIS]` section is in `seafevents.conf`
+- Run: `docker logs seafile 2>&1 | grep -i "redis\|metadata"`
+
+</details>
+
+<details>
+<summary>Thumbnails not generating</summary>
+
+- Run: `docker logs thumbnail-server | grep -i error`
+- Confirm volume mounts in `docker-compose.yml` match your `SEAFILE_VOLUME`
+
+</details>
+
+<details>
+<summary>NFS not mounting on boot</summary>
+
+- Confirm `_netdev` and `x-systemd.automount` are in the `/etc/fstab` options
+- Run `systemctl daemon-reload && mount -a` after any fstab change
+
+</details>
+
+<details>
+<summary>Changing storage settings after deployment</summary>
+
+Update the relevant storage variables in `/opt/seafile/.env` (e.g. `NFS_SERVER`, `SMB_SERVER`, `GLUSTER_SERVER`, `ISCSI_PORTAL`, `SEAFILE_VOLUME`, or the corresponding `*_OPTIONS` variable), then unmount the share and remove the old fstab entry manually:
+
+```bash
+umount /mnt/seafile_nfs   # use your current SEAFILE_VOLUME value
+nano /etc/fstab           # delete the old storage mount line
+```
+
+Then run `sudo bash /opt/update.sh` to re-apply the new settings.
+
+</details>
+
+<details>
+<summary>Cannot connect to database / seafile container keeps restarting on first deploy</summary>
+
+This is almost always one of three causes: the database server is not accepting remote connections, the root password is wrong or unset, or the `seafile` DB user was not granted access from the correct subnet. Work through these in order.
+
+First, confirm the port is reachable from the Seafile VM:
+```bash
+nc -zv YOUR_DB_IP 3306
+```
+
+If this fails the database is not listening for remote connections. Return to **Step 3 - Allow remote connections** and check:
+- `bind-address` is `0.0.0.0` in the server config (bare Debian / Docker custom config)
+- The port is published on the host (Docker container deployments)
+- Firewall rules permit TCP 3306 from the Seafile VM's IP (Synology, `ufw`, `iptables`)
+- `SEAFILE_MYSQL_DB_HOST` in `.env` matches the actual IP of the database host
+
+If `nc` succeeds, test authentication:
+```bash
+# Root -- used only on first boot to init or verify databases
+mysql -h YOUR_DB_IP -u root -p
+
+# Seafile user -- used for all subsequent connections
+mysql -h YOUR_DB_IP -u seafile -p
+```
+
+If root auth fails, check that `INIT_SEAFILE_MYSQL_ROOT_PASSWORD` in `.env` matches what is set on the server. If root was using `unix_socket` auth, see **Step 3 - Verify the root password is set**.
+
+If the `seafile` user auth fails, the grant was either not run or used the wrong subnet. Verify on the database server as root:
+```sql
+SHOW GRANTS FOR 'seafile'@'192.168.x.%';
+```
+If the user does not exist or the subnet is wrong, re-run the `CREATE USER` and `GRANT` statements from Step 3 with the correct subnet, then `FLUSH PRIVILEGES`.
+
+Finally, check the seafile container logs for the specific error message:
+```bash
+docker logs seafile 2>&1 | grep -i "mysql\|database\|connect\|error" | tail -30
+```
+
+</details>
+
+<details>
+<summary>Stack deploys but Seafile is inaccessible / returns 502</summary>
+
+Usually an initialisation delay or a proxy misconfiguration.
+- The seafile container may still be initialising -- wait 60-90 seconds and try again
+- Check: `docker logs seafile 2>&1 | tail -50` for startup errors
+- Confirm Caddy is running: `docker ps | grep caddy`
+- Confirm your NPM proxy host is pointing to the correct IP and the correct port (`CADDY_PORT` in `.env`, default `7080`)
+
+</details>
+
+<details>
+<summary>File uploads fail or time out</summary>
+
+- If using NPM, confirm the advanced config is correct — run `seafile proxy-config` for a ready-to-paste version with correct timeouts and size limits
+- Confirm `timeout = 1200` is in `gunicorn.conf.py` (applied by `seafile-config-fixes.sh`)
+
+</details>
+
+<details>
+<summary>Cannot log in after running seafile-config-fixes.sh</summary>
+
+- The script preserves the existing `SECRET_KEY` if one is found -- if the key was somehow changed, existing sessions will be invalidated and users will need to log in again
+- This is normal and not a sign of data loss
+
+</details>
+
+<details>
+<summary>Containers keep restarting</summary>
+
+Check the affected container's logs first -- the error message there will identify the cause.
+- Check logs for the affected container: `docker logs CONTAINER_NAME 2>&1 | tail -50`
+- Common causes: network share not mounted, missing `JWT_PRIVATE_KEY` in `.env`, or database connectivity issues (see "Cannot connect to database" above)
+- Confirm the storage share is mounted: `mountpoint -q /mnt/seafile_nfs && echo "mounted" || echo "NOT mounted"`
+
+</details>
+
+<details>
+<summary>Portainer Agent not visible from Portainer server</summary>
+
+- Confirm port 9001 is not blocked by a firewall on the Docker host
+- Check the agent is running: `docker ps | grep portainer_agent`
+- Confirm you are entering the agent URL as `IP:9001` not `https://IP:9001` -- the agent connection does not use HTTPS in this setup
+
+</details>
+
+<details>
+<summary>.env not restored after VM rebuild</summary>
+
+- For VM rebuilds, always use `seafile-deploy.sh` → Recovery Mode (option 2) rather than Fresh Install -- Recovery Mode is designed specifically for this scenario and handles `.env` restoration automatically before anything else runs
+- If recovery cannot find the storage backup: `ls -la /mnt/seafile_nfs/.env`
+- If the storage backup is also missing, recreate `/opt/seafile/.env` manually from the repo template and run `seafile-deploy.sh` → Fresh Install as if it were a new deployment
+- To check sync service status after recovery: `journalctl -u seafile-env-sync -n 50`
+
+</details>
+
+<details>
+<summary>TIME_ZONE shows wrong timestamps in Seafile</summary>
+
+- `TIME_ZONE` in `/opt/seafile/.env` is what controls the timezone -- update it there, not directly in `seahub_settings.py`
+- After editing `.env`, run: `sudo bash /opt/update.sh`
+- Find your timezone value at the [tz database list](https://en.wikipedia.org/wiki/List_of_tz_database_time_zones)
+- If you edited `seahub_settings.py` directly in a previous attempt, running `update.sh` will overwrite it with the correct value from `.env`
+
+</details>
+
+<details>
+<summary>Database migration fails or hangs</summary>
+
+- Ensure the external database server is accessible from this VM: `nc -zv DB_HOST 3306`
+- Verify root credentials work: `mysql -h DB_HOST -u root -p -e "SELECT 1"`
+- Check that all three databases exist: `ccnet_db`, `seafile_db`, `seahub_db`
+- If import fails partway through, the dump file is retained at `/tmp/seafile_db_migration_*.sql` — you can manually import it after fixing the issue
+- Check Docker logs: `docker logs seafile-db 2>&1 | tail -30`
+
+</details>
+
+<details>
+<summary>Storage migration not progressing</summary>
+
+- Check the sync service status: `systemctl status seafile-storage-sync`
+- View sync logs: `journalctl -u seafile-storage-sync -f`
+- Verify source mount is accessible: `ls ${SOURCE_MOUNT}/seafile/`
+- Verify target mount is accessible: `ls ${TARGET_MOUNT}/`
+- Check migration state: `cat /opt/seafile/.storage-migration.conf`
+- To cancel and start fresh: `seafile config storage --cancel`
+
+</details>
+
+---
+
+## Developer Guide
+
+This section is for anyone modifying or extending this deployment. If you are just using it, you can safely skip everything here.
+
+### Repository structure
+
+```
+seafile-deploy/
+├── seafile-deploy.sh                     # GENERATED — the only file a user needs
+├── README.md
+├── web-config-abstract.md                # Future: web config editor design doc
+├── src/                                  # Source files — EDIT THESE
+│   ├── .env.template                     # Canonical environment template
+│   ├── docker-compose.yml                # Stack definition (source of truth)
+│   ├── Caddyfile                         # Reference placeholder (generated dynamically)
+│   ├── shared-lib.sh                     # Shared functions, defaults, helpers
+│   ├── deploy-header.sh                  # Splash screen, mode selection
+│   ├── deploy-footer.sh                  # Secret generation, preflight, main loop
+│   ├── guided-setup.sh                   # Interactive wizard for Fresh Install
+│   ├── setup.template.sh                 # Unified setup (install + recover)
+│   └── update.template.sh               # Template for update.sh
+├── scripts/                              # Build tools and source components
+│   ├── build.sh                          # Processes templates, assembles output
+│   ├── seafile-config-fixes.sh           # Embedded into setup.sh
+│   ├── seafile-cli.sh                    # Deployed to /usr/local/bin/seafile
+│   ├── env-sync/                         # .env sync + config history + Portainer webhook
+│   ├── config-git-server/                # Local git HTTP server for Portainer
+│   ├── storage-sync/                     # Storage migration rsync
+│   ├── gitops/                           # GitOps webhook handler
+│   └── recovery-finalize/                # Recovery finalizer
+└── config/                               # Reference configs and proxy snippets
+```
+
+### Host file structure (after deployment)
+
+<a id="host-file-structure"></a>
+
+After `seafile-deploy.sh` → Fresh Install completes, all files are placed automatically. This covers both the local host and the network share.
+
+**Local host (`/opt/`):**
+
+```
+/opt/
+├── seafile/
+│   ├── .env                          # Active configuration (source of truth)
+│   ├── .env.snapshot                 # Snapshot for diff comparison
+│   ├── .config-history/              # Local git repo (config versioning)
+│   │   ├── .env                      # Tracked copy
+│   │   ├── docker-compose.yml        # Tracked copy
+│   │   ├── seafile-config-fixes.sh   # Tracked copy
+│   │   └── update.sh                 # Tracked copy
+│   ├── docker-compose.yml            # Stack definition
+│   ├── seafile-env-sync.sh           # .env sync + history + Portainer webhook
+│   ├── seafile-config-server.sh      # Git HTTP server (Portainer integration)
+│   ├── seafile-gitops-sync.py        # GitOps webhook listener (if enabled)
+│   └── seafile_storage_classes.json  # Multi-backend config (if enabled)
+├── seafile-caddy/
+│   ├── Caddyfile                     # Generated internal proxy config
+│   ├── data/                         # Caddy TLS certificates
+│   └── config/                       # Caddy runtime config
+├── seafile-config-fixes.sh           # Config file generator
+├── update.sh                         # Update tool
+├── seafile-thumbnails/               # Thumbnail cache (rebuilds on demand)
+├── seafile-metadata/                 # Metadata index (rebuilds on demand)
+├── seafile-db/                       # MariaDB data (DB_INTERNAL=true only)
+├── seadoc-data/                      # SeaDoc persistent data
+└── seafile-gitops/                   # GitOps repo clone (if enabled)
+
+/usr/local/bin/seafile                # CLI tool
+/etc/systemd/system/seafile-*.service # Background services
+```
+
+**Network share (`${SEAFILE_VOLUME}`, default `/mnt/seafile_nfs/`):**
+
+```
+${SEAFILE_VOLUME}/
+├── .env                              # Backup copy (synced by env-sync)
+├── seafile-config-fixes.sh           # Backup copy (written by config-fixes)
+├── update.sh                         # Backup copy (written by update.sh)
+├── seafile_storage_classes.json      # Multi-backend config (if enabled)
+├── db-backup/                        # Nightly database snapshots
+│   ├── ccnet_db_YYYYMMDD_HHMMSS.sql.gz
+│   ├── seafile_db_YYYYMMDD_HHMMSS.sql.gz
+│   └── seahub_db_YYYYMMDD_HHMMSS.sql.gz
+└── seafile/                          # Seafile application data
+    ├── conf/                         # Generated config files
+    │   ├── seahub_settings.py
+    │   ├── seafile.conf
+    │   ├── seafevents.conf
+    │   ├── seafdav.conf
+    │   └── gunicorn.conf.py
+    ├── seafile-data/                 # User file data (block storage)
+    │   └── storage/                  # Multi-backend subdirectories
+    │       ├── commits/
+    │       ├── fs/
+    │       └── blocks/
+    └── logs/                         # Seafile application logs
+```
+
+The network share holds everything needed for disaster recovery: the `.env` backup, script backups, database snapshots, configuration files, and all user data. The local host holds runtime state (Docker, caches, metadata index) that can be fully regenerated from the share.
+### The build system
+
+This repo uses a **template system** to prevent drift between source files and their embedded copies. Multiple scripts embed the same content (e.g., `docker-compose.yml` appears in both `setup.sh` and `update.sh`). Without automation, these copies would inevitably diverge.
+
+**How it works:**
+
+1. Templates (`src/*.template.sh`) contain `{{EMBED:path}}` markers where file contents should be inserted
+2. `build.sh` processes templates, replacing each marker with the actual file contents
+3. The assembled scripts are written to `scripts/` and the repo root
+
+**Processing order:**
+
+```
+1. src/shared-lib.sh               → (processed in-memory, {{ENV_TEMPLATE}} resolved)
+
+2. src/update.template.sh          → scripts/update.sh
+   └── embeds: src/shared-lib.sh, src/docker-compose.yml
+
+3. src/setup.template.sh           → scripts/setup.sh
+   └── embeds: src/shared-lib.sh, src/Caddyfile
+               scripts/seafile-config-fixes.sh
+               scripts/update.sh (already processed)
+               scripts/env-sync/seafile-env-sync.sh
+               scripts/storage-sync/*
+               scripts/seafile-cli.sh
+               src/docker-compose.yml
+               scripts/recovery-finalize/seafile-recovery-finalize.sh
+               scripts/gitops/seafile-gitops-sync.py
+
+4. Assemble seafile-deploy.sh (repo root) from:
+   └── src/deploy-header.sh
+       src/shared-lib.sh (at global scope)
+       src/guided-setup.sh (at global scope)
+       scripts/setup.sh (inside extract_setup heredoc)
+       src/deploy-footer.sh
+```
+
+### Developer workflow
+
+**Edit source files, not generated files.** The generated files will be overwritten on the next build.
+
+```bash
+# 1. Edit the source file(s)
+#    For embedded content (docker-compose.yml, Caddyfile, etc.):
+nano src/docker-compose.yml
+nano src/Caddyfile
+nano scripts/seafile-config-fixes.sh
+
+#    For template logic:
+nano src/setup.template.sh
+
+#    For wrapper logic:
+nano src/deploy-header.sh
+
+# 2. Rebuild all generated files
+./scripts/build.sh
+
+# 3. Verify the output
+./scripts/build.sh --verify
+
+# 4. Commit BOTH source files AND generated files
+git add src/docker-compose.yml scripts/setup.sh seafile-deploy.sh
+git commit -m "feat: description of change"
+```
+
+The `--verify` flag runs syntax checks on all generated bash scripts and confirms all `{{EMBED:...}}` markers were processed.
+
+### Docker Compose profiles
+
+Optional containers (`seafile-collabora`, `seafile-onlyoffice`, `seafile-clamav`, `seafile-db`) use Docker Compose profiles so they are only started when active. Profiles are **never set manually** — both the template and generated scripts compute `COMPOSE_PROFILES` from `.env` before every `docker compose up` call via the `_compute_profiles()` function:
+
+```bash
+_compute_profiles() {
+  local _profiles=()
+  case "${OFFICE_SUITE:-collabora}" in
+    onlyoffice) _profiles+=(onlyoffice) ;;
+    none)       ;;
+    *)          _profiles+=(collabora)  ;;
+  esac
+  [[ "${CLAMAV_ENABLED:-false}" == "true" ]] && _profiles+=(clamav)
+  [[ "${DB_INTERNAL:-true}"    == "true" ]] && _profiles+=(internal-db)
+  export COMPOSE_PROFILES
+  COMPOSE_PROFILES=$(IFS=','; echo "${_profiles[*]}")
+}
+```
+
+If you add a new profile-gated service, add it to `_compute_profiles()` in `src/shared-lib.sh`, then rebuild.
+
+### Config file architecture
+
+**`seafile-config-fixes.sh` is the single source of truth** for Seafile config file generation. It handles all `.env` conditionals (OFFICE_SUITE, SMTP, LDAP, ClamAV, WebDAV, user quotas, 2FA, guest access, etc.) and restarts containers with a dynamic list.
+
+**`update.sh` delegates to `seafile-config-fixes.sh`** rather than duplicating config logic. This prevents drift and ensures that adding a new `.env` conditional in one place makes it work everywhere.
+
+**`shared-lib.sh` is the single source of truth** for default values, DO NOT CHANGE lists, helper functions, .env normalization, secret writing, and the interactive phase menu. Every generated script embeds it, so a change in one place propagates everywhere on the next build.
+
+The flow is:
+```
+seafile update (user command)
+    └── update.sh
+          ├── shared-lib.sh (embedded: defaults, normalize, helpers)
+          ├── Validates .env
+          ├── Pulls updated images
+          ├── Calls seafile-config-fixes.sh --yes
+          │     └── Writes config files (seahub_settings.py, etc.)
+          │     └── Restarts containers (dynamic list)
+          ├── Writes docker-compose.yml
+          └── Runs docker compose up -d (profile changes)
+```
+
+When adding new config logic, **only modify `scripts/seafile-config-fixes.sh`** — `update.sh` will pick it up automatically.
+
+### Adding a new optional feature
+
+The pattern is:
+
+1. Add the variables to `src/.env.template` with sensible defaults and clear comments
+2. Add the default value to the `_DEFAULTS` array in `src/shared-lib.sh`
+3. Add the conditional config block to `scripts/seafile-config-fixes.sh`
+4. If it requires a new container, add the service to `src/docker-compose.yml` with a profile, and add the profile to `_compute_profiles()` in `src/shared-lib.sh`
+5. If it affects the CLI (`seafile status`, `seafile ping`, active container list), update `scripts/seafile-cli.sh`
+6. Add the variable to the Environment Variable Reference in `README.md`
+7. Run `./scripts/build.sh` to regenerate all scripts
+
+**Structural choices (DB, proxy type) follow the same pattern** but also affect template validation logic, `src/deploy-footer.sh` secret generation, and the README installation steps. Changes to these should be treated as multi-file changes and tested end-to-end.
+
+### Testing changes
+
+There is no automated test suite. Manual testing checklist:
+
+- Verify `./scripts/build.sh --verify` passes
+- Fresh install with `STORAGE_TYPE=local` (fastest iteration loop)
+- Verify `bash -n scripts/*` (syntax check) passes for all generated scripts
+- Verify the new `.env` variable appears in `seafile-deploy.sh`'s interactive prompts if user-facing
+- Test the feature with its flag set to both `true` and `false`
+
+---
+
+### Future functionality
+
+Planned features and design notes for future development.
+
+#### Level 2 Multi-Backend Storage (physical separation)
+
+The current multi-backend implementation (Level 1) uses logical storage classes on a single physical storage mount. All backends point to `/shared/seafile-data` inside the container — Seafile separates data by storage_id in subdirectories, but everything lives on the same NFS/SMB share.
+
+Level 2 would enable physically separate storage backends — different NAS devices, different shares, or different storage types per backend. This requires changes across several layers:
+
+**Docker Compose volume mounts.** The seafile container currently has one volume: `${SEAFILE_VOLUME}:/shared`. For physical separation, each backend needs its own mount. Pre-provision 3 additional slots with defaults that fall back to SEAFILE_VOLUME (harmless when unused):
+
+```yaml
+volumes:
+  - ${SEAFILE_VOLUME:-/opt/seafile-data}:/shared
+  - ${BACKEND_2_MOUNT:-${SEAFILE_VOLUME:-/opt/seafile-data}}:/backend_2_data
+  - ${BACKEND_3_MOUNT:-${SEAFILE_VOLUME:-/opt/seafile-data}}:/backend_3_data
+  - ${BACKEND_4_MOUNT:-${SEAFILE_VOLUME:-/opt/seafile-data}}:/backend_4_data
+```
+
+The thumbnail-server and metadata-server also need read access — add the same mounts to those services.
+
+**Host mount infrastructure.** `_mount_storage()` in setup.template.sh currently handles one mount point. For Level 2, it needs to be called once per physical backend, reading credentials from `BACKEND_N_*` variables. The `_mount_storage` function would need a parameter to specify which variable prefix to read from (e.g., `_mount_storage "$BACKEND_2_MOUNT" "BACKEND_2"`).
+
+**storage_classes.json generation.** Config-fixes would map each backend to its container-internal mount path instead of always using `/shared/seafile-data`:
+
+```json
+{
+  "storage_id": "archive",
+  "dir": "/backend_2_data/seafile-data"
+}
+```
+
+**Recovery path.** Every physical backend must be remounted during recovery. The recovery prompt would need to ask for credentials for each backend, or restore them from the `.env` backup on the primary share. This is the most complex part — mounting the wrong backend during recovery could cause data corruption.
+
+**Migration between physical backends.** The existing storage migration CLI (`seafile config storage → Migrate`) handles single-backend migration. For Level 2, migration between physical backends within a multi-backend setup would use Seafile's built-in `migrate-repo.sh` script rather than rsync. The CLI would need a wrapper that handles the Seafile-level migration.
+
+**Estimated effort:** 300-400 lines of code across docker-compose.yml, setup.template.sh, config-fixes, CLI, and recovery-finalize. Requires thorough testing with actual multi-NAS setups. Recommend a dedicated implementation cycle rather than inclusion in a broader refactor.
+
+#### Web Configuration Interface
+
+A lightweight web-based config editor that eliminates SSH for routine .env changes. Would run as a profile-gated container (`seafile-config-ui`) serving a form-based editor at a URL like `https://seafile.example.com/admin/config`. The editor writes to `.env` and the existing env-sync pipeline handles propagation (storage backup, config history, Portainer webhook). Estimated at ~760 lines of code (FastAPI backend + vanilla HTML frontend) and 4-6 days of implementation. See `web-config-abstract.md` in the repository root for the full design document covering architecture, security model, UX design, and integration points.
+
+This feature would enable a fourth deployment mode ("Web-managed") that provides genuine browser-based configuration management — the use case that Portainer-managed mode was intended to serve but cannot deliver due to the config generation layer (see below).
+
+#### True Portainer-Managed Configuration
+
+The current Portainer integration lets Portainer manage the stack lifecycle (deploy/redeploy) but not configuration. Editing env vars in Portainer's UI and clicking redeploy does not work because Seafile reads most settings from generated config files (`seahub_settings.py`, `seafile.conf`, etc.), not directly from environment variables. The config generation layer (`config-fixes`) must run after every `.env` change to regenerate these files.
+
+A bridge container approach was investigated: a sidecar that detects when Portainer injects new env vars, writes them back to `.env` on the host, and triggers config-fixes. This is technically possible but produces a degraded experience — every change triggers two full stack restarts (once by Portainer, once by config-fixes) with a confusing intermediate state where env vars and config files are mismatched.
+
+The cleaner solution is the Web Configuration Interface described above, which is purpose-built for this project's architecture. It understands the config generation layer, writes to `.env` correctly, and can trigger config-fixes directly for a single-restart experience. If implemented, it would replace the need for Portainer-based configuration entirely while still allowing Portainer to handle monitoring and stack lifecycle.
+
+---
+
+## References
+
+- [Seafile 13 Admin Manual](https://manual.seafile.com/13.0/)
+- [Docker Install on Debian](https://docs.docker.com/engine/install/debian/)
+- [Collabora Online Docker image](https://sdk.collaboraonline.com/docs/installation/CODE_Docker_image.html)
+- [Portainer Agent docs](https://docs.portainer.io/admin/environments/add/docker/agent)
+- [SeaDoc Integration](https://manual.seafile.com/13.0/extension/setup_seadoc/)
+- [Metadata Server](https://manual.seafile.com/13.0/extension/metadata-server/)
+- [Thumbnail Server](https://manual.seafile.com/13.0/extension/thumbnail-server/)
+- [Notification Server](https://manual.seafile.com/13.0/extension/notification-server/)
+
+---
+
+## Environment Variable Reference
+
+A complete reference for every variable in `.env`. All optional features default to off — enable what you need and run `seafile fix` (or `seafile update` for a full reconcile).
+
+---
+
+### Required — Network Storage
+
+| Variable | What to enter |
+|---|---|
+| `STORAGE_TYPE` | `nfs` \| `smb` \| `glusterfs` \| `iscsi` \| `local` |
+| `NFS_SERVER` | IP or hostname of your NFS server |
+| `NFS_EXPORT` | Export path on the NFS server (e.g. `/volume1/seafile`) |
+| `SMB_SERVER` | IP or hostname of the SMB server |
+| `SMB_SHARE` | Share name (not a full path) |
+| `SMB_USERNAME` | Username with read/write access to the share |
+| `SMB_PASSWORD` | Password — stored in `/etc/seafile-smb-credentials` (chmod 600) |
+| `SMB_DOMAIN` | Windows domain (leave blank for workgroup/local) |
+| `GLUSTER_SERVER` | IP of any GlusterFS peer node |
+| `GLUSTER_VOLUME` | GlusterFS volume name |
+| `ISCSI_PORTAL` | Portal address and port (e.g. `10.0.0.5:3260`) |
+| `ISCSI_TARGET_IQN` | iSCSI Qualified Name of the target |
+| `ISCSI_FILESYSTEM` | Filesystem — used on first deploy only to format the device. Leave as `ext4` |
+| `ISCSI_CHAP_USERNAME` | CHAP username (leave blank to disable) |
+| `ISCSI_CHAP_PASSWORD` | CHAP password — generated automatically if left blank |
+
+---
+
+### Required — Server
+
+| Variable | What to enter |
+|---|---|
+| `SEAFILE_SERVER_HOSTNAME` | Your public domain (e.g. `seafile.yourdomain.com`) |
+| `SEAFILE_SERVER_PROTOCOL` | `https` for all standard deployments |
+
+---
+
+### Database
+
+| Variable | Default | Notes |
+|---|---|---|
+| `DB_INTERNAL` | `true` | `true` = bundled MariaDB container. `false` = connect to an external server (complete Step 3 first). |
+| `DB_INTERNAL_VOLUME` | `/opt/seafile-db` | Data path for the bundled MariaDB container. Set to a subdirectory of `SEAFILE_VOLUME` for full disaster recovery. |
+| `DB_INTERNAL_IMAGE` | `mariadb:10.11` | MariaDB image tag for the bundled container. |
+| `SEAFILE_MYSQL_DB_HOST` | *(auto-set)* | Auto-set to `seafile-db` when `DB_INTERNAL=true`. Set to your external server IP/hostname when `DB_INTERNAL=false`. |
+| `SEAFILE_MYSQL_DB_PASSWORD` | *(auto-generated)* | Auto-generated when `DB_INTERNAL=true` and blank. Set manually when `DB_INTERNAL=false`. |
+| `INIT_SEAFILE_MYSQL_ROOT_PASSWORD` | *(auto-generated)* | Auto-generated when `DB_INTERNAL=true` and blank. Set manually when `DB_INTERNAL=false`. Cleared automatically after first deploy. |
+| `SEAFILE_MYSQL_DB_USER` | `seafile` | Database username. Change only if you used a different name in Step 3. |
+| `SEAFILE_MYSQL_DB_PORT` | `3306` | Database port. Change only if your server uses a non-standard port. |
+
+---
+
+### Required — Auth
+
+| Variable | What to enter |
+|---|---|
+| `JWT_PRIVATE_KEY` | Secret key for signing service tokens — generated automatically if left blank |
+
+---
+
+### Required — Initial Admin Account
+
+| Variable | What to enter |
+|---|---|
+| `INIT_SEAFILE_ADMIN_EMAIL` | Email address for the first admin account |
+| `INIT_SEAFILE_ADMIN_PASSWORD` | Initial admin password (change via UI after first login) |
+
+---
+
+### Optional — Office Suite
+
+| Variable | Default | Notes |
+|---|---|---|
+| `OFFICE_SUITE` | `collabora` | `collabora` or `onlyoffice`. Changing this and running `seafile update` switches suites. |
+| `COLLABORA_IMAGE` | `collabora/code:25.04.8.1.1` | Collabora image tag |
+| `ONLYOFFICE_PORT` | `6233` | Port OnlyOffice exposes on the Docker host |
+| `ONLYOFFICE_VOLUME` | `/opt/onlyoffice` | Local path for OnlyOffice persistent data |
+| `ONLYOFFICE_IMAGE` | `onlyoffice/documentserver:8.1.0.1` | OnlyOffice image tag |
+
+**Auto-generated credentials (no action required):**
+
+| Variable | Generated Value | Notes |
+|---|---|---|
+| `COLLABORA_ADMIN_USER` | `admin` | Collabora admin console username |
+| `COLLABORA_ADMIN_PASSWORD` | random | Collabora admin console password |
+| `COLLABORA_ALIAS_GROUP` | derived from hostname | WOPI host with escaped dots (e.g., `https://seafile\.example\.com:443`) |
+| `ONLYOFFICE_JWT_SECRET` | random | JWT secret for OnlyOffice API authentication |
+
+All credentials for both office suites are generated on first boot, regardless of which suite you choose. This means you can switch between Collabora and OnlyOffice at any time without needing to generate new secrets.
+
+---
+
+### Optional — Antivirus (ClamAV)
+
+| Variable | Default | Notes |
+|---|---|---|
+| `CLAMAV_ENABLED` | `false` | `true` adds the `seafile-clamav` container. First start takes 5–15 min (definition download). |
+| `CLAMAV_IMAGE` | `clamav/clamav:stable` | ClamAV image tag |
+
+---
+
+### Optional — Email / SMTP
+
+| Variable | Default | Notes |
+|---|---|---|
+| `SMTP_ENABLED` | `true` | Enables outbound email. Set to `false` to disable — Seafile works without SMTP but users cannot reset passwords by email. |
+| `SMTP_HOST` | — | SMTP server hostname |
+| `SMTP_PORT` | `465` | Common values: 465 (SSL), 587 (STARTTLS), 25 (plain — not recommended) |
+| `SMTP_USE_TLS` | `true` | |
+| `SMTP_USER` | — | SMTP username |
+| `SMTP_PASSWORD` | — | SMTP password |
+| `SMTP_FROM` | — | From address shown to recipients (e.g. `noreply@yourdomain.com`) |
+
+---
+
+### Optional — User & Library Settings
+
+| Variable | Default | Notes |
+|---|---|---|
+| `DEFAULT_USER_QUOTA_GB` | `0` | Default storage quota per user in GB. `0` = unlimited |
+| `MAX_UPLOAD_SIZE_MB` | `0` | Maximum upload size in MB. `0` = unlimited. Also scales gunicorn timeout. |
+| `TRASH_CLEAN_AFTER_DAYS` | `30` | Days before trash is permanently deleted. `0` = never. |
+| `FORCE_2FA` | `false` | Force all users to enable 2FA on next login |
+| `ENABLE_GUEST` | `false` | Allow guest (read-only external sharing) accounts |
+
+---
+
+### Optional — WebDAV
+
+| Variable | Default | Notes |
+|---|---|---|
+| `SEAFDAV_ENABLED` | `false` | Enables WebDAV at `https://yourdomain.com/seafdav`. LDAP users need a WebDAV token. |
+
+---
+
+### Optional — LDAP / Active Directory
+
+| Variable | Default | Notes |
+|---|---|---|
+| `LDAP_ENABLED` | `false` | Enable LDAP authentication |
+| `LDAP_URL` | — | Full server URL (e.g. `ldap://192.168.1.10` or `ldaps://ad.example.com`) |
+| `LDAP_BIND_DN` | — | Service account DN for directory searches |
+| `LDAP_BIND_PASSWORD` | — | Password for the bind DN |
+| `LDAP_BASE_DN` | — | Base DN to search for users |
+| `LDAP_LOGIN_ATTR` | `mail` | Attribute users log in with. Use `sAMAccountName` for Active Directory. |
+| `LDAP_FILTER` | — | Optional search filter (e.g. `(memberOf=CN=seafile-users,...)`) |
+
+---
+
+### Optional — Garbage Collection
+
+| Variable | Default | Notes |
+|---|---|---|
+| `GC_ENABLED` | `true` | Writes a cron job and logrotate entry. Run `seafile gc --status` to check. |
+| `GC_SCHEDULE` | `0 3 * * 0` | Cron schedule — default is weekly, Sunday 3am |
+| `GC_REMOVE_DELETED` | `true` | Also remove blocks from fully-deleted libraries (`-r` flag). Recommended. |
+| `GC_DRY_RUN` | `false` | Log what would be collected without removing. Set to `true` to audit first. |
+
+---
+
+### Optional — Backup
+
+| Variable | Default | Notes |
+|---|---|---|
+| `BACKUP_ENABLED` | `false` | Full offsite backup: rsyncs `SEAFILE_VOLUME` + dumps all databases to `BACKUP_DEST`. When `DB_INTERNAL=true`, a separate nightly DB snapshot to `${SEAFILE_VOLUME}/db-backup/` runs automatically regardless of this setting. |
+| `BACKUP_SCHEDULE` | `0 2 * * *` | Cron schedule for the full backup. The automatic DB snapshot always runs at 1am independently. |
+| `BACKUP_DEST` | — | Path to write full backups to. Must be different from `SEAFILE_VOLUME`. |
+
+---
+
+### Optional — Storage Paths
+
+| Variable | Default | Notes |
+|---|---|---|
+| `SEAFILE_VOLUME` | `/mnt/seafile_nfs` | Mount point for the network share (or local directory for `STORAGE_TYPE=local`) |
+| `THUMBNAIL_PATH` | `/opt/seafile-thumbnails` | Local thumbnail cache — safe to delete (rebuilt automatically) |
+| `METADATA_PATH` | `/opt/seafile-metadata` | Local metadata index — rebuilt automatically during setup/recovery via `seafile metadata --enable-all` |
+| `SEADOC_DATA_PATH` | `/opt/seadoc-data` | SeaDoc persistent data |
+| `NFS_OPTIONS` | (see `.env`) | Mount options for NFS |
+| `SMB_OPTIONS` | (see `.env`) | Mount options for SMB |
+| `GLUSTER_OPTIONS` | (see `.env`) | Mount options for GlusterFS |
+| `ISCSI_OPTIONS` | (see `.env`) | Mount options for iSCSI |
+
+---
+
+### Optional — Server Settings
+
+| Variable | Default | Notes |
+|---|---|---|
+| `PROXY_TYPE` | `nginx` | Reverse proxy type: `nginx` \| `traefik` \| `caddy-external` \| `caddy-bundled` \| `haproxy`. Controls Caddyfile generation and Step 7 configuration. |
+| `CADDY_PORT` | `7080` | Port Caddy exposes on the Docker host. Set to `80` automatically when `PROXY_TYPE=caddy-bundled`. |
+| `TIME_ZONE` | `America/New_York` | [TZ database name](https://en.wikipedia.org/wiki/List_of_tz_database_time_zones) |
+| `REDIS_PASSWORD` | — | Redis authentication password. Leave blank to disable. |
+| `SEAFILE_LOG_TO_STDOUT` | `true` | `false` writes logs to files on the storage share instead |
+| `MD_FILE_COUNT_LIMIT` | `100000` | Max files per library the metadata server indexes |
+| `NOTIFICATION_SERVER_LOG_LEVEL` | `info` | `debug` \| `info` \| `warn` \| `error` |
+
+---
+
+### Deployment Mode
+
+| Variable | Default | Notes |
+|---|---|---|
+| `PORTAINER_MANAGED` | `false` | `true` = Portainer manages the stack. See [Portainer Integration](#portainer-integration). |
+| `PORTAINER_STACK_WEBHOOK` | (blank) | Portainer stack webhook URL for automatic redeploy. |
+| `CONFIG_GIT_PORT` | `9418` | Port for the local config git server (used by Portainer). |
+
+---
+
+### Config History
+
+| Variable | Default | Notes |
+|---|---|---|
+| `CONFIG_HISTORY_ENABLED` | `true` | Enable automatic git versioning of config changes. |
+| `CONFIG_HISTORY_RETAIN` | `50` | Number of entries shown by `seafile config history`. |
+
+---
+
+### Image Tags
+
+| Variable | Default |
+|---|---|
+| `SEAFILE_IMAGE` | `seafileltd/seafile-mc:13.0.18` |
+| `SEADOC_IMAGE` | `seafileltd/sdoc-server:2.0-latest` |
+| `NOTIFICATION_SERVER_IMAGE` | `seafileltd/notification-server:13.0.10` |
+| `THUMBNAIL_SERVER_IMAGE` | `seafileltd/thumbnail-server:13.0-latest` |
+| `MD_IMAGE` | `seafileltd/seafile-md-server:13.0-latest` |
+| `CADDY_IMAGE` | `caddy:2.11.1-alpine` |
+| `COLLABORA_IMAGE` | `collabora/code:25.04.8.1.1` |
+| `ONLYOFFICE_IMAGE` | `onlyoffice/documentserver:8.1.0.1` |
+| `SEAFILE_REDIS_IMAGE` | `redis:7-alpine` |
+| `CLAMAV_IMAGE` | `clamav/clamav:stable` |
+
+See [Image Version Management](#image-version-management) before changing any of these.
+
+---
+
+### Traefik — Optional, Disabled by Default
+
+| Variable | Default | Notes |
+|---|---|---|
+| `TRAEFIK_ENABLED` | `false` | `true` activates Traefik labels on the `seafile-caddy` container |
+| `TRAEFIK_ENTRYPOINT` | `websecure` | Must match an entrypoint in your Traefik config |
+| `TRAEFIK_CERTRESOLVER` | `letsencrypt` | Must match a resolver in your Traefik config |
+
+---
+
+### Git-Managed Configuration — Disabled by Default
+
+| Variable | Default | Notes |
+|---|---|---|
+| `GITOPS_INTEGRATION` | `false` | See [Git-Managed Configuration](#git-managed-configuration) |
+| `GITOPS_REPO_URL` | — | |
+| `GITOPS_TOKEN` | — | |
+| `GITOPS_BRANCH` | `main` | |
+| `GITOPS_WEBHOOK_SECRET` | — | |
+| `GITOPS_WEBHOOK_PORT` | `9002` | |
+| `GITOPS_CLONE_PATH` | `/opt/seafile-gitops` | |
+
+---
+
+### Multi-Backend Storage
+
+Multi-backend storage allows Seafile to use multiple storage classes simultaneously. Libraries are assigned to storage classes at creation time based on a mapping policy. Available as a wizard option during setup (Step 2b) or via `seafile config storage → Storage classes`.
+
+Use cases include hot/cold tiering (active libraries vs archive), departmental separation, and user-selectable storage classes for organizational purposes.
+
+When `MULTI_BACKEND_ENABLED=true`, `config-fixes` generates `seafile_storage_classes.json` from the `BACKEND_N_*` variables and writes `ENABLE_STORAGE_CLASSES = True` to `seahub_settings.py`.
+
+**Generated files:**
+
+| File | Purpose |
+|---|---|
+| `/opt/seafile/seafile_storage_classes.json` | Local copy — always available, no mount dependency |
+| `${SEAFILE_VOLUME}/seafile_storage_classes.json` | Mounted copy — read by Seafile container |
+
+| Variable | Notes |
+|---|---|
+| `MULTI_BACKEND_ENABLED` | `false` by default. Set to `true` to enable multi-backend mode. |
+| `STORAGE_CLASS_MAPPING_POLICY` | `USER_SELECT` (default), `ROLE_BASED`, or `REPO_ID_MAPPING` |
+| `BACKEND_N_ID` | Unique identifier for backend N (e.g., `primary`, `archive`) |
+| `BACKEND_N_NAME` | Human-readable name shown in Seafile UI |
+| `BACKEND_N_DEFAULT` | `true` for the default backend (one required), `false` for others |
+
+Mapping policies: `USER_SELECT` lets users choose when creating a library. `ROLE_BASED` lets admins assign storage classes to user roles in seahub_settings.py. `REPO_ID_MAPPING` distributes libraries automatically by ID.
+
+To add more backends, duplicate a `BACKEND_N` block in `.env` and increment N. See [Seafile's multiple storage backends documentation](https://manual.seafile.com/latest/setup/setup_with_multiple_storage_backends/) for full details.
+
+---
+
+### Storage Migration
+
+The `seafile config storage` command includes a guided migration workflow for moving data between storage backends with minimal downtime. The process has four phases:
+
+1. **Background sync** — rsync runs continuously while Seafile stays online
+2. **Enable dual-backend** — Quick restart (~30 seconds) to enable both backends
+3. **Continue syncing** — New uploads go to new backend; rsync catches up remaining data
+4. **Cutover** — Final sync (2-5 minutes downtime), then switch completely
+
+**Commands:**
+
+| Command | What it does |
+|---|---|
+| `seafile config storage` | Start migration wizard or check status if migration active |
+| `seafile config storage --status` | Show migration progress (bytes synced, percentage, last sync time) |
+| `seafile config storage --cutover` | Perform final sync and complete migration |
+| `seafile config storage --cancel` | Abort migration and restore original storage config |
+
+**Systemd service:**
+
+The `seafile-storage-sync` service handles background rsync during migration:
+
+```bash
+# Check sync status
+systemctl status seafile-storage-sync
+journalctl -u seafile-storage-sync -f
+
+# The service runs automatically during migration
+# Do not start/stop manually — use the CLI commands above
+```
+
+**State files:**
+
+| File | Purpose |
+|---|---|
+| `/opt/seafile/.storage-migration.conf` | Migration state — source/target info, progress tracking |
+| `/opt/seafile/.storage-migration-cutover` | Signal file — triggers final sync when touched |
+
+During migration, the `.storage-migration.conf` file tracks state. This file is deleted automatically when migration completes or is cancelled. The `.env` file is updated once at the start of migration and is not modified during the sync process.
+
+---
+
+### Database Migration
+
+The `seafile config database` command provides guided migration between bundled (containerized MariaDB) and external MySQL/MariaDB servers.
+
+**Bundled → External Migration:**
+
+1. Prepare external server with empty databases: `ccnet_db`, `seafile_db`, `seahub_db`
+2. Run `seafile config database` and select "Migrate to external database"
+3. Enter external server credentials
+4. The wizard will:
+   - Test connectivity to external server
+   - Stop Seafile services (DB container stays running)
+   - Export databases via `mysqldump`
+   - Import to external server
+   - Verify row counts match
+   - Update `.env` and restart with external DB
+
+**External → Bundled Migration:**
+
+1. Run `seafile config database` and select "Migrate to bundled database"
+2. Choose volume path for bundled DB
+3. The wizard will:
+   - Export from external server
+   - Create new MariaDB container
+   - Import data
+   - Update `.env` and restart
+
+**Notes:**
+- Dump files are retained in `/tmp/` for manual recovery if needed
+- Original database (bundled volume or external server) is not deleted automatically
+- Migration requires root database credentials for import operations
+
+---
+
+### Reverse Proxy Configuration
+
+The `seafile config proxy` command configures how Seafile integrates with your reverse proxy:
+
+| Proxy Type | Description |
+|---|---|
+| `nginx` | External Nginx Proxy Manager or similar — Caddy listens on `CADDY_PORT` |
+| `caddy-bundled` | Bundled Caddy with automatic Let's Encrypt SSL on ports 80/443 |
+| `caddy-external` | Your own external Caddy instance — forwards to `CADDY_PORT` |
+| `traefik` | Traefik with Docker labels — configures entrypoint and cert resolver |
+| `haproxy` | External HAProxy — forwards to `CADDY_PORT` |
+
+For external proxies (nginx, caddy-external, haproxy), configure your proxy to forward HTTPS traffic to `http://localhost:CADDY_PORT` (default 7080).
+
+---
+
+### Do Not Change — Internal Wiring
+
+These are correct for this deployment. Changing database names after first run breaks the deployment. Container names are referenced by the `seafile` CLI — renaming them without also updating the scripts will break management tooling.
+
+| Variable | Value |
+|---|---|
+| `SEAFILE_MYSQL_DB_CCNET_DB_NAME` | `ccnet_db` |
+| `SEAFILE_MYSQL_DB_SEAFILE_DB_NAME` | `seafile_db` |
+| `SEAFILE_MYSQL_DB_SEAHUB_DB_NAME` | `seahub_db` |
+| `REDIS_PORT` | `6379` |
+| `CADDY_CONFIG_PATH` | `/opt/seafile-caddy` |
+| `SEAFILE_NETWORK` | `seafile-net` |
+| `ENABLE_GO_FILESERVER` | `true` |
+| `ENABLE_SEADOC` | `true` |
+| `ENABLE_NOTIFICATION_SERVER` | `true` |
+| `ENABLE_METADATA_SERVER` | `true` |
+| `ENABLE_THUMBNAIL_SERVER` | `true` |
+| `ENABLE_SEAFILE_AI` | `false` |
+| `ENABLE_FACE_RECOGNITION` | `false` |
+
+---
+
+
+## Hardcoded Variables in docker-compose.yml
+
+Some values in `docker-compose.yml` are hardcoded rather than driven by `.env`. This section explains what they are and why they cannot be made configurable without additional changes.
+
+### Container names
+
+All 8 container names are hardcoded in `docker-compose.yml`:
+
+| Container name | Service | Active when |
+|---|---|---|
+| `seafile-caddy` | Internal reverse proxy | Always |
+| `seafile-redis` | Cache | Always |
+| `seafile` | Core Seafile server | Always |
+| `seadoc` | SeaDoc editor | Always |
+| `notification-server` | Notification service | Always |
+| `thumbnail-server` | Thumbnail service | Always |
+| `seafile-metadata` | Metadata service | Always |
+| `seafile-db` | Bundled MariaDB database | `DB_INTERNAL=true` |
+| `seafile-collabora` | Collabora Online | `OFFICE_SUITE=collabora` |
+| `seafile-onlyoffice` | OnlyOffice | `OFFICE_SUITE=onlyoffice` |
+| `seafile-clamav` | ClamAV antivirus | `CLAMAV_ENABLED=true` |
+
+**Why hardcoded:** The `seafile` CLI (`seafile-cli.sh`) references these names directly when running `seafile status`, `seafile ping`, `seafile logs`, `seafile restart`, `seafile shell`, and health checks. `update.sh` also references them for restart logic. If you rename a container here, you must update those scripts as well -- they will not pick up the change from `.env` automatically.
+
+### Internal service URLs
+
+```yaml
+INNER_NOTIFICATION_SERVER_URL=http://notification-server:8083
+INNER_SEAHUB_SERVICE_URL=http://seafile
+CACHE_PROVIDER=redis
+REDIS_HOST=seafile-redis
+```
+
+**Why hardcoded:** These use Docker's internal DNS, which resolves container names on the `seafile-net` network. `notification-server` and `seafile` are the container names defined above. The port `8083` is the notification server's fixed internal port -- it is not exposed on the host and cannot be changed without modifying the notification server image itself. `CACHE_PROVIDER=redis` is always redis in this deployment; no other cache provider is supported.
+
+### Collabora runtime flags
+
+```yaml
+extra_params=--o:ssl.enable=false --o:ssl.termination=true --o:admin_console.enable=true
+DONT_GEN_SSL_CERT=true
+cap_add: [MKNOD]
+```
+
+**Why hardcoded:** `ssl.enable=false` and `ssl.termination=true` are required for this deployment's architecture -- SSL is terminated upstream by the external reverse proxy, not by Collabora. Changing these would break document editing. `DONT_GEN_SSL_CERT=true` suppresses Collabora's built-in certificate generation for the same reason. `cap_add: MKNOD` is required by LibreOffice's internal process management -- it cannot be removed.
+
+### Network name
+
+```yaml
+networks:
+  seafile-net:
+    name: ${SEAFILE_NETWORK:-seafile-net}
+```
+
+**Why:** All containers must be on the same Docker network to reach each other by container name. The network name defaults to `seafile-net` via the `SEAFILE_NETWORK` variable in `.env`. If you need to connect Traefik or another service to this network, add it as an external network in that service's compose file using the name `seafile-net`.

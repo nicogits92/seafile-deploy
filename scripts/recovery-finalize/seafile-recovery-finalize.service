@@ -1,0 +1,25 @@
+# =============================================================================
+# seafile-recovery-finalize.service — systemd unit for the recovery finalizer
+# =============================================================================
+# Written by:  recover.sh
+# Deployed to: /etc/systemd/system/seafile-recovery-finalize.service
+#
+# One-shot service that runs seafile-recovery-finalize.sh after Docker starts.
+# The script removes this unit after it completes successfully, so it does not
+# persist across normal boots — it only exists during the recovery window.
+# =============================================================================
+
+[Unit]
+Description=Seafile Recovery Finalizer — waits for stack, then runs seafile-config-fixes.sh
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/opt/seafile/seafile-recovery-finalize.sh
+Restart=no
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
