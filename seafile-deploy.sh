@@ -6573,7 +6573,7 @@ _mount_storage() {
 }
 
 # Call the mount function
-local _is_first="false"
+_is_first="false"
 [[ "$SETUP_MODE" == "install" ]] && _is_first="true"
 _mount_storage "${SEAFILE_VOLUME:-$STORAGE_MOUNT}" "$_is_first"
 

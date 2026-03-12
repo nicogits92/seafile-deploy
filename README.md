@@ -84,7 +84,9 @@ Disaster recovery is built in from day one. Your file data lives on network stor
 Want to try Seafile without making any infrastructure decisions? Select **Just give me Seafile** when you run the deploy script.
 
 ```bash
-wget -O /seafile-deploy.sh https://raw.githubusercontent.com/nicosgit92/seafile-deploy/main/seafile-deploy.sh && chmod +x /seafile-deploy.sh && /seafile-deploy.sh
+curl -fsSL https://raw.githubusercontent.com/nicosgit92/seafile-deploy/main/seafile-deploy.sh -o seafile-deploy.sh
+chmod +x seafile-deploy.sh
+sudo ./seafile-deploy.sh
 ```
 
 Select **1 — Fresh Install**, then choose **Just give me Seafile**.
@@ -696,7 +698,9 @@ Configure an iSCSI target on your NAS/SAN. You will need:
 Download and run the deployment script:
 
 ```bash
-wget -O /seafile-deploy.sh https://raw.githubusercontent.com/nicosgit92/seafile-deploy/main/seafile-deploy.sh && chmod +x /seafile-deploy.sh && /seafile-deploy.sh
+curl -fsSL https://raw.githubusercontent.com/nicosgit92/seafile-deploy/main/seafile-deploy.sh -o seafile-deploy.sh
+chmod +x seafile-deploy.sh
+sudo ./seafile-deploy.sh
 ```
 
 The splash screen appears. Select **1 - Fresh Install**.
