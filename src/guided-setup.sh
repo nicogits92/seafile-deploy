@@ -257,19 +257,12 @@ _wiz_checklist() {
   done
 
   local count=${#items[@]}
-  local selected=0
 
   # Display function
   _display_checklist() {
-    clear_lines() {
-      for ((i=0; i<count+6; i++)); do
-        echo -ne "\033[A\033[2K"
-      done
-    }
-
     echo ""
     echo -e "  ${BOLD}${title}${NC}"
-    echo -e "  ${DIM}Enter number to toggle, Enter to continue${NC}"
+    echo -e "  ${DIM}Enter numbers to toggle (e.g. 1 3 5), Enter to continue${NC}"
     echo ""
 
     for ((i=0; i<count; i++)); do
@@ -290,26 +283,47 @@ _wiz_checklist() {
     read -r choice
 
     if [[ -z "$choice" ]]; then
+      # Show final review
+      echo ""
+      echo -e "  ${BOLD}Selected features:${NC}"
+      local _any=false
+      for ((i=0; i<count; i++)); do
+        if [[ "${states[$i]}" == "true" ]]; then
+          echo -e "    ${GREEN}✓${NC} ${labels[$i]}"
+          _any=true
+        fi
+      done
+      if [[ "$_any" == "false" ]]; then
+        echo -e "    ${DIM}(none)${NC}"
+      fi
+      echo ""
+
       # Apply selections to variables
       for ((i=0; i<count; i++)); do
         eval "${varnames[$i]}=\"${states[$i]}\""
       done
-      echo ""
       return 0
-    elif [[ "$choice" =~ ^[0-9]+$ ]] && (( choice >= 1 && choice <= count )); then
-      local idx=$((choice-1))
-      if [[ "${states[$idx]}" == "true" ]]; then
-        states[$idx]="false"
-      else
-        states[$idx]="true"
+    fi
+
+    # Parse multiple space-separated numbers
+    local _toggled=false
+    for num in $choice; do
+      if [[ "$num" =~ ^[0-9]+$ ]] && (( num >= 1 && num <= count )); then
+        local idx=$((num-1))
+        if [[ "${states[$idx]}" == "true" ]]; then
+          states[$idx]="false"
+        else
+          states[$idx]="true"
+        fi
+        _toggled=true
       fi
-      # Redraw (simple version - just show current state)
-      echo -ne "\033[A\033[2K"  # Clear the prompt line
-      local mark="[ ]"
-      [[ "${states[$idx]}" == "true" ]] && mark="[x]"
-      echo -e "  ${DIM}Toggled: ${labels[$idx]} → ${mark}${NC}"
+    done
+
+    if [[ "$_toggled" == "true" ]]; then
+      # Redraw the full list with updated states
+      _display_checklist
     else
-      echo -e "  ${DIM}Enter a number from 1 to ${count}, or press Enter.${NC}"
+      echo -e "  ${DIM}Enter numbers from 1 to ${count} separated by spaces, or press Enter.${NC}"
     fi
   done
 }

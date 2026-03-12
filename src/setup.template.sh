@@ -14,6 +14,9 @@
 set -e
 trap 'echo -e "\n${RED}[ERROR]${NC}  setup.sh failed at line $LINENO — check output above."; exit 1' ERR
 
+# Suppress interactive prompts from apt/dpkg (unattended-upgrades config, etc.)
+export DEBIAN_FRONTEND=noninteractive
+
 # ---------------------------------------------------------------------------
 # Shared library (defaults, helpers, normalize, menu, etc.)
 # ---------------------------------------------------------------------------

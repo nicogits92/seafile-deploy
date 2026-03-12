@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================================================
-# seafile  —  management CLI for the nicosgit92/seafile-deploy stack
+# seafile  —  management CLI for the nicogits92/seafile-deploy stack
 # =============================================================================
 # Deployed to: /usr/local/bin/seafile by install-dependencies.sh
 # Usage:       seafile <command> [args]
@@ -648,7 +648,7 @@ _cfg_section_office() {
 _cfg_section_features() {
   _cfg_header "Optional Features"
   
-  echo -e "  ${DIM}Enter number to toggle, Enter to save and continue.${NC}"
+  echo -e "  ${DIM}Enter numbers to toggle (e.g. 1 3), Enter to save and continue.${NC}"
   echo ""
   
   local features=(
@@ -663,8 +663,8 @@ _cfg_section_features() {
     local var="${f%%:*}"
     orig_values+=("${!var:-false}")
   done
-  
-  while true; do
+
+  _display_features() {
     echo ""
     local i=1
     for f in "${features[@]}"; do
@@ -677,19 +677,48 @@ _cfg_section_features() {
       ((i++))
     done
     echo ""
-    
+  }
+
+  _display_features
+  
+  while true; do
     read -r -p "  Toggle [1-${#features[@]}] or Enter to continue: " sel
     
     if [[ -z "$sel" ]]; then
+      # Show review of changes
+      echo ""
+      echo -e "  ${BOLD}Current selections:${NC}"
+      for f in "${features[@]}"; do
+        local var="${f%%:*}"
+        local label="${f#*:}"
+        local val="${!var:-false}"
+        if [[ "$val" == "true" ]]; then
+          echo -e "    ${GREEN}✓${NC} $label"
+        else
+          echo -e "    ${DIM}✗ $label${NC}"
+        fi
+      done
+      echo ""
       break
-    elif [[ "$sel" =~ ^[0-9]+$ ]] && (( sel >= 1 && sel <= ${#features[@]} )); then
-      local var="${features[$((sel-1))]%%:*}"
-      local current="${!var:-false}"
-      if [[ "$current" == "true" ]]; then
-        eval "$var=false"
-      else
-        eval "$var=true"
+    fi
+
+    # Parse multiple space-separated numbers
+    local _toggled=false
+    for num in $sel; do
+      if [[ "$num" =~ ^[0-9]+$ ]] && (( num >= 1 && num <= ${#features[@]} )); then
+        local var="${features[$((num-1))]%%:*}"
+        local current="${!var:-false}"
+        if [[ "$current" == "true" ]]; then
+          eval "$var=false"
+        else
+          eval "$var=true"
+        fi
+        _toggled=true
       fi
+    done
+
+    if [[ "$_toggled" == "true" ]]; then
+      _display_features
     fi
   done
   

@@ -11,7 +11,7 @@
 #   scripts/recover.sh             — embedded as extract_recover()
 # =============================================================================
 # =============================================================================
-# seafile-deploy.sh  —  nicosgit92 / seafile-deploy
+# seafile-deploy.sh  —  nicogits92 / seafile-deploy
 # =============================================================================
 # The single entry point for this Seafile deployment.
 # Run this on a freshly provisioned Debian VM after placing .env at
@@ -69,7 +69,7 @@ show_splash() {
   echo "  ╚══════╝╚══════╝╚═╝  ╚═╝╚═╝     ╚═╝╚══════╝╚══════╝"
   echo -e "${NC}"
   echo -e "  ${DIM}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-  echo -e "  ${BOLD}nicosgit92 / seafile-deploy${NC}   ${DIM}Seafile ${SEAFILE_VERSION} CE  ·  ${DEPLOY_VERSION}${NC}"
+  echo -e "  ${BOLD}nicogits92 / seafile-deploy${NC}   ${DIM}Seafile ${SEAFILE_VERSION} CE  ·  ${DEPLOY_VERSION}${NC}"
   echo -e "  ${DIM}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
   echo ""
   echo -e "  ${DIM}Community deployment · not affiliated with Seafile Ltd.${NC}"

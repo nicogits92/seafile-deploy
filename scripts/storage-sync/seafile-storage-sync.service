@@ -1,6 +1,6 @@
 [Unit]
 Description=Seafile Storage Migration Sync
-Documentation=https://github.com/nicosgit92/seafile-deploy
+Documentation=https://github.com/nicogits92/seafile-deploy
 After=network-online.target
 Wants=network-online.target
 

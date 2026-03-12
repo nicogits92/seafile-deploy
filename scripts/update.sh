@@ -892,8 +892,8 @@ _show_phase_menu() {
   echo -e "${BOLD}${CYAN}   ${title}${NC}"
   echo -e "${BOLD}${CYAN}  ════════════════════════════════════════════════════════${NC}"
   echo ""
-  echo "  The following steps will run. Enter a step number to"
-  echo "  toggle it off (or back on) before proceeding."
+  echo "  The following steps will run. Enter step numbers to"
+  echo "  toggle (e.g. 1 3), Enter to run, or q to quit."
   echo ""
   for i in "${!_PHASES[@]}"; do
     _num=$(( i + 1 ))
@@ -904,7 +904,7 @@ _show_phase_menu() {
     fi
   done
   echo ""
-  echo "  Press [Enter] to run, enter a number to toggle, or q to quit."
+  echo "  Press [Enter] to run, enter numbers to toggle, or q to quit."
   echo ""
 }
 
@@ -923,7 +923,9 @@ _run_phase_menu() {
         ;;
       "")
         _any=false
-        for _s in "${_SELECTED[@]}"; do [[ "$_s" == "true" ]] && _any=true && break; done
+        for _s in "${_SELECTED[@]}"; do
+          if [[ "$_s" == "true" ]]; then _any=true; break; fi
+        done
         if [[ "$_any" == "false" ]]; then
           echo ""
           echo "  Nothing selected. Run me again if you change your mind."
@@ -934,15 +936,24 @@ _run_phase_menu() {
         break
         ;;
       *)
-        if [[ "$_input" =~ ^[0-9]+$ ]]; then
-          _idx=$(( _input - 1 ))
-          if [[ $_idx -ge 0 && $_idx -lt ${#_PHASES[@]} ]]; then
-            [[ "${_SELECTED[$_idx]}" == "true" ]] && _SELECTED[$_idx]="false" || _SELECTED[$_idx]="true"
-          else
-            echo "  No step $_input — try again."
+        # Parse multiple space-separated numbers
+        local _toggled=false
+        for _num in $_input; do
+          if [[ "$_num" =~ ^[0-9]+$ ]]; then
+            _idx=$(( _num - 1 ))
+            if [[ $_idx -ge 0 && $_idx -lt ${#_PHASES[@]} ]]; then
+              if [[ "${_SELECTED[$_idx]}" == "true" ]]; then
+                _SELECTED[$_idx]="false"
+              else
+                _SELECTED[$_idx]="true"
+              fi
+              _toggled=true
+            fi
           fi
-        else
-          echo "  Enter a step number, press [Enter] to run, or q to quit."
+        done
+        if [[ "$_toggled" != "true" ]]; then
+          echo ""
+          echo "  Enter a valid step number, or press Enter to run."
         fi
         ;;
     esac
@@ -986,6 +997,7 @@ _collect_missing() {
     [[ -z "${SEAFILE_MYSQL_DB_PASSWORD:-}" ]]            && _MISSING+=(SEAFILE_MYSQL_DB_PASSWORD)
     [[ -z "${INIT_SEAFILE_MYSQL_ROOT_PASSWORD:-}" ]]     && _MISSING+=(INIT_SEAFILE_MYSQL_ROOT_PASSWORD)
   fi
+  return 0
 }
 
 # ---------------------------------------------------------------------------
@@ -999,8 +1011,11 @@ _collect_dnc_changed() {
     local actual="${!var:-}"
     local expected
     expected=$(_get_default "$var")
-    [[ "$actual" != "$expected" ]] && _DNC_CHANGED+=("$var")
+    if [[ "$actual" != "$expected" ]]; then
+      _DNC_CHANGED+=("$var")
+    fi
   done
+  return 0
 }
 
 # ---------------------------------------------------------------------------
@@ -1277,7 +1292,7 @@ _show_splash() {
   echo "  ╚══════╝╚══════╝╚═╝  ╚═╝╚═╝     ╚═╝╚══════╝╚══════╝"
   echo -e "${NC}"
   echo -e "  ${DIM}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-  echo -e "  ${BOLD}nicosgit92 / seafile-deploy${NC}   ${DIM}Seafile ${_SEAFILE_VERSION} CE  ·  ${DEPLOY_VERSION}  ·  update.sh${NC}"
+  echo -e "  ${BOLD}nicogits92 / seafile-deploy${NC}   ${DIM}Seafile ${_SEAFILE_VERSION} CE  ·  ${DEPLOY_VERSION}  ·  update.sh${NC}"
   echo -e "  ${DIM}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
   echo ""
   echo -e "  ${DIM}Community deployment · not affiliated with Seafile Ltd.${NC}"
