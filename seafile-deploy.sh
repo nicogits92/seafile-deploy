@@ -13421,6 +13421,85 @@ COMPOSEEOF
     warn "docker compose up reported an issue — check: docker ps && docker logs seafile"
   fi
 
+  # ── Database initialization ──────────────────────────────────────────────
+  # Create databases and user ourselves rather than relying on Seafile's
+  # internal first-boot init, which has timing issues with config-fixes.
+  # If databases already exist, these statements are harmless no-ops.
+  # ──────────────────────────────────────────────────────────────────────────
+  _DB_HOST="${SEAFILE_MYSQL_DB_HOST:-seafile-db}"
+  _DB_PORT="${SEAFILE_MYSQL_DB_PORT:-3306}"
+  _DB_USER="${SEAFILE_MYSQL_DB_USER:-seafile}"
+  _DB_PASS="${SEAFILE_MYSQL_DB_PASSWORD:-}"
+  _DB_ROOT_PASS="${INIT_SEAFILE_MYSQL_ROOT_PASSWORD:-}"
+
+  if [[ -n "$_DB_ROOT_PASS" ]]; then
+    info "Waiting for database server to accept connections..."
+
+    # Build the mysql command — internal DB uses docker exec, external uses mysql client
+    if [[ "${DB_INTERNAL:-true}" == "true" ]]; then
+      _mysql_cmd() {
+        docker exec seafile-db mysql -u root -p"${_DB_ROOT_PASS}" "$@" 2>/dev/null
+      }
+    else
+      _mysql_cmd() {
+        mysql -h "$_DB_HOST" -P "$_DB_PORT" -u root -p"${_DB_ROOT_PASS}" "$@" 2>/dev/null
+      }
+    fi
+
+    # Wait for DB to be ready (up to 90 seconds)
+    _db_ready=false
+    for _attempt in {1..18}; do
+      if _mysql_cmd -e "SELECT 1" >/dev/null 2>&1; then
+        _db_ready=true
+        break
+      fi
+      sleep 5
+    done
+
+    if [[ "$_db_ready" == "true" ]]; then
+      info "Database server is ready. Initializing Seafile databases..."
+
+      _mysql_cmd -e "
+        CREATE DATABASE IF NOT EXISTS \`${SEAFILE_MYSQL_DB_CCNET_DB_NAME:-ccnet_db}\`     CHARACTER SET utf8mb4;
+        CREATE DATABASE IF NOT EXISTS \`${SEAFILE_MYSQL_DB_SEAFILE_DB_NAME:-seafile_db}\`  CHARACTER SET utf8mb4;
+        CREATE DATABASE IF NOT EXISTS \`${SEAFILE_MYSQL_DB_SEAHUB_DB_NAME:-seahub_db}\`    CHARACTER SET utf8mb4;
+      "
+
+      # Create user if it doesn't exist — use '%' host for Docker networking
+      _user_exists=$(_mysql_cmd -N -e "SELECT COUNT(*) FROM mysql.user WHERE user='${_DB_USER}';" 2>/dev/null || echo "0")
+      if [[ "$_user_exists" == "0" ]]; then
+        _mysql_cmd -e "
+          CREATE USER '${_DB_USER}'@'%' IDENTIFIED BY '${_DB_PASS}';
+        "
+        info "Database user '${_DB_USER}' created."
+      else
+        info "Database user '${_DB_USER}' already exists."
+      fi
+
+      # Grant privileges (idempotent)
+      _mysql_cmd -e "
+        GRANT ALL PRIVILEGES ON \`${SEAFILE_MYSQL_DB_CCNET_DB_NAME:-ccnet_db}\`.*    TO '${_DB_USER}'@'%';
+        GRANT ALL PRIVILEGES ON \`${SEAFILE_MYSQL_DB_SEAFILE_DB_NAME:-seafile_db}\`.* TO '${_DB_USER}'@'%';
+        GRANT ALL PRIVILEGES ON \`${SEAFILE_MYSQL_DB_SEAHUB_DB_NAME:-seahub_db}\`.*  TO '${_DB_USER}'@'%';
+        FLUSH PRIVILEGES;
+      "
+
+      # Verify
+      _db_count=$(_mysql_cmd -N -e "SELECT COUNT(*) FROM INFORMATION_SCHEMA.SCHEMATA WHERE SCHEMA_NAME IN ('${SEAFILE_MYSQL_DB_CCNET_DB_NAME:-ccnet_db}','${SEAFILE_MYSQL_DB_SEAFILE_DB_NAME:-seafile_db}','${SEAFILE_MYSQL_DB_SEAHUB_DB_NAME:-seahub_db}');" 2>/dev/null || echo "0")
+      if [[ "$_db_count" == "3" ]]; then
+        info "All 3 Seafile databases verified."
+      else
+        warn "Expected 3 databases, found $_db_count — check manually."
+      fi
+    else
+      warn "Database server did not become ready in 90 seconds."
+      warn "Databases may need to be created manually. See README — Step 3."
+    fi
+  else
+    info "No root password available — skipping database initialization."
+    info "Seafile's internal init or an external DBA will handle database creation."
+  fi
+
   # Wait for seafile container to be healthy
   info "Waiting for Seafile to initialize (this may take 1-3 minutes on first run)..."
   _retries=60
@@ -13795,6 +13874,89 @@ fi
   else
     echo ""
     echo -e "  ${GREEN}${BOLD}Deployment complete!${NC}"
+    echo ""
+
+    # Show proxy setup instructions for external proxy types
+    _proxy="${PROXY_TYPE:-nginx}"
+    if [[ "$_proxy" != "caddy-bundled" ]]; then
+      _host_ip=$(hostname -I 2>/dev/null | awk '{print $1}')
+      _caddy_port="${CADDY_PORT:-7080}"
+      _proto="${SEAFILE_SERVER_PROTOCOL:-https}"
+      _domain="${SEAFILE_SERVER_HOSTNAME:-your-domain}"
+
+      echo -e "  ${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+      echo ""
+      echo -e "  ${BOLD}Next step: Configure your reverse proxy${NC}"
+      echo ""
+
+      case "$_proxy" in
+        nginx)
+          echo -e "  In Nginx Proxy Manager, add a Proxy Host:"
+          echo ""
+          echo -e "  ${DIM}Details tab:${NC}"
+          echo -e "    Domain:       ${BOLD}${_domain}${NC}"
+          echo -e "    Scheme:       http"
+          echo -e "    Forward IP:   ${BOLD}${_host_ip}${NC}"
+          echo -e "    Forward Port: ${BOLD}${_caddy_port}${NC}"
+          echo -e "    Websockets:   ${BOLD}enabled${NC}"
+          echo ""
+          echo -e "  ${DIM}SSL tab:${NC}"
+          echo -e "    Request a Let's Encrypt certificate, enable Force SSL"
+          echo ""
+          echo -e "  ${DIM}Advanced tab — paste this:${NC}"
+          echo ""
+          cat << NPMCONF
+
+location / {
+    proxy_pass http://${_host_ip}:${_caddy_port};
+    proxy_set_header Host \$host;
+    proxy_set_header X-Real-IP \$remote_addr;
+    proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto ${_proto};
+    proxy_http_version 1.1;
+    proxy_set_header Upgrade \$http_upgrade;
+    proxy_set_header Connection "Upgrade";
+    proxy_read_timeout 1200s;
+    proxy_buffering off;
+    client_max_body_size 0;
+}
+
+NPMCONF
+          echo -e "  ${DIM}You can also get this config any time by running:${NC}"
+          echo -e "    ${BOLD}seafile proxy-config${NC}"
+          ;;
+        traefik)
+          echo -e "  Traefik labels are already configured in docker-compose.yml."
+          echo -e "  Ensure ${BOLD}TRAEFIK_ENABLED=true${NC} is set in .env and the"
+          echo -e "  seafile-caddy container is on a network Traefik can reach."
+          ;;
+        caddy-external|haproxy)
+          echo -e "  Forward traffic to: ${BOLD}http://${_host_ip}:${_caddy_port}${NC}"
+          echo -e "  Required: WebSocket upgrade, no upload size limit, 1200s timeout"
+          echo -e "  Run ${BOLD}seafile proxy-config${NC} for full details."
+          ;;
+      esac
+
+      echo ""
+      echo -e "  ${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+      echo ""
+    else
+      echo -e "  SSL certificates are obtained automatically from Let's Encrypt."
+      echo -e "  If the page doesn't load over HTTPS right away, wait a moment"
+      echo -e "  for the certificate to be issued (requires ports 80 + 443 open)."
+      echo ""
+    fi
+
+    echo -e "  Open your browser:  ${BOLD}${SEAFILE_SERVER_PROTOCOL:-https}://${SEAFILE_SERVER_HOSTNAME}${NC}"
+    echo ""
+    echo -e "  Login:     ${BOLD}${INIT_SEAFILE_ADMIN_EMAIL}${NC}"
+    echo -e "  Password:  ${BOLD}${INIT_SEAFILE_ADMIN_PASSWORD:-changeme}${NC}"
+    echo ""
+    echo -e "  ${DIM}Change this password after your first login.${NC}"
+    echo -e "  ${DIM}Go to Profile (top right) → Password.${NC}"
+    echo ""
+    echo -e "  ${DIM}Want more features? Run:${NC} ${BOLD}seafile config${NC}"
+    echo -e "  ${DIM}(network storage, email, LDAP, backups, and more)${NC}"
     echo ""
   fi
 
