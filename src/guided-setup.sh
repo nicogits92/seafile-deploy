@@ -670,7 +670,7 @@ wizard_step_features() {
 # WIZARD STEP 7: Configuration Management (GitOps)
 # ===========================================================================
 wizard_step_config_management() {
-  # If pre-set by deployment menu (option 3), skip the ask but collect credentials
+  # If pre-set by deployment menu (option 3), collect git credentials
   if [[ "${WIZ_GITOPS_ENABLED:-}" == "true" ]]; then
     _wiz_header "Step 7 of 7: Git Repository Setup"
 
@@ -695,50 +695,9 @@ wizard_step_config_management() {
     return
   fi
 
-  _wiz_header "Step 7 of 7: Configuration Management"
-
-  echo -e "  ${DIM}All configuration changes are version-tracked automatically.${NC}"
-  echo ""
-
-  echo -e "  ${BOLD}  1  ${NC}Local only ${DIM}(default)${NC}"
-  echo -e "     ${DIM}Edit .env on this machine with seafile config or nano${NC}"
-  echo -e "     ${DIM}Version history tracked automatically${NC}"
-  echo ""
-  echo -e "  ${BOLD}  2  ${NC}Git-managed"
-  echo -e "     ${DIM}Store .env in a git repository (GitHub, Gitea, etc.)${NC}"
-  echo -e "     ${DIM}Push to apply changes · full version history${NC}"
-  echo -e "     ${DIM}Offsite config backup · no SSH needed for config changes${NC}"
-  echo ""
-
-  local _mgmt_choice=""
-  while true; do
-    echo -ne "  ${BOLD}Select [1/2] (default: 1):${NC} "
-    read -r _mgmt_choice
-    _mgmt_choice="${_mgmt_choice:-1}"
-    case "$_mgmt_choice" in 1|2) break ;; *) echo -e "  ${DIM}Enter 1 or 2.${NC}" ;; esac
-  done
-
-  if [[ "$_mgmt_choice" == "2" ]]; then
-    WIZ_GITOPS_ENABLED="true"
-    echo ""
-    echo -e "  ${YELLOW}Note:${NC} ${DIM}Your .env contains passwords and secrets. Only use a${NC}"
-    echo -e "  ${DIM}private repository that you control.${NC}"
-    echo ""
-
-    _wiz_input WIZ_GITOPS_REPO "Repository URL (HTTPS)" "e.g. https://gitea.example.com/user/seafile-config.git" "" "true"
-    _wiz_password WIZ_GITOPS_TOKEN "Access token (for push/pull)" "true"
-    _wiz_input WIZ_GITOPS_BRANCH "Branch" "" "main" "false"
-    WIZ_GITOPS_BRANCH="${WIZ_GITOPS_BRANCH:-main}"
-
-    echo ""
-    echo -e "  ${DIM}After setup, you will need to add a webhook in your git provider:${NC}"
-    echo -e "  ${DIM}  URL:     http://YOUR_SERVER_IP:9002/${NC}"
-    echo -e "  ${DIM}  Secret:  (auto-generated, shown after install)${NC}"
-    echo -e "  ${DIM}  Events:  Push events only${NC}"
-    echo ""
-  else
-    WIZ_GITOPS_ENABLED="false"
-  fi
+  # Standard deployment — gitops already set to false by menu
+  # Nothing to ask — local config management is the default
+  WIZ_GITOPS_ENABLED="false"
 }
 
 # ===========================================================================
@@ -1456,6 +1415,7 @@ check_env_and_configure() {
           ;;
         2)
           export WIZ_DEPLOYMENT_MODE="native"
+          export WIZ_GITOPS_ENABLED="false"
           run_guided_setup "$env_file"
           return 0
           ;;

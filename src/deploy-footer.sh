@@ -172,22 +172,28 @@ prompt_secret_generation() {
   echo ""
 
   if [[ "$choice" == "3" ]]; then
-    echo -e "  ${DIM}Skipping -- fill in secrets manually before running the installer.${NC}"
+    echo -e "  ${DIM}Skipping auto-generation.${NC}"
     echo ""
-    return 0
+    if [[ ${#infra_blank[@]} -gt 0 ]]; then
+      echo -e "  ${YELLOW}Remember:${NC} ${DIM}Fill in infrastructure secrets before running the installer:${NC}"
+      for v in "${infra_blank[@]}"; do
+        echo -e "    ${DIM}${v}${NC}"
+      done
+      echo -e "  ${DIM}Edit with: nano ${env_file}${NC}"
+      echo ""
+    fi
   fi
 
   # Determine which variables to generate
-  local to_generate=( "${infra_blank[@]}" )
-  if [[ "$choice" == "2" ]]; then
-    to_generate+=( "${user_blank[@]}" )
+  local to_generate=()
+  if [[ "$choice" == "1" || "$choice" == "2" ]]; then
+    to_generate=( "${infra_blank[@]}" )
+    if [[ "$choice" == "2" ]]; then
+      to_generate+=( "${user_blank[@]}" )
+    fi
   fi
 
-  if [[ ${#to_generate[@]} -eq 0 ]]; then
-    echo -e "  ${DIM}Nothing to generate -- all selected secrets are already set.${NC}"
-    echo ""
-    return 0
-  fi
+  if [[ ${#to_generate[@]} -gt 0 ]]; then
 
   # Helper: write a value into a blank variable in .env using Python3.
   # Python3 is always present on Debian 13. Using it here because openssl
@@ -277,6 +283,48 @@ PYEOF
     echo -e "  ${DIM}Values are not displayed here. View or edit them with:${NC}"
     echo -e "  ${DIM}  nano ${env_file}${NC}"
     echo -e "  ${DIM}  (or run 'seafile config' after setup)${NC}"
+  fi
+
+  fi  # end of to_generate block
+
+  # ── Prompt for user-facing secrets not covered by auto-generation ──────
+  # When the user chose option 1 (infra only) or option 3 (skip),
+  # user-facing secrets like the admin password were not generated.
+  # Prompt for them now so the installer can proceed.
+  if [[ "$choice" != "2" && ${#user_blank[@]} -gt 0 ]]; then
+    echo ""
+    echo -e "  ${DIM}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo ""
+    echo -e "  ${BOLD}User credentials${NC}"
+    echo ""
+    echo -e "  ${DIM}These are the passwords you will use to log in.${NC}"
+    echo ""
+
+    for _uvar in "${user_blank[@]}"; do
+      case "$_uvar" in
+        INIT_SEAFILE_ADMIN_PASSWORD)
+          local _admin_pw=""
+          while [[ -z "$_admin_pw" ]]; do
+            echo -ne "  ${BOLD}Admin password${NC} ${DIM}(for ${INIT_SEAFILE_ADMIN_EMAIL:-admin}):${NC} "
+            read -rs _admin_pw
+            echo ""
+            if [[ -z "$_admin_pw" ]]; then
+              echo -e "  ${DIM}Password cannot be blank.${NC}"
+            fi
+          done
+          # Write to .env safely (handles special characters)
+          python3 -c "
+import re, sys
+key, val, path = 'INIT_SEAFILE_ADMIN_PASSWORD', sys.argv[1], sys.argv[2]
+content = open(path).read()
+content = re.sub(r'^' + re.escape(key) + r'=.*$', key + '=' + val, content, flags=re.MULTILINE)
+open(path, 'w').write(content)
+" "$_admin_pw" "$env_file"
+          echo -e "    ${GREEN}✓${NC}  INIT_SEAFILE_ADMIN_PASSWORD set"
+          ;;
+      esac
+    done
+    echo ""
   fi
 
   echo ""

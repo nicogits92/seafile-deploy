@@ -2345,7 +2345,7 @@ wizard_step_features() {
 # WIZARD STEP 7: Configuration Management (GitOps)
 # ===========================================================================
 wizard_step_config_management() {
-  # If pre-set by deployment menu (option 3), skip the ask but collect credentials
+  # If pre-set by deployment menu (option 3), collect git credentials
   if [[ "${WIZ_GITOPS_ENABLED:-}" == "true" ]]; then
     _wiz_header "Step 7 of 7: Git Repository Setup"
 
@@ -2370,50 +2370,9 @@ wizard_step_config_management() {
     return
   fi
 
-  _wiz_header "Step 7 of 7: Configuration Management"
-
-  echo -e "  ${DIM}All configuration changes are version-tracked automatically.${NC}"
-  echo ""
-
-  echo -e "  ${BOLD}  1  ${NC}Local only ${DIM}(default)${NC}"
-  echo -e "     ${DIM}Edit .env on this machine with seafile config or nano${NC}"
-  echo -e "     ${DIM}Version history tracked automatically${NC}"
-  echo ""
-  echo -e "  ${BOLD}  2  ${NC}Git-managed"
-  echo -e "     ${DIM}Store .env in a git repository (GitHub, Gitea, etc.)${NC}"
-  echo -e "     ${DIM}Push to apply changes · full version history${NC}"
-  echo -e "     ${DIM}Offsite config backup · no SSH needed for config changes${NC}"
-  echo ""
-
-  local _mgmt_choice=""
-  while true; do
-    echo -ne "  ${BOLD}Select [1/2] (default: 1):${NC} "
-    read -r _mgmt_choice
-    _mgmt_choice="${_mgmt_choice:-1}"
-    case "$_mgmt_choice" in 1|2) break ;; *) echo -e "  ${DIM}Enter 1 or 2.${NC}" ;; esac
-  done
-
-  if [[ "$_mgmt_choice" == "2" ]]; then
-    WIZ_GITOPS_ENABLED="true"
-    echo ""
-    echo -e "  ${YELLOW}Note:${NC} ${DIM}Your .env contains passwords and secrets. Only use a${NC}"
-    echo -e "  ${DIM}private repository that you control.${NC}"
-    echo ""
-
-    _wiz_input WIZ_GITOPS_REPO "Repository URL (HTTPS)" "e.g. https://gitea.example.com/user/seafile-config.git" "" "true"
-    _wiz_password WIZ_GITOPS_TOKEN "Access token (for push/pull)" "true"
-    _wiz_input WIZ_GITOPS_BRANCH "Branch" "" "main" "false"
-    WIZ_GITOPS_BRANCH="${WIZ_GITOPS_BRANCH:-main}"
-
-    echo ""
-    echo -e "  ${DIM}After setup, you will need to add a webhook in your git provider:${NC}"
-    echo -e "  ${DIM}  URL:     http://YOUR_SERVER_IP:9002/${NC}"
-    echo -e "  ${DIM}  Secret:  (auto-generated, shown after install)${NC}"
-    echo -e "  ${DIM}  Events:  Push events only${NC}"
-    echo ""
-  else
-    WIZ_GITOPS_ENABLED="false"
-  fi
+  # Standard deployment — gitops already set to false by menu
+  # Nothing to ask — local config management is the default
+  WIZ_GITOPS_ENABLED="false"
 }
 
 # ===========================================================================
@@ -4679,6 +4638,7 @@ check_env_and_configure() {
           ;;
         2)
           export WIZ_DEPLOYMENT_MODE="native"
+          export WIZ_GITOPS_ENABLED="false"
           run_guided_setup "$env_file"
           return 0
           ;;
@@ -14870,22 +14830,28 @@ prompt_secret_generation() {
   echo ""
 
   if [[ "$choice" == "3" ]]; then
-    echo -e "  ${DIM}Skipping -- fill in secrets manually before running the installer.${NC}"
+    echo -e "  ${DIM}Skipping auto-generation.${NC}"
     echo ""
-    return 0
+    if [[ ${#infra_blank[@]} -gt 0 ]]; then
+      echo -e "  ${YELLOW}Remember:${NC} ${DIM}Fill in infrastructure secrets before running the installer:${NC}"
+      for v in "${infra_blank[@]}"; do
+        echo -e "    ${DIM}${v}${NC}"
+      done
+      echo -e "  ${DIM}Edit with: nano ${env_file}${NC}"
+      echo ""
+    fi
   fi
 
   # Determine which variables to generate
-  local to_generate=( "${infra_blank[@]}" )
-  if [[ "$choice" == "2" ]]; then
-    to_generate+=( "${user_blank[@]}" )
+  local to_generate=()
+  if [[ "$choice" == "1" || "$choice" == "2" ]]; then
+    to_generate=( "${infra_blank[@]}" )
+    if [[ "$choice" == "2" ]]; then
+      to_generate+=( "${user_blank[@]}" )
+    fi
   fi
 
-  if [[ ${#to_generate[@]} -eq 0 ]]; then
-    echo -e "  ${DIM}Nothing to generate -- all selected secrets are already set.${NC}"
-    echo ""
-    return 0
-  fi
+  if [[ ${#to_generate[@]} -gt 0 ]]; then
 
   # Helper: write a value into a blank variable in .env using Python3.
   # Python3 is always present on Debian 13. Using it here because openssl
@@ -14975,6 +14941,48 @@ PYEOF
     echo -e "  ${DIM}Values are not displayed here. View or edit them with:${NC}"
     echo -e "  ${DIM}  nano ${env_file}${NC}"
     echo -e "  ${DIM}  (or run 'seafile config' after setup)${NC}"
+  fi
+
+  fi  # end of to_generate block
+
+  # ── Prompt for user-facing secrets not covered by auto-generation ──────
+  # When the user chose option 1 (infra only) or option 3 (skip),
+  # user-facing secrets like the admin password were not generated.
+  # Prompt for them now so the installer can proceed.
+  if [[ "$choice" != "2" && ${#user_blank[@]} -gt 0 ]]; then
+    echo ""
+    echo -e "  ${DIM}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo ""
+    echo -e "  ${BOLD}User credentials${NC}"
+    echo ""
+    echo -e "  ${DIM}These are the passwords you will use to log in.${NC}"
+    echo ""
+
+    for _uvar in "${user_blank[@]}"; do
+      case "$_uvar" in
+        INIT_SEAFILE_ADMIN_PASSWORD)
+          local _admin_pw=""
+          while [[ -z "$_admin_pw" ]]; do
+            echo -ne "  ${BOLD}Admin password${NC} ${DIM}(for ${INIT_SEAFILE_ADMIN_EMAIL:-admin}):${NC} "
+            read -rs _admin_pw
+            echo ""
+            if [[ -z "$_admin_pw" ]]; then
+              echo -e "  ${DIM}Password cannot be blank.${NC}"
+            fi
+          done
+          # Write to .env safely (handles special characters)
+          python3 -c "
+import re, sys
+key, val, path = 'INIT_SEAFILE_ADMIN_PASSWORD', sys.argv[1], sys.argv[2]
+content = open(path).read()
+content = re.sub(r'^' + re.escape(key) + r'=.*$', key + '=' + val, content, flags=re.MULTILINE)
+open(path, 'w').write(content)
+" "$_admin_pw" "$env_file"
+          echo -e "    ${GREEN}✓${NC}  INIT_SEAFILE_ADMIN_PASSWORD set"
+          ;;
+      esac
+    done
+    echo ""
   fi
 
   echo ""
