@@ -135,7 +135,7 @@ prompt_secret_generation() {
   echo ""
   echo -e "  All values can be changed later by editing /opt/seafile/.env."
   echo ""
-  echo -e "  ${BOLD}  1  ${NC}Infrastructure secrets only"
+  echo -e "  ${GREEN}${BOLD}  1  ${NC}Infrastructure secrets only"
 
   # Show which infra vars are blank, or note all already set
   if [[ ${#infra_blank[@]} -gt 0 ]]; then
@@ -146,7 +146,7 @@ prompt_secret_generation() {
   echo ""
 
   if [[ ${#user_blank[@]} -gt 0 ]]; then
-    echo -e "  ${BOLD}  2  ${NC}Infrastructure + user-facing credentials"
+    echo -e "  ${CYAN}${BOLD}  2  ${NC}Infrastructure + user-facing credentials"
     echo -e "     ${DIM}$(IFS=', '; echo "${all_blank[*]}")${NC}"
   else
     echo -e "  ${DIM}  2  Infrastructure + user-facing${NC}"

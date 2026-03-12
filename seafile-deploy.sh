@@ -1313,12 +1313,14 @@ _show_phase_menu() {
   echo "  The following steps will run. Enter step numbers to"
   echo "  toggle (e.g. 1 3), Enter to run, or q to quit."
   echo ""
+  local -a _OPT_COLORS=("$GREEN" "$CYAN" "$YELLOW" "$PURPLE" "$BOLD")
   for i in "${!_PHASES[@]}"; do
     _num=$(( i + 1 ))
+    local _c="${_OPT_COLORS[$(( i % ${#_OPT_COLORS[@]} ))]}"
     if [[ "${_SELECTED[$i]}" == "true" ]]; then
-      echo -e "    [${GREEN}✓${NC}] $(printf '%2d' $_num).  ${_PHASES[$i]}"
+      echo -e "    [${GREEN}✓${NC}] ${_c}$(printf '%2d' $_num)${NC}.  ${_PHASES[$i]}"
     else
-      echo -e "    [ ] $(printf '%2d' $_num).  ${_PHASES[$i]}"
+      echo -e "    [ ] ${DIM}$(printf '%2d' $_num).  ${_PHASES[$i]}${NC}"
     fi
   done
   echo ""
@@ -1787,6 +1789,7 @@ _wiz_select() {
 
   local -a options=("$@")
   local count=${#options[@]}
+  local -a _OPT_COLORS=("$GREEN" "$CYAN" "$YELLOW" "$PURPLE" "$BOLD")
 
   echo -e "  ${prompt}"
   echo ""
@@ -1801,7 +1804,8 @@ _wiz_select() {
       marker=" ${DIM}(default)${NC}"
       default_num="$i"
     fi
-    echo -e "  ${BOLD}  ${i}  ${NC}${desc}${marker}"
+    local _c="${_OPT_COLORS[$(( (i-1) % ${#_OPT_COLORS[@]} ))]}"
+    echo -e "  ${_c}${BOLD}  ${i}  ${NC}${desc}${marker}"
     ((i++))
   done
 
@@ -1940,10 +1944,12 @@ _wiz_checklist() {
     echo -e "  ${DIM}Enter numbers to toggle (e.g. 1 3 5), Enter to continue${NC}"
     echo ""
 
+    local -a _OPT_COLORS=("$GREEN" "$CYAN" "$YELLOW" "$PURPLE" "$BOLD")
     for ((i=0; i<count; i++)); do
       local mark="[ ]"
-      [[ "${states[$i]}" == "true" ]] && mark="[x]"
-      echo -e "  ${BOLD}  $((i+1))  ${NC}${mark} ${labels[$i]}"
+      [[ "${states[$i]}" == "true" ]] && mark="[${GREEN}x${NC}]"
+      local _c="${_OPT_COLORS[$(( i % ${#_OPT_COLORS[@]} ))]}"
+      echo -e "  ${_c}${BOLD}  $((i+1))  ${NC}${mark} ${labels[$i]}"
     done
 
     echo ""
@@ -2077,9 +2083,9 @@ wizard_step_storage_type() {
       echo -e "  ${DIM}See README.md → Plan Your Deployment → Storage type${NC}"
       echo ""
       echo -e "  ${BOLD}Options:${NC}"
-      echo -e "  ${BOLD}  1  ${NC}I've done it now, continue"
-      echo -e "  ${BOLD}  2  ${NC}Go back and choose different storage"
-      echo -e "  ${BOLD}  3  ${NC}Quit and read the documentation"
+      echo -e "  ${GREEN}${BOLD}  1  ${NC}I've done it now, continue"
+      echo -e "  ${CYAN}${BOLD}  2  ${NC}Go back and choose different storage"
+      echo -e "  ${DIM}  3  Quit and read the documentation${NC}"
       echo ""
 
       local action=""
@@ -2115,10 +2121,10 @@ wizard_step_storage_classes() {
   echo -e "  ${DIM}as separate classes. Users (or a policy) choose which class${NC}"
   echo -e "  ${DIM}a library belongs to when they create it.${NC}"
   echo ""
-  echo -e "  ${BOLD}  1  ${NC}Single storage ${DIM}(default)${NC}"
+  echo -e "  ${GREEN}${BOLD}  1  ${NC}Single storage ${DIM}(default)${NC}"
   echo -e "     ${DIM}All libraries use one storage class${NC}"
   echo ""
-  echo -e "  ${BOLD}  2  ${NC}Multiple storage classes"
+  echo -e "  ${CYAN}${BOLD}  2  ${NC}Multiple storage classes"
   echo -e "     ${DIM}Define named classes (e.g. Active, Archive)${NC}"
   echo ""
 
@@ -2191,13 +2197,13 @@ wizard_step_storage_classes() {
   echo ""
   echo -e "  ${BOLD}Library assignment policy:${NC}"
   echo ""
-  echo -e "  ${BOLD}  1  ${NC}User chooses ${DIM}(default)${NC}"
+  echo -e "  ${GREEN}${BOLD}  1  ${NC}User chooses ${DIM}(default)${NC}"
   echo -e "     ${DIM}Users select a storage class when creating a library${NC}"
   echo ""
-  echo -e "  ${BOLD}  2  ${NC}Role-based"
+  echo -e "  ${CYAN}${BOLD}  2  ${NC}Role-based"
   echo -e "     ${DIM}Admins assign storage classes to user roles${NC}"
   echo ""
-  echo -e "  ${BOLD}  3  ${NC}Automatic"
+  echo -e "  ${YELLOW}${BOLD}  3  ${NC}Automatic"
   echo -e "     ${DIM}Libraries distributed automatically by ID${NC}"
   echo ""
 
@@ -2240,9 +2246,9 @@ wizard_step_database() {
     if [[ "$db_ready" != "true" ]]; then
       echo ""
       echo -e "  ${BOLD}Options:${NC}"
-      echo -e "  ${BOLD}  1  ${NC}I've done it now, continue"
-      echo -e "  ${BOLD}  2  ${NC}Go back and use bundled database"
-      echo -e "  ${BOLD}  3  ${NC}Quit and set up the database"
+      echo -e "  ${GREEN}${BOLD}  1  ${NC}I've done it now, continue"
+      echo -e "  ${CYAN}${BOLD}  2  ${NC}Go back and use bundled database"
+      echo -e "  ${DIM}  3  Quit and set up the database${NC}"
       echo ""
 
       local action=""
@@ -2545,10 +2551,10 @@ wizard_show_summary() {
   echo -e "  ${DIM}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
   echo ""
 
-  echo -e "  ${BOLD}  1  ${NC}Continue with these settings"
-  echo -e "  ${BOLD}  2  ${NC}Start over"
-  echo -e "  ${BOLD}  3  ${NC}Edit .env manually before continuing"
-  echo -e "  ${BOLD}  4  ${NC}Quit"
+  echo -e "  ${GREEN}${BOLD}  1  ${NC}Continue with these settings"
+  echo -e "  ${CYAN}${BOLD}  2  ${NC}Start over"
+  echo -e "  ${YELLOW}${BOLD}  3  ${NC}Edit .env manually before continuing"
+  echo -e "  ${DIM}  4  Quit${NC}"
   echo ""
 
   local choice=""
@@ -3869,11 +3875,11 @@ run_minimal_setup() {
   echo ""
   echo -e "  ${BOLD}How will you access this server?${NC}"
   echo ""
-  echo -e "  ${BOLD}  1  ${NC}Local network only"
+  echo -e "  ${GREEN}${BOLD}  1  ${NC}Local network only"
   echo -e "     ${DIM}Access from devices on your home or office network${NC}"
   echo -e "     ${DIM}No domain name or special network setup needed${NC}"
   echo ""
-  echo -e "  ${BOLD}  2  ${NC}From anywhere over the internet"
+  echo -e "  ${CYAN}${BOLD}  2  ${NC}From anywhere over the internet"
   echo -e "     ${DIM}Access from any device, anywhere${NC}"
   echo -e "     ${DIM}Requires a registered domain name and ports 80 + 443${NC}"
   echo -e "     ${DIM}forwarded to this machine${NC}"
@@ -3942,8 +3948,8 @@ run_minimal_setup() {
   echo -e "  ${DIM}PowerPoint) directly in your browser — like Google Docs, but${NC}"
   echo -e "  ${DIM}hosted on your own server.${NC}"
   echo ""
-  echo -e "  ${BOLD}  1  ${NC}Yes — add Collabora Online"
-  echo -e "  ${BOLD}  2  ${NC}No — just file sync for now"
+  echo -e "  ${GREEN}${BOLD}  1  ${NC}Yes — add Collabora Online"
+  echo -e "  ${CYAN}${BOLD}  2  ${NC}No — just file sync for now"
   echo ""
   echo -e "  ${DIM}You can always add this later with: seafile config${NC}"
   echo ""
@@ -3993,8 +3999,8 @@ run_minimal_setup() {
     echo -e "  ${DIM}Let's Encrypt once ports 80 and 443 are reachable.${NC}"
   fi
   echo ""
-  echo -e "  ${BOLD}  1  ${NC}${BOLD}Install${NC}"
-  echo -e "  ${BOLD}  2  ${NC}Go back"
+  echo -e "  ${GREEN}${BOLD}  1  ${NC}${BOLD}Install${NC}"
+  echo -e "  ${DIM}  2  Go back${NC}"
   echo ""
   echo -e "  ${DIM}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
   echo ""
@@ -4611,14 +4617,14 @@ check_env_and_configure() {
     echo -e "  ${GREEN}${BOLD}  1  ${NC}${BOLD}Just give me Seafile${NC}"
     echo -e "     ${DIM}Quick setup · get started in minutes${NC}"
     echo ""
-    echo -e "  ${BOLD}  2  ${NC}${BOLD}Standard deployment${NC}"
+    echo -e "  ${CYAN}${BOLD}  2  ${NC}${BOLD}Standard deployment${NC}"
     echo -e "     ${DIM}Network storage · disaster recovery · all options${NC}"
     echo ""
-    echo -e "  ${BOLD}  3  ${NC}${BOLD}Git-managed deployment${NC}"
+    echo -e "  ${YELLOW}${BOLD}  3  ${NC}${BOLD}Git-managed deployment${NC}"
     echo -e "     ${DIM}Same as standard, plus manage .env through a git${NC}"
     echo -e "     ${DIM}repository — config changes without SSH${NC}"
     echo ""
-    echo -e "  ${BOLD}  4  ${NC}${BOLD}Quit${NC}"
+    echo -e "  ${DIM}  4  Quit${NC}"
     echo ""
     echo -e "  ${DIM}All modes include the Portainer Agent for web-based${NC}"
     echo -e "  ${DIM}container monitoring. To use Portainer for stack${NC}"
@@ -4740,7 +4746,7 @@ check_env_and_configure() {
     echo -e "  ${BOLD}  3  ${NC}${BOLD}Continue anyway${NC}"
     echo -e "     ${DIM}Proceed with the current file (preflight will catch errors)${NC}"
     echo ""
-    echo -e "  ${BOLD}  4  ${NC}${BOLD}Quit${NC}"
+    echo -e "  ${DIM}  4  Quit${NC}"
     echo ""
     echo -e "  ${DIM}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo ""
@@ -5708,12 +5714,14 @@ _show_phase_menu() {
   echo "  The following steps will run. Enter step numbers to"
   echo "  toggle (e.g. 1 3), Enter to run, or q to quit."
   echo ""
+  local -a _OPT_COLORS=("$GREEN" "$CYAN" "$YELLOW" "$PURPLE" "$BOLD")
   for i in "${!_PHASES[@]}"; do
     _num=$(( i + 1 ))
+    local _c="${_OPT_COLORS[$(( i % ${#_OPT_COLORS[@]} ))]}"
     if [[ "${_SELECTED[$i]}" == "true" ]]; then
-      echo -e "    [${GREEN}✓${NC}] $(printf '%2d' $_num).  ${_PHASES[$i]}"
+      echo -e "    [${GREEN}✓${NC}] ${_c}$(printf '%2d' $_num)${NC}.  ${_PHASES[$i]}"
     else
-      echo -e "    [ ] $(printf '%2d' $_num).  ${_PHASES[$i]}"
+      echo -e "    [ ] ${DIM}$(printf '%2d' $_num).  ${_PHASES[$i]}${NC}"
     fi
   done
   echo ""
@@ -7378,6 +7386,7 @@ _cfg_select() {
   echo -e "  ${prompt}"
   echo ""
   
+  local -a _OPT_COLORS=("$GREEN" "$CYAN" "$YELLOW" "$PURPLE" "$BOLD")
   local i=1
   for opt in "${options[@]}"; do
     local marker=""
@@ -7385,7 +7394,8 @@ _cfg_select() {
       marker=" ${DIM}(current)${NC}"
       default_idx=$i
     fi
-    echo -e "    ${BOLD}$i${NC}  $opt$marker"
+    local _c="${_OPT_COLORS[$(( (i-1) % ${#_OPT_COLORS[@]} ))]}"
+    echo -e "    ${_c}${BOLD}$i${NC}  $opt$marker"
     ((i++))
   done
   echo ""
@@ -7674,6 +7684,7 @@ _cfg_section_features() {
 
   _display_features() {
     echo ""
+    local -a _OPT_COLORS=("$GREEN" "$CYAN" "$YELLOW" "$PURPLE" "$BOLD")
     local i=1
     for f in "${features[@]}"; do
       local var="${f%%:*}"
@@ -7681,7 +7692,8 @@ _cfg_section_features() {
       local val="${!var:-false}"
       local mark="[ ]"
       [[ "$val" == "true" ]] && mark="[${GREEN}x${NC}]"
-      echo -e "    ${BOLD}$i${NC}  $mark $label"
+      local _c="${_OPT_COLORS[$(( (i-1) % ${#_OPT_COLORS[@]} ))]}"
+      echo -e "    ${_c}${BOLD}$i${NC}  $mark $label"
       ((i++))
     done
     echo ""
@@ -8982,22 +8994,22 @@ _cfg_main_menu() {
     echo -e "    Office:     ${CYAN}${OFFICE_SUITE:-collabora}${NC}"
     _cfg_rule
     
-    echo -e "    ${BOLD}1${NC}   Core settings          ${DIM}hostname, admin email${NC}"
-    echo -e "    ${BOLD}2${NC}   Storage                ${DIM}NFS, SMB, migration${NC}"
-    echo -e "    ${BOLD}3${NC}   Database               ${DIM}bundled or external${NC}"
-    echo -e "    ${BOLD}4${NC}   Reverse proxy          ${DIM}nginx, traefik, caddy${NC}"
-    echo -e "    ${BOLD}5${NC}   Office suite           ${DIM}Collabora, OnlyOffice${NC}"
-    echo -e "    ${BOLD}6${NC}   Email / SMTP"
-    echo -e "    ${BOLD}7${NC}   LDAP / Active Directory"
-    echo -e "    ${BOLD}8${NC}   Optional features      ${DIM}ClamAV, WebDAV, etc.${NC}"
-    echo -e "    ${BOLD}9${NC}   Portainer integration  ${DIM}$([ "${PORTAINER_MANAGED:-false}" == "true" ] && echo "${GREEN}enabled${NC}" || echo "${DIM}disabled${NC}")${NC}"
+    echo -e "    ${GREEN}${BOLD}1${NC}   Core settings          ${DIM}hostname, admin email${NC}"
+    echo -e "    ${CYAN}${BOLD}2${NC}   Storage                ${DIM}NFS, SMB, migration${NC}"
+    echo -e "    ${YELLOW}${BOLD}3${NC}   Database               ${DIM}bundled or external${NC}"
+    echo -e "    ${PURPLE}${BOLD}4${NC}   Reverse proxy          ${DIM}nginx, traefik, caddy${NC}"
+    echo -e "    ${GREEN}${BOLD}5${NC}   Office suite           ${DIM}Collabora, OnlyOffice${NC}"
+    echo -e "    ${CYAN}${BOLD}6${NC}   Email / SMTP"
+    echo -e "    ${YELLOW}${BOLD}7${NC}   LDAP / Active Directory"
+    echo -e "    ${PURPLE}${BOLD}8${NC}   Optional features      ${DIM}ClamAV, WebDAV, etc.${NC}"
+    echo -e "    ${GREEN}${BOLD}9${NC}   Portainer integration  ${DIM}$([ "${PORTAINER_MANAGED:-false}" == "true" ] && echo "${GREEN}enabled${NC}" || echo "${DIM}disabled${NC}")${NC}"
     echo ""
-    echo -e "    ${BOLD}e${NC}   Open editor (nano)"
-    echo -e "    ${BOLD}s${NC}   Show full config"
-    echo -e "    ${BOLD}q${NC}   Quit"
+    echo -e "    ${BOLD}10${NC}  Open editor (nano)"
+    echo -e "    ${BOLD}11${NC}  Show full config"
+    echo -e "    ${DIM} 0${NC}  ${DIM}Back${NC}"
     echo ""
     
-    read -r -p "  Select [1-9/e/s/q]: " sel
+    read -r -p "  Select [0-11]: " sel
     
     case "$sel" in
       1) _cfg_section_core ;;
@@ -9009,14 +9021,14 @@ _cfg_main_menu() {
       7) _cfg_section_ldap ;;
       8) _cfg_section_features ;;
       9) _cfg_section_portainer ;;
-      e) 
+      10)
         local editor="${EDITOR:-nano}"
         "$editor" "$ENV_FILE"
         # Reload env after manual edit
         _load_env "$ENV_FILE" 2>/dev/null || true
         ;;
-      s) _cfg_section_show ;;
-      q) return ;;
+      11) _cfg_section_show ;;
+      0) return ;;
     esac
   done
 }
@@ -11826,12 +11838,14 @@ _show_phase_menu() {
   echo "  The following steps will run. Enter step numbers to"
   echo "  toggle (e.g. 1 3), Enter to run, or q to quit."
   echo ""
+  local -a _OPT_COLORS=("$GREEN" "$CYAN" "$YELLOW" "$PURPLE" "$BOLD")
   for i in "${!_PHASES[@]}"; do
     _num=$(( i + 1 ))
+    local _c="${_OPT_COLORS[$(( i % ${#_OPT_COLORS[@]} ))]}"
     if [[ "${_SELECTED[$i]}" == "true" ]]; then
-      echo -e "    [${GREEN}✓${NC}] $(printf '%2d' $_num).  ${_PHASES[$i]}"
+      echo -e "    [${GREEN}✓${NC}] ${_c}$(printf '%2d' $_num)${NC}.  ${_PHASES[$i]}"
     else
-      echo -e "    [ ] $(printf '%2d' $_num).  ${_PHASES[$i]}"
+      echo -e "    [ ] ${DIM}$(printf '%2d' $_num).  ${_PHASES[$i]}${NC}"
     fi
   done
   echo ""
@@ -14793,7 +14807,7 @@ prompt_secret_generation() {
   echo ""
   echo -e "  All values can be changed later by editing /opt/seafile/.env."
   echo ""
-  echo -e "  ${BOLD}  1  ${NC}Infrastructure secrets only"
+  echo -e "  ${GREEN}${BOLD}  1  ${NC}Infrastructure secrets only"
 
   # Show which infra vars are blank, or note all already set
   if [[ ${#infra_blank[@]} -gt 0 ]]; then
@@ -14804,7 +14818,7 @@ prompt_secret_generation() {
   echo ""
 
   if [[ ${#user_blank[@]} -gt 0 ]]; then
-    echo -e "  ${BOLD}  2  ${NC}Infrastructure + user-facing credentials"
+    echo -e "  ${CYAN}${BOLD}  2  ${NC}Infrastructure + user-facing credentials"
     echo -e "     ${DIM}$(IFS=', '; echo "${all_blank[*]}")${NC}"
   else
     echo -e "  ${DIM}  2  Infrastructure + user-facing${NC}"

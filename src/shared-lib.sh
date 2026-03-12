@@ -326,12 +326,14 @@ _show_phase_menu() {
   echo "  The following steps will run. Enter step numbers to"
   echo "  toggle (e.g. 1 3), Enter to run, or q to quit."
   echo ""
+  local -a _OPT_COLORS=("$GREEN" "$CYAN" "$YELLOW" "$PURPLE" "$BOLD")
   for i in "${!_PHASES[@]}"; do
     _num=$(( i + 1 ))
+    local _c="${_OPT_COLORS[$(( i % ${#_OPT_COLORS[@]} ))]}"
     if [[ "${_SELECTED[$i]}" == "true" ]]; then
-      echo -e "    [${GREEN}✓${NC}] $(printf '%2d' $_num).  ${_PHASES[$i]}"
+      echo -e "    [${GREEN}✓${NC}] ${_c}$(printf '%2d' $_num)${NC}.  ${_PHASES[$i]}"
     else
-      echo -e "    [ ] $(printf '%2d' $_num).  ${_PHASES[$i]}"
+      echo -e "    [ ] ${DIM}$(printf '%2d' $_num).  ${_PHASES[$i]}${NC}"
     fi
   done
   echo ""

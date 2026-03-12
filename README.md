@@ -84,8 +84,8 @@ Disaster recovery is built in from day one. Your file data lives on network stor
 Want to try Seafile without making any infrastructure decisions? Select **Just give me Seafile** when you run the deploy script.
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/nicogits92/seafile-deploy/main/seafile-deploy.sh \
-  -o /root/seafile-deploy.sh && chmod +x /root/seafile-deploy.sh && bash /root/seafile-deploy.sh
+wget -qO /root/seafile-deploy.sh https://raw.githubusercontent.com/nicogits92/seafile-deploy/main/seafile-deploy.sh \
+  && chmod +x /root/seafile-deploy.sh && bash /root/seafile-deploy.sh
 ```
 
 Select **1 — Fresh Install**, then choose **Just give me Seafile**.
@@ -697,8 +697,8 @@ Configure an iSCSI target on your NAS/SAN. You will need:
 Download and run the deployment script:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/nicogits92/seafile-deploy/main/seafile-deploy.sh \
-  -o /root/seafile-deploy.sh && chmod +x /root/seafile-deploy.sh && bash /root/seafile-deploy.sh
+wget -qO /root/seafile-deploy.sh https://raw.githubusercontent.com/nicogits92/seafile-deploy/main/seafile-deploy.sh \
+  && chmod +x /root/seafile-deploy.sh && bash /root/seafile-deploy.sh
 ```
 
 The splash screen appears. Select **1 - Fresh Install**.
@@ -1252,8 +1252,8 @@ If the VM is lost but your network share data and database are intact, use Recov
 
 2. Download and run the deployment script, then select **2 - Recovery Mode**:
    ```bash
-   curl -fsSL https://raw.githubusercontent.com/nicogits92/seafile-deploy/main/seafile-deploy.sh \
-     -o /root/seafile-deploy.sh && chmod +x /root/seafile-deploy.sh && bash /root/seafile-deploy.sh
+   wget -qO /root/seafile-deploy.sh https://raw.githubusercontent.com/nicogits92/seafile-deploy/main/seafile-deploy.sh \
+     && chmod +x /root/seafile-deploy.sh && bash /root/seafile-deploy.sh
    ```
 
    The script will prompt for your storage details before anything runs:
@@ -1559,7 +1559,7 @@ Seafile supports S3-compatible backends (AWS S3, Backblaze B2, MinIO, Hetzner Ob
 
 ### OS - Using a Pre-built Debian Image
 
-If your hypervisor provides a Debian 13 cloud image or template (Proxmox helper scripts, Hetzner, DigitalOcean, etc.), skip Step 2 entirely. Just ensure it is Debian 13 (Trixie) 64-bit with root or sudo access and `curl` installed. Run `seafile-deploy.sh` directly after provisioning.
+If your hypervisor provides a Debian 13 cloud image or template (Proxmox helper scripts, Hetzner, DigitalOcean, etc.), skip Step 2 entirely. Just ensure it is Debian 13 (Trixie) 64-bit with root or sudo access and `wget` installed. Run `seafile-deploy.sh` directly after provisioning.
 
 ---
 

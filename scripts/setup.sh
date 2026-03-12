@@ -864,12 +864,14 @@ _show_phase_menu() {
   echo "  The following steps will run. Enter step numbers to"
   echo "  toggle (e.g. 1 3), Enter to run, or q to quit."
   echo ""
+  local -a _OPT_COLORS=("$GREEN" "$CYAN" "$YELLOW" "$PURPLE" "$BOLD")
   for i in "${!_PHASES[@]}"; do
     _num=$(( i + 1 ))
+    local _c="${_OPT_COLORS[$(( i % ${#_OPT_COLORS[@]} ))]}"
     if [[ "${_SELECTED[$i]}" == "true" ]]; then
-      echo -e "    [${GREEN}✓${NC}] $(printf '%2d' $_num).  ${_PHASES[$i]}"
+      echo -e "    [${GREEN}✓${NC}] ${_c}$(printf '%2d' $_num)${NC}.  ${_PHASES[$i]}"
     else
-      echo -e "    [ ] $(printf '%2d' $_num).  ${_PHASES[$i]}"
+      echo -e "    [ ] ${DIM}$(printf '%2d' $_num).  ${_PHASES[$i]}${NC}"
     fi
   done
   echo ""
@@ -2534,6 +2536,7 @@ _cfg_select() {
   echo -e "  ${prompt}"
   echo ""
   
+  local -a _OPT_COLORS=("$GREEN" "$CYAN" "$YELLOW" "$PURPLE" "$BOLD")
   local i=1
   for opt in "${options[@]}"; do
     local marker=""
@@ -2541,7 +2544,8 @@ _cfg_select() {
       marker=" ${DIM}(current)${NC}"
       default_idx=$i
     fi
-    echo -e "    ${BOLD}$i${NC}  $opt$marker"
+    local _c="${_OPT_COLORS[$(( (i-1) % ${#_OPT_COLORS[@]} ))]}"
+    echo -e "    ${_c}${BOLD}$i${NC}  $opt$marker"
     ((i++))
   done
   echo ""
@@ -2830,6 +2834,7 @@ _cfg_section_features() {
 
   _display_features() {
     echo ""
+    local -a _OPT_COLORS=("$GREEN" "$CYAN" "$YELLOW" "$PURPLE" "$BOLD")
     local i=1
     for f in "${features[@]}"; do
       local var="${f%%:*}"
@@ -2837,7 +2842,8 @@ _cfg_section_features() {
       local val="${!var:-false}"
       local mark="[ ]"
       [[ "$val" == "true" ]] && mark="[${GREEN}x${NC}]"
-      echo -e "    ${BOLD}$i${NC}  $mark $label"
+      local _c="${_OPT_COLORS[$(( (i-1) % ${#_OPT_COLORS[@]} ))]}"
+      echo -e "    ${_c}${BOLD}$i${NC}  $mark $label"
       ((i++))
     done
     echo ""
@@ -4138,22 +4144,22 @@ _cfg_main_menu() {
     echo -e "    Office:     ${CYAN}${OFFICE_SUITE:-collabora}${NC}"
     _cfg_rule
     
-    echo -e "    ${BOLD}1${NC}   Core settings          ${DIM}hostname, admin email${NC}"
-    echo -e "    ${BOLD}2${NC}   Storage                ${DIM}NFS, SMB, migration${NC}"
-    echo -e "    ${BOLD}3${NC}   Database               ${DIM}bundled or external${NC}"
-    echo -e "    ${BOLD}4${NC}   Reverse proxy          ${DIM}nginx, traefik, caddy${NC}"
-    echo -e "    ${BOLD}5${NC}   Office suite           ${DIM}Collabora, OnlyOffice${NC}"
-    echo -e "    ${BOLD}6${NC}   Email / SMTP"
-    echo -e "    ${BOLD}7${NC}   LDAP / Active Directory"
-    echo -e "    ${BOLD}8${NC}   Optional features      ${DIM}ClamAV, WebDAV, etc.${NC}"
-    echo -e "    ${BOLD}9${NC}   Portainer integration  ${DIM}$([ "${PORTAINER_MANAGED:-false}" == "true" ] && echo "${GREEN}enabled${NC}" || echo "${DIM}disabled${NC}")${NC}"
+    echo -e "    ${GREEN}${BOLD}1${NC}   Core settings          ${DIM}hostname, admin email${NC}"
+    echo -e "    ${CYAN}${BOLD}2${NC}   Storage                ${DIM}NFS, SMB, migration${NC}"
+    echo -e "    ${YELLOW}${BOLD}3${NC}   Database               ${DIM}bundled or external${NC}"
+    echo -e "    ${PURPLE}${BOLD}4${NC}   Reverse proxy          ${DIM}nginx, traefik, caddy${NC}"
+    echo -e "    ${GREEN}${BOLD}5${NC}   Office suite           ${DIM}Collabora, OnlyOffice${NC}"
+    echo -e "    ${CYAN}${BOLD}6${NC}   Email / SMTP"
+    echo -e "    ${YELLOW}${BOLD}7${NC}   LDAP / Active Directory"
+    echo -e "    ${PURPLE}${BOLD}8${NC}   Optional features      ${DIM}ClamAV, WebDAV, etc.${NC}"
+    echo -e "    ${GREEN}${BOLD}9${NC}   Portainer integration  ${DIM}$([ "${PORTAINER_MANAGED:-false}" == "true" ] && echo "${GREEN}enabled${NC}" || echo "${DIM}disabled${NC}")${NC}"
     echo ""
-    echo -e "    ${BOLD}e${NC}   Open editor (nano)"
-    echo -e "    ${BOLD}s${NC}   Show full config"
-    echo -e "    ${BOLD}q${NC}   Quit"
+    echo -e "    ${BOLD}10${NC}  Open editor (nano)"
+    echo -e "    ${BOLD}11${NC}  Show full config"
+    echo -e "    ${DIM} 0${NC}  ${DIM}Back${NC}"
     echo ""
     
-    read -r -p "  Select [1-9/e/s/q]: " sel
+    read -r -p "  Select [0-11]: " sel
     
     case "$sel" in
       1) _cfg_section_core ;;
@@ -4165,14 +4171,14 @@ _cfg_main_menu() {
       7) _cfg_section_ldap ;;
       8) _cfg_section_features ;;
       9) _cfg_section_portainer ;;
-      e) 
+      10)
         local editor="${EDITOR:-nano}"
         "$editor" "$ENV_FILE"
         # Reload env after manual edit
         _load_env "$ENV_FILE" 2>/dev/null || true
         ;;
-      s) _cfg_section_show ;;
-      q) return ;;
+      11) _cfg_section_show ;;
+      0) return ;;
     esac
   done
 }
@@ -6982,12 +6988,14 @@ _show_phase_menu() {
   echo "  The following steps will run. Enter step numbers to"
   echo "  toggle (e.g. 1 3), Enter to run, or q to quit."
   echo ""
+  local -a _OPT_COLORS=("$GREEN" "$CYAN" "$YELLOW" "$PURPLE" "$BOLD")
   for i in "${!_PHASES[@]}"; do
     _num=$(( i + 1 ))
+    local _c="${_OPT_COLORS[$(( i % ${#_OPT_COLORS[@]} ))]}"
     if [[ "${_SELECTED[$i]}" == "true" ]]; then
-      echo -e "    [${GREEN}✓${NC}] $(printf '%2d' $_num).  ${_PHASES[$i]}"
+      echo -e "    [${GREEN}✓${NC}] ${_c}$(printf '%2d' $_num)${NC}.  ${_PHASES[$i]}"
     else
-      echo -e "    [ ] $(printf '%2d' $_num).  ${_PHASES[$i]}"
+      echo -e "    [ ] ${DIM}$(printf '%2d' $_num).  ${_PHASES[$i]}${NC}"
     fi
   done
   echo ""

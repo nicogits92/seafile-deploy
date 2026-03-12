@@ -112,6 +112,7 @@ _wiz_select() {
 
   local -a options=("$@")
   local count=${#options[@]}
+  local -a _OPT_COLORS=("$GREEN" "$CYAN" "$YELLOW" "$PURPLE" "$BOLD")
 
   echo -e "  ${prompt}"
   echo ""
@@ -126,7 +127,8 @@ _wiz_select() {
       marker=" ${DIM}(default)${NC}"
       default_num="$i"
     fi
-    echo -e "  ${BOLD}  ${i}  ${NC}${desc}${marker}"
+    local _c="${_OPT_COLORS[$(( (i-1) % ${#_OPT_COLORS[@]} ))]}"
+    echo -e "  ${_c}${BOLD}  ${i}  ${NC}${desc}${marker}"
     ((i++))
   done
 
@@ -265,10 +267,12 @@ _wiz_checklist() {
     echo -e "  ${DIM}Enter numbers to toggle (e.g. 1 3 5), Enter to continue${NC}"
     echo ""
 
+    local -a _OPT_COLORS=("$GREEN" "$CYAN" "$YELLOW" "$PURPLE" "$BOLD")
     for ((i=0; i<count; i++)); do
       local mark="[ ]"
-      [[ "${states[$i]}" == "true" ]] && mark="[x]"
-      echo -e "  ${BOLD}  $((i+1))  ${NC}${mark} ${labels[$i]}"
+      [[ "${states[$i]}" == "true" ]] && mark="[${GREEN}x${NC}]"
+      local _c="${_OPT_COLORS[$(( i % ${#_OPT_COLORS[@]} ))]}"
+      echo -e "  ${_c}${BOLD}  $((i+1))  ${NC}${mark} ${labels[$i]}"
     done
 
     echo ""
@@ -402,9 +406,9 @@ wizard_step_storage_type() {
       echo -e "  ${DIM}See README.md → Plan Your Deployment → Storage type${NC}"
       echo ""
       echo -e "  ${BOLD}Options:${NC}"
-      echo -e "  ${BOLD}  1  ${NC}I've done it now, continue"
-      echo -e "  ${BOLD}  2  ${NC}Go back and choose different storage"
-      echo -e "  ${BOLD}  3  ${NC}Quit and read the documentation"
+      echo -e "  ${GREEN}${BOLD}  1  ${NC}I've done it now, continue"
+      echo -e "  ${CYAN}${BOLD}  2  ${NC}Go back and choose different storage"
+      echo -e "  ${DIM}  3  Quit and read the documentation${NC}"
       echo ""
 
       local action=""
@@ -440,10 +444,10 @@ wizard_step_storage_classes() {
   echo -e "  ${DIM}as separate classes. Users (or a policy) choose which class${NC}"
   echo -e "  ${DIM}a library belongs to when they create it.${NC}"
   echo ""
-  echo -e "  ${BOLD}  1  ${NC}Single storage ${DIM}(default)${NC}"
+  echo -e "  ${GREEN}${BOLD}  1  ${NC}Single storage ${DIM}(default)${NC}"
   echo -e "     ${DIM}All libraries use one storage class${NC}"
   echo ""
-  echo -e "  ${BOLD}  2  ${NC}Multiple storage classes"
+  echo -e "  ${CYAN}${BOLD}  2  ${NC}Multiple storage classes"
   echo -e "     ${DIM}Define named classes (e.g. Active, Archive)${NC}"
   echo ""
 
@@ -516,13 +520,13 @@ wizard_step_storage_classes() {
   echo ""
   echo -e "  ${BOLD}Library assignment policy:${NC}"
   echo ""
-  echo -e "  ${BOLD}  1  ${NC}User chooses ${DIM}(default)${NC}"
+  echo -e "  ${GREEN}${BOLD}  1  ${NC}User chooses ${DIM}(default)${NC}"
   echo -e "     ${DIM}Users select a storage class when creating a library${NC}"
   echo ""
-  echo -e "  ${BOLD}  2  ${NC}Role-based"
+  echo -e "  ${CYAN}${BOLD}  2  ${NC}Role-based"
   echo -e "     ${DIM}Admins assign storage classes to user roles${NC}"
   echo ""
-  echo -e "  ${BOLD}  3  ${NC}Automatic"
+  echo -e "  ${YELLOW}${BOLD}  3  ${NC}Automatic"
   echo -e "     ${DIM}Libraries distributed automatically by ID${NC}"
   echo ""
 
@@ -565,9 +569,9 @@ wizard_step_database() {
     if [[ "$db_ready" != "true" ]]; then
       echo ""
       echo -e "  ${BOLD}Options:${NC}"
-      echo -e "  ${BOLD}  1  ${NC}I've done it now, continue"
-      echo -e "  ${BOLD}  2  ${NC}Go back and use bundled database"
-      echo -e "  ${BOLD}  3  ${NC}Quit and set up the database"
+      echo -e "  ${GREEN}${BOLD}  1  ${NC}I've done it now, continue"
+      echo -e "  ${CYAN}${BOLD}  2  ${NC}Go back and use bundled database"
+      echo -e "  ${DIM}  3  Quit and set up the database${NC}"
       echo ""
 
       local action=""
@@ -870,10 +874,10 @@ wizard_show_summary() {
   echo -e "  ${DIM}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
   echo ""
 
-  echo -e "  ${BOLD}  1  ${NC}Continue with these settings"
-  echo -e "  ${BOLD}  2  ${NC}Start over"
-  echo -e "  ${BOLD}  3  ${NC}Edit .env manually before continuing"
-  echo -e "  ${BOLD}  4  ${NC}Quit"
+  echo -e "  ${GREEN}${BOLD}  1  ${NC}Continue with these settings"
+  echo -e "  ${CYAN}${BOLD}  2  ${NC}Start over"
+  echo -e "  ${YELLOW}${BOLD}  3  ${NC}Edit .env manually before continuing"
+  echo -e "  ${DIM}  4  Quit${NC}"
   echo ""
 
   local choice=""
@@ -1162,11 +1166,11 @@ run_minimal_setup() {
   echo ""
   echo -e "  ${BOLD}How will you access this server?${NC}"
   echo ""
-  echo -e "  ${BOLD}  1  ${NC}Local network only"
+  echo -e "  ${GREEN}${BOLD}  1  ${NC}Local network only"
   echo -e "     ${DIM}Access from devices on your home or office network${NC}"
   echo -e "     ${DIM}No domain name or special network setup needed${NC}"
   echo ""
-  echo -e "  ${BOLD}  2  ${NC}From anywhere over the internet"
+  echo -e "  ${CYAN}${BOLD}  2  ${NC}From anywhere over the internet"
   echo -e "     ${DIM}Access from any device, anywhere${NC}"
   echo -e "     ${DIM}Requires a registered domain name and ports 80 + 443${NC}"
   echo -e "     ${DIM}forwarded to this machine${NC}"
@@ -1235,8 +1239,8 @@ run_minimal_setup() {
   echo -e "  ${DIM}PowerPoint) directly in your browser — like Google Docs, but${NC}"
   echo -e "  ${DIM}hosted on your own server.${NC}"
   echo ""
-  echo -e "  ${BOLD}  1  ${NC}Yes — add Collabora Online"
-  echo -e "  ${BOLD}  2  ${NC}No — just file sync for now"
+  echo -e "  ${GREEN}${BOLD}  1  ${NC}Yes — add Collabora Online"
+  echo -e "  ${CYAN}${BOLD}  2  ${NC}No — just file sync for now"
   echo ""
   echo -e "  ${DIM}You can always add this later with: seafile config${NC}"
   echo ""
@@ -1286,8 +1290,8 @@ run_minimal_setup() {
     echo -e "  ${DIM}Let's Encrypt once ports 80 and 443 are reachable.${NC}"
   fi
   echo ""
-  echo -e "  ${BOLD}  1  ${NC}${BOLD}Install${NC}"
-  echo -e "  ${BOLD}  2  ${NC}Go back"
+  echo -e "  ${GREEN}${BOLD}  1  ${NC}${BOLD}Install${NC}"
+  echo -e "  ${DIM}  2  Go back${NC}"
   echo ""
   echo -e "  ${DIM}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
   echo ""
@@ -1388,14 +1392,14 @@ check_env_and_configure() {
     echo -e "  ${GREEN}${BOLD}  1  ${NC}${BOLD}Just give me Seafile${NC}"
     echo -e "     ${DIM}Quick setup · get started in minutes${NC}"
     echo ""
-    echo -e "  ${BOLD}  2  ${NC}${BOLD}Standard deployment${NC}"
+    echo -e "  ${CYAN}${BOLD}  2  ${NC}${BOLD}Standard deployment${NC}"
     echo -e "     ${DIM}Network storage · disaster recovery · all options${NC}"
     echo ""
-    echo -e "  ${BOLD}  3  ${NC}${BOLD}Git-managed deployment${NC}"
+    echo -e "  ${YELLOW}${BOLD}  3  ${NC}${BOLD}Git-managed deployment${NC}"
     echo -e "     ${DIM}Same as standard, plus manage .env through a git${NC}"
     echo -e "     ${DIM}repository — config changes without SSH${NC}"
     echo ""
-    echo -e "  ${BOLD}  4  ${NC}${BOLD}Quit${NC}"
+    echo -e "  ${DIM}  4  Quit${NC}"
     echo ""
     echo -e "  ${DIM}All modes include the Portainer Agent for web-based${NC}"
     echo -e "  ${DIM}container monitoring. To use Portainer for stack${NC}"
@@ -1517,7 +1521,7 @@ check_env_and_configure() {
     echo -e "  ${BOLD}  3  ${NC}${BOLD}Continue anyway${NC}"
     echo -e "     ${DIM}Proceed with the current file (preflight will catch errors)${NC}"
     echo ""
-    echo -e "  ${BOLD}  4  ${NC}${BOLD}Quit${NC}"
+    echo -e "  ${DIM}  4  Quit${NC}"
     echo ""
     echo -e "  ${DIM}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo ""
