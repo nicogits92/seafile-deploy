@@ -144,7 +144,7 @@ if [[ "$SETUP_MODE" == "recover" ]]; then
         fi
         iscsiadm -m node -T "$ISCSI_TARGET_IQN" -p "$ISCSI_PORTAL" --login \
           || error "iSCSI login failed."
-        local _dev=""
+        _dev=""
         for _i in {1..15}; do
           _dev=$(iscsiadm -m session -P 3 2>/dev/null | grep "Attached scsi disk" | awk '{print $NF}' | head -1 || true)
           [[ -n "$_dev" ]] && break; sleep 1
@@ -734,7 +734,7 @@ COMPOSEEOF
 
   # Wait for seafile container to be healthy
   info "Waiting for Seafile to initialize (this may take 1-3 minutes on first run)..."
-  local _retries=60
+  _retries=60
   while [[ $_retries -gt 0 ]]; do
     if docker ps --format '{{.Names}} {{.Status}}' 2>/dev/null | grep -q "seafile.*healthy\|seafile.*Up"; then
       info "Seafile container is up."

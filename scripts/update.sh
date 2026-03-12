@@ -1430,7 +1430,7 @@ if [ -f "$SNAPSHOT_FILE" ]; then
       for _d in "${_DNC_VARS[@]}"; do
         [[ "$_d" == "$key" ]] && _is_dnc_change=true && DNC_IN_CHANGES+=("$key") && break
       done
-      local _dnc_tag=""
+      _dnc_tag=""
       $_is_dnc_change && _dnc_tag="  ${YELLOW}⚠ DO NOT CHANGE${NC}"
       case "$key" in
         *PASSWORD*|*KEY*|*SECRET*)
