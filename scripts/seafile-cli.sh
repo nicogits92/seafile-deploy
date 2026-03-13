@@ -110,8 +110,8 @@ pick_container() {
 
   local max=$(( include_all == "true" ? ${#CONTAINERS[@]} + 1 : ${#CONTAINERS[@]} ))
   while true; do
-    read -r -p "  Enter number (or q to cancel): " sel
-    [[ "$sel" == "q" ]] && return 1
+    read -r -p "  Enter number (or 0 to cancel): " sel
+    [[ "$sel" == "0" ]] && return 1
     if [[ "$sel" =~ ^[0-9]+$ ]] && (( sel >= 1 && sel <= max )); then
       if [[ "$include_all" == "true" && "$sel" -eq "$max" ]]; then
         PICKED="all"
@@ -843,15 +843,18 @@ _storage_classes_config() {
     done
     echo ""
 
-    echo -e "    ${BOLD}a${NC}  Add a storage class"
-    echo -e "    ${BOLD}p${NC}  Change mapping policy"
-    echo -e "    ${BOLD}d${NC}  Disable multi-backend"
-    echo -e "    ${BOLD}b${NC}  Back"
+    local _menu_n=$((_n))
+    local _add_n=$_menu_n
+    local _pol_n=$((_menu_n+1))
+    local _dis_n=$((_menu_n+2))
+    echo -e "    ${GREEN}${BOLD}${_add_n}${NC}  Add a storage class"
+    echo -e "    ${CYAN}${BOLD}${_pol_n}${NC}  Change mapping policy"
+    echo -e "    ${YELLOW}${BOLD}${_dis_n}${NC}  Disable multi-backend"
+    echo -e "    ${DIM} 0  Back${NC}"
     echo ""
     read -r -p "  Select: " sel
 
-    case "$sel" in
-      a)
+    if [[ "$sel" == "$_add_n" ]]; then
         local _next_n=$((_n))
         echo ""
         local _new_id=""
@@ -875,31 +878,30 @@ _storage_classes_config() {
         _cfg_save_var "BACKEND_${_next_n}_DEFAULT"
         ok "Added storage class: ${_new_name} [${_new_id}]"
         _cfg_offer_update
-        ;;
-      p)
+    elif [[ "$sel" == "$_pol_n" ]]; then
         echo ""
         echo -e "  ${BOLD}Mapping policy:${NC}"
-        echo -e "    ${BOLD}1${NC}  USER_SELECT — users choose$([ "${STORAGE_CLASS_MAPPING_POLICY:-USER_SELECT}" == "USER_SELECT" ] && echo " ← current")"
-        echo -e "    ${BOLD}2${NC}  ROLE_BASED — admin assigns per role$([ "${STORAGE_CLASS_MAPPING_POLICY:-USER_SELECT}" == "ROLE_BASED" ] && echo " ← current")"
-        echo -e "    ${BOLD}3${NC}  REPO_ID_MAPPING — automatic distribution$([ "${STORAGE_CLASS_MAPPING_POLICY:-USER_SELECT}" == "REPO_ID_MAPPING" ] && echo " ← current")"
+        echo -e "    ${GREEN}${BOLD}1${NC}  USER_SELECT — users choose$([ "${STORAGE_CLASS_MAPPING_POLICY:-USER_SELECT}" == "USER_SELECT" ] && echo " ← current")"
+        echo -e "    ${CYAN}${BOLD}2${NC}  ROLE_BASED — admin assigns per role$([ "${STORAGE_CLASS_MAPPING_POLICY:-USER_SELECT}" == "ROLE_BASED" ] && echo " ← current")"
+        echo -e "    ${YELLOW}${BOLD}3${NC}  REPO_ID_MAPPING — automatic distribution$([ "${STORAGE_CLASS_MAPPING_POLICY:-USER_SELECT}" == "REPO_ID_MAPPING" ] && echo " ← current")"
         echo ""
         read -r -p "  Select [1-3]: " _pol
         case "$_pol" in
           1) STORAGE_CLASS_MAPPING_POLICY="USER_SELECT" ;;
           2) STORAGE_CLASS_MAPPING_POLICY="ROLE_BASED" ;;
           3) STORAGE_CLASS_MAPPING_POLICY="REPO_ID_MAPPING" ;;
-          *) return ;;
+          *) ;;
         esac
-        _cfg_save_var STORAGE_CLASS_MAPPING_POLICY
-        ok "Mapping policy updated."
-        _cfg_offer_update
-        ;;
-      d)
+        if [[ -n "${_pol:-}" && "$_pol" =~ ^[1-3]$ ]]; then
+          _cfg_save_var STORAGE_CLASS_MAPPING_POLICY
+          ok "Mapping policy updated."
+          _cfg_offer_update
+        fi
+    elif [[ "$sel" == "$_dis_n" ]]; then
         MULTI_BACKEND_ENABLED="false"
         _cfg_save_var MULTI_BACKEND_ENABLED
         ok "Multi-backend disabled. Run seafile update to apply."
-        ;;
-    esac
+    fi
   else
     echo -e "  ${DIM}Multi-backend storage is disabled.${NC}"
     echo -e "  ${DIM}Storage classes let you organize libraries into categories${NC}"
@@ -2494,6 +2496,46 @@ cmd_backup() {
 }
 
 # --- Command: version --------------------------------------------------------
+# --- Command: secrets ---------------------------------------------------------
+cmd_secrets() {
+  local secrets_file="/opt/seafile/.secrets"
+
+  if [[ ! -f "$secrets_file" ]]; then
+    echo -e "\n  ${DIM}No secrets file found at ${secrets_file}.${NC}"
+    echo -e "  ${DIM}Secrets are recorded during initial setup and secret generation.${NC}\n"
+    return
+  fi
+
+  heading "Generated Secrets Reference"
+
+  echo -e "  ${DIM}This file records every auto-generated credential with timestamps.${NC}"
+  echo -e "  ${DIM}It is not used by any script — it exists for troubleshooting only.${NC}"
+  echo -e "  ${DIM}Location: ${secrets_file}${NC}"
+  echo ""
+  rule
+
+  # Display with masked values by default
+  if [[ "${1:-}" == "--show" ]]; then
+    cat "$secrets_file"
+  else
+    while IFS= read -r line; do
+      if [[ "$line" =~ ^# ]] || [[ -z "$line" ]]; then
+        echo "$line"
+        continue
+      fi
+      # Mask the value portion: "2026-03-12 01:11:05  KEY=value" → "2026-03-12 01:11:05  KEY=[set]"
+      local timestamp="${line%%  *}"
+      local kv="${line#*  }"
+      local key="${kv%%=*}"
+      echo -e "  ${DIM}${timestamp}${NC}  ${BOLD}${key}${NC}=${DIM}[set]${NC}"
+    done < "$secrets_file"
+    echo ""
+    echo -e "  ${DIM}Values are hidden. To show plaintext:${NC}"
+    echo -e "    ${BOLD}seafile secrets --show${NC}"
+  fi
+  echo ""
+}
+
 cmd_version() {
   heading "Image Versions"
 
@@ -2660,6 +2702,8 @@ cmd_help() {
   printf "  ${BOLD}%-24s${NC} %s\n" "ping"                "Check HTTP endpoints (notification, thumbnail, office)"
   printf "  ${BOLD}%-24s${NC} %s\n" "proxy-config"        "Show reverse proxy config (ready to paste for NPM)"
   printf "  ${BOLD}%-24s${NC} %s\n" "metadata --enable-all" "Enable Extended Properties on all libraries"
+  printf "  ${BOLD}%-24s${NC} %s\n" "secrets"             "View generated secrets reference (masked)"
+  printf "  ${BOLD}%-24s${NC} %s\n" "secrets --show"      "View generated secrets in plaintext"
   printf "  ${BOLD}%-24s${NC} %s\n" "version"             "Show running image tags vs .env values"
   printf "  ${BOLD}%-24s${NC} %s\n" "gc"                  "Run garbage collection"
   printf "  ${BOLD}%-24s${NC} %s\n" "gc --status"         "Show GC schedule, last run, and log tail"
@@ -2691,6 +2735,7 @@ case "$CMD" in
   proxy-config) cmd_proxy_config ;;
   metadata) cmd_metadata "$@" ;;
   version) cmd_version ;;
+  secrets) cmd_secrets "$@" ;;
   gitops)  cmd_gitops ;;
   gc)      cmd_gc "$@" ;;
   help|--help|-h) cmd_help ;;

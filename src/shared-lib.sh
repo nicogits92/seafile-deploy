@@ -14,7 +14,7 @@
 # ---------------------------------------------------------------------------
 # Deployment version
 # ---------------------------------------------------------------------------
-DEPLOY_VERSION="v4.0-alpha"
+DEPLOY_VERSION="v4.1-alpha"
 
 # ---------------------------------------------------------------------------
 # Colours (safe to re-source — just variable assignments)
@@ -683,4 +683,37 @@ for r in repos:
 
   info "Extended Properties enabled on all existing libraries."
   info "New libraries will need Extended Properties enabled individually or via: seafile metadata --enable-all"
+}
+
+# ---------------------------------------------------------------------------
+# Record a generated secret to the secrets reference file.
+# This file is append-only, never read by scripts, and exists purely for
+# human troubleshooting. Backed up to network share by env-sync.
+# ---------------------------------------------------------------------------
+SECRETS_FILE="/opt/seafile/.secrets"
+
+_record_secret() {
+  local key="$1"
+  local value="$2"
+  local secrets_file="${3:-$SECRETS_FILE}"
+
+  # Create file with header if it doesn't exist
+  if [[ ! -f "$secrets_file" ]]; then
+    cat > "$secrets_file" << 'SECHDR'
+# ═══════════════════════════════════════════════════════════════════════════
+# Seafile Deploy — Generated Secrets Reference
+# ═══════════════════════════════════════════════════════════════════════════
+# This file records every auto-generated secret for troubleshooting.
+# It is NOT read by any script or container — it is purely a human reference.
+#
+# If a secret is rotated, both the old and new values are kept here with
+# timestamps so you can trace credential history.
+#
+# This file has chmod 600 (root-only). Keep it secure.
+# ═══════════════════════════════════════════════════════════════════════════
+SECHDR
+    chmod 600 "$secrets_file"
+  fi
+
+  echo "$(date '+%Y-%m-%d %H:%M:%S')  ${key}=${value}" >> "$secrets_file"
 }

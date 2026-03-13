@@ -36,7 +36,7 @@ export DEBIAN_FRONTEND=noninteractive
 # ---------------------------------------------------------------------------
 # Deployment version
 # ---------------------------------------------------------------------------
-DEPLOY_VERSION="v4.0-alpha"
+DEPLOY_VERSION="v4.1-alpha"
 
 # ---------------------------------------------------------------------------
 # Colours (safe to re-source — just variable assignments)
@@ -1223,6 +1223,39 @@ for r in repos:
   info "New libraries will need Extended Properties enabled individually or via: seafile metadata --enable-all"
 }
 
+# ---------------------------------------------------------------------------
+# Record a generated secret to the secrets reference file.
+# This file is append-only, never read by scripts, and exists purely for
+# human troubleshooting. Backed up to network share by env-sync.
+# ---------------------------------------------------------------------------
+SECRETS_FILE="/opt/seafile/.secrets"
+
+_record_secret() {
+  local key="$1"
+  local value="$2"
+  local secrets_file="${3:-$SECRETS_FILE}"
+
+  # Create file with header if it doesn't exist
+  if [[ ! -f "$secrets_file" ]]; then
+    cat > "$secrets_file" << 'SECHDR'
+# ═══════════════════════════════════════════════════════════════════════════
+# Seafile Deploy — Generated Secrets Reference
+# ═══════════════════════════════════════════════════════════════════════════
+# This file records every auto-generated secret for troubleshooting.
+# It is NOT read by any script or container — it is purely a human reference.
+#
+# If a secret is rotated, both the old and new values are kept here with
+# timestamps so you can trace credential history.
+#
+# This file has chmod 600 (root-only). Keep it secure.
+# ═══════════════════════════════════════════════════════════════════════════
+SECHDR
+    chmod 600 "$secrets_file"
+  fi
+
+  echo "$(date '+%Y-%m-%d %H:%M:%S')  ${key}=${value}" >> "$secrets_file"
+}
+
 info()    { echo -e "${GREEN}[INFO]${NC}  $1"; }
 warn()    { echo -e "${YELLOW}[WARN]${NC}  $1"; }
 error()   { echo -e "${RED}[ERROR]${NC} $1"; exit 1; }
@@ -1816,6 +1849,8 @@ if [ -f "$LOCAL_ENV" ]; then
   PORTAINER_MANAGED_VAL="${PORTAINER_MANAGED_VAL:-false}"
 fi
 STORAGE_ENV="${STORAGE_DIR}/.env"
+LOCAL_SECRETS="/opt/seafile/.secrets"
+STORAGE_SECRETS="${STORAGE_DIR}/.secrets"
 
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -1884,6 +1919,11 @@ else
   cp "$LOCAL_ENV" "$STORAGE_ENV"
   chmod 600 "$STORAGE_ENV"
   log "Synced $LOCAL_ENV → $STORAGE_ENV"
+  # Sync secrets reference file if it exists
+  if [[ -f "$LOCAL_SECRETS" ]]; then
+    cp "$LOCAL_SECRETS" "$STORAGE_SECRETS"
+    chmod 600 "$STORAGE_SECRETS"
+  fi
 fi
 
 # Initial history commit on startup
@@ -1898,6 +1938,11 @@ while true; do
     cp "$LOCAL_ENV" "$STORAGE_ENV"
     chmod 600 "$STORAGE_ENV"
     log "Change detected — synced $LOCAL_ENV → $STORAGE_ENV"
+    # Also sync secrets reference file
+    if [[ -f "$LOCAL_SECRETS" ]]; then
+      cp "$LOCAL_SECRETS" "$STORAGE_SECRETS"
+      chmod 600 "$STORAGE_SECRETS"
+    fi
 
     # 2. Commit to config history (versioning)
     _commit_history
@@ -2276,8 +2321,8 @@ pick_container() {
 
   local max=$(( include_all == "true" ? ${#CONTAINERS[@]} + 1 : ${#CONTAINERS[@]} ))
   while true; do
-    read -r -p "  Enter number (or q to cancel): " sel
-    [[ "$sel" == "q" ]] && return 1
+    read -r -p "  Enter number (or 0 to cancel): " sel
+    [[ "$sel" == "0" ]] && return 1
     if [[ "$sel" =~ ^[0-9]+$ ]] && (( sel >= 1 && sel <= max )); then
       if [[ "$include_all" == "true" && "$sel" -eq "$max" ]]; then
         PICKED="all"
@@ -3009,15 +3054,18 @@ _storage_classes_config() {
     done
     echo ""
 
-    echo -e "    ${BOLD}a${NC}  Add a storage class"
-    echo -e "    ${BOLD}p${NC}  Change mapping policy"
-    echo -e "    ${BOLD}d${NC}  Disable multi-backend"
-    echo -e "    ${BOLD}b${NC}  Back"
+    local _menu_n=$((_n))
+    local _add_n=$_menu_n
+    local _pol_n=$((_menu_n+1))
+    local _dis_n=$((_menu_n+2))
+    echo -e "    ${GREEN}${BOLD}${_add_n}${NC}  Add a storage class"
+    echo -e "    ${CYAN}${BOLD}${_pol_n}${NC}  Change mapping policy"
+    echo -e "    ${YELLOW}${BOLD}${_dis_n}${NC}  Disable multi-backend"
+    echo -e "    ${DIM} 0  Back${NC}"
     echo ""
     read -r -p "  Select: " sel
 
-    case "$sel" in
-      a)
+    if [[ "$sel" == "$_add_n" ]]; then
         local _next_n=$((_n))
         echo ""
         local _new_id=""
@@ -3041,31 +3089,30 @@ _storage_classes_config() {
         _cfg_save_var "BACKEND_${_next_n}_DEFAULT"
         ok "Added storage class: ${_new_name} [${_new_id}]"
         _cfg_offer_update
-        ;;
-      p)
+    elif [[ "$sel" == "$_pol_n" ]]; then
         echo ""
         echo -e "  ${BOLD}Mapping policy:${NC}"
-        echo -e "    ${BOLD}1${NC}  USER_SELECT — users choose$([ "${STORAGE_CLASS_MAPPING_POLICY:-USER_SELECT}" == "USER_SELECT" ] && echo " ← current")"
-        echo -e "    ${BOLD}2${NC}  ROLE_BASED — admin assigns per role$([ "${STORAGE_CLASS_MAPPING_POLICY:-USER_SELECT}" == "ROLE_BASED" ] && echo " ← current")"
-        echo -e "    ${BOLD}3${NC}  REPO_ID_MAPPING — automatic distribution$([ "${STORAGE_CLASS_MAPPING_POLICY:-USER_SELECT}" == "REPO_ID_MAPPING" ] && echo " ← current")"
+        echo -e "    ${GREEN}${BOLD}1${NC}  USER_SELECT — users choose$([ "${STORAGE_CLASS_MAPPING_POLICY:-USER_SELECT}" == "USER_SELECT" ] && echo " ← current")"
+        echo -e "    ${CYAN}${BOLD}2${NC}  ROLE_BASED — admin assigns per role$([ "${STORAGE_CLASS_MAPPING_POLICY:-USER_SELECT}" == "ROLE_BASED" ] && echo " ← current")"
+        echo -e "    ${YELLOW}${BOLD}3${NC}  REPO_ID_MAPPING — automatic distribution$([ "${STORAGE_CLASS_MAPPING_POLICY:-USER_SELECT}" == "REPO_ID_MAPPING" ] && echo " ← current")"
         echo ""
         read -r -p "  Select [1-3]: " _pol
         case "$_pol" in
           1) STORAGE_CLASS_MAPPING_POLICY="USER_SELECT" ;;
           2) STORAGE_CLASS_MAPPING_POLICY="ROLE_BASED" ;;
           3) STORAGE_CLASS_MAPPING_POLICY="REPO_ID_MAPPING" ;;
-          *) return ;;
+          *) ;;
         esac
-        _cfg_save_var STORAGE_CLASS_MAPPING_POLICY
-        ok "Mapping policy updated."
-        _cfg_offer_update
-        ;;
-      d)
+        if [[ -n "${_pol:-}" && "$_pol" =~ ^[1-3]$ ]]; then
+          _cfg_save_var STORAGE_CLASS_MAPPING_POLICY
+          ok "Mapping policy updated."
+          _cfg_offer_update
+        fi
+    elif [[ "$sel" == "$_dis_n" ]]; then
         MULTI_BACKEND_ENABLED="false"
         _cfg_save_var MULTI_BACKEND_ENABLED
         ok "Multi-backend disabled. Run seafile update to apply."
-        ;;
-    esac
+    fi
   else
     echo -e "  ${DIM}Multi-backend storage is disabled.${NC}"
     echo -e "  ${DIM}Storage classes let you organize libraries into categories${NC}"
@@ -4660,6 +4707,46 @@ cmd_backup() {
 }
 
 # --- Command: version --------------------------------------------------------
+# --- Command: secrets ---------------------------------------------------------
+cmd_secrets() {
+  local secrets_file="/opt/seafile/.secrets"
+
+  if [[ ! -f "$secrets_file" ]]; then
+    echo -e "\n  ${DIM}No secrets file found at ${secrets_file}.${NC}"
+    echo -e "  ${DIM}Secrets are recorded during initial setup and secret generation.${NC}\n"
+    return
+  fi
+
+  heading "Generated Secrets Reference"
+
+  echo -e "  ${DIM}This file records every auto-generated credential with timestamps.${NC}"
+  echo -e "  ${DIM}It is not used by any script — it exists for troubleshooting only.${NC}"
+  echo -e "  ${DIM}Location: ${secrets_file}${NC}"
+  echo ""
+  rule
+
+  # Display with masked values by default
+  if [[ "${1:-}" == "--show" ]]; then
+    cat "$secrets_file"
+  else
+    while IFS= read -r line; do
+      if [[ "$line" =~ ^# ]] || [[ -z "$line" ]]; then
+        echo "$line"
+        continue
+      fi
+      # Mask the value portion: "2026-03-12 01:11:05  KEY=value" → "2026-03-12 01:11:05  KEY=[set]"
+      local timestamp="${line%%  *}"
+      local kv="${line#*  }"
+      local key="${kv%%=*}"
+      echo -e "  ${DIM}${timestamp}${NC}  ${BOLD}${key}${NC}=${DIM}[set]${NC}"
+    done < "$secrets_file"
+    echo ""
+    echo -e "  ${DIM}Values are hidden. To show plaintext:${NC}"
+    echo -e "    ${BOLD}seafile secrets --show${NC}"
+  fi
+  echo ""
+}
+
 cmd_version() {
   heading "Image Versions"
 
@@ -4826,6 +4913,8 @@ cmd_help() {
   printf "  ${BOLD}%-24s${NC} %s\n" "ping"                "Check HTTP endpoints (notification, thumbnail, office)"
   printf "  ${BOLD}%-24s${NC} %s\n" "proxy-config"        "Show reverse proxy config (ready to paste for NPM)"
   printf "  ${BOLD}%-24s${NC} %s\n" "metadata --enable-all" "Enable Extended Properties on all libraries"
+  printf "  ${BOLD}%-24s${NC} %s\n" "secrets"             "View generated secrets reference (masked)"
+  printf "  ${BOLD}%-24s${NC} %s\n" "secrets --show"      "View generated secrets in plaintext"
   printf "  ${BOLD}%-24s${NC} %s\n" "version"             "Show running image tags vs .env values"
   printf "  ${BOLD}%-24s${NC} %s\n" "gc"                  "Run garbage collection"
   printf "  ${BOLD}%-24s${NC} %s\n" "gc --status"         "Show GC schedule, last run, and log tail"
@@ -4857,6 +4946,7 @@ case "$CMD" in
   proxy-config) cmd_proxy_config ;;
   metadata) cmd_metadata "$@" ;;
   version) cmd_version ;;
+  secrets) cmd_secrets "$@" ;;
   gitops)  cmd_gitops ;;
   gc)      cmd_gc "$@" ;;
   help|--help|-h) cmd_help ;;
@@ -5065,7 +5155,7 @@ _show_splash() {
   echo "  ╚══════╝╚══════╝╚═╝  ╚═╝╚═╝     ╚═╝╚══════╝╚══════╝"
   echo -e "${NC}"
   echo -e "  ${DIM}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-  echo -e "  ${BOLD}nicogits92 / seafile-deploy${NC}   ${DIM}Seafile ${_SEAFILE_VERSION} CE  ·  v4.0-alpha  ·  config-fixes${NC}"
+  echo -e "  ${BOLD}nicogits92 / seafile-deploy${NC}   ${DIM}Seafile ${_SEAFILE_VERSION} CE  ·  v4.1-alpha  ·  config-fixes${NC}"
   echo -e "  ${DIM}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
   echo ""
   echo -e "  ${DIM}Community deployment · not affiliated with Seafile Ltd.${NC}"
@@ -6160,7 +6250,7 @@ heading() { echo -e "\n${BOLD}${CYAN}==> $1${NC}"; }
 # ---------------------------------------------------------------------------
 # Deployment version
 # ---------------------------------------------------------------------------
-DEPLOY_VERSION="v4.0-alpha"
+DEPLOY_VERSION="v4.1-alpha"
 
 # ---------------------------------------------------------------------------
 # Colours (safe to re-source — just variable assignments)
@@ -7345,6 +7435,39 @@ for r in repos:
 
   info "Extended Properties enabled on all existing libraries."
   info "New libraries will need Extended Properties enabled individually or via: seafile metadata --enable-all"
+}
+
+# ---------------------------------------------------------------------------
+# Record a generated secret to the secrets reference file.
+# This file is append-only, never read by scripts, and exists purely for
+# human troubleshooting. Backed up to network share by env-sync.
+# ---------------------------------------------------------------------------
+SECRETS_FILE="/opt/seafile/.secrets"
+
+_record_secret() {
+  local key="$1"
+  local value="$2"
+  local secrets_file="${3:-$SECRETS_FILE}"
+
+  # Create file with header if it doesn't exist
+  if [[ ! -f "$secrets_file" ]]; then
+    cat > "$secrets_file" << 'SECHDR'
+# ═══════════════════════════════════════════════════════════════════════════
+# Seafile Deploy — Generated Secrets Reference
+# ═══════════════════════════════════════════════════════════════════════════
+# This file records every auto-generated secret for troubleshooting.
+# It is NOT read by any script or container — it is purely a human reference.
+#
+# If a secret is rotated, both the old and new values are kept here with
+# timestamps so you can trace credential history.
+#
+# This file has chmod 600 (root-only). Keep it secure.
+# ═══════════════════════════════════════════════════════════════════════════
+SECHDR
+    chmod 600 "$secrets_file"
+  fi
+
+  echo "$(date '+%Y-%m-%d %H:%M:%S')  ${key}=${value}" >> "$secrets_file"
 }
 
 ok()      { echo -e "${GREEN}  ✓${NC}  $1"; }
@@ -8538,6 +8661,42 @@ COMPOSEEOF
 
   _compute_profiles
   info "Active profiles: ${COMPOSE_PROFILES}"
+
+  # ── Clean stale Seafile state on fresh install ───────────────────────────
+  # Seafile checks for /shared/seafile-data inside the container to decide
+  # whether to run first-boot init (setup-seafile-mysql.py). On the host
+  # this maps to ${SEAFILE_VOLUME}/seafile-data. If it exists from a
+  # previous failed attempt, Seafile skips init entirely — no tables, no
+  # config, no working deployment. Remove both data and config so init runs.
+  # Also clear the DB data directory for a clean MariaDB init.
+  # NEVER do this in recovery mode — that data belongs to the user.
+  # ────────────────────────────────────────────────────────────────────────
+  if [[ "$SETUP_MODE" == "install" ]]; then
+    _SF_VOL="${SEAFILE_VOLUME:-/opt/seafile-data}"
+    _stale=false
+    if [[ -d "${_SF_VOL}/seafile-data" ]]; then
+      info "Removing stale seafile-data from previous install attempt..."
+      rm -rf "${_SF_VOL}/seafile-data"
+      _stale=true
+    fi
+    if [[ -d "${_SF_VOL}/seafile" ]]; then
+      info "Removing stale config directory from previous install attempt..."
+      rm -rf "${_SF_VOL}/seafile"
+      _stale=true
+    fi
+    if [[ "${DB_INTERNAL:-true}" == "true" ]]; then
+      _DB_VOL="${DB_INTERNAL_VOLUME:-/opt/seafile-db}"
+      if [[ -d "$_DB_VOL" ]] && ls "$_DB_VOL"/* &>/dev/null 2>&1; then
+        info "Clearing stale database data at ${_DB_VOL}..."
+        rm -rf "${_DB_VOL:?}"/*
+        _stale=true
+      fi
+    fi
+    if [[ "$_stale" == "true" ]]; then
+      info "Cleaned stale state — Seafile will run first-boot initialization."
+    fi
+  fi
+
   info "Starting stack with docker compose..."
   if COMPOSE_PROFILES="$COMPOSE_PROFILES" docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" up -d 2>&1; then
     info "Stack started successfully."
@@ -8635,6 +8794,37 @@ COMPOSEEOF
     sleep 5
     _retries=$((_retries - 1))
   done
+
+  # ── Wait for Seafile to finish creating database tables ──────────────────
+  # Container "up" doesn't mean init is done. Seafile's internal init creates
+  # tables in seahub_db. Config-fixes MUST NOT run until tables exist,
+  # otherwise it overwrites config files that Seafile's init is still writing.
+  # ────────────────────────────────────────────────────────────────────────
+  if [[ -n "${_DB_ROOT_PASS:-}" && "$_db_ready" == "true" ]]; then
+    info "Waiting for Seafile to create database tables..."
+    _tables_ready=false
+    for _t_attempt in {1..60}; do
+      _tcount=$(_mysql_cmd -N -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='${SEAFILE_MYSQL_DB_SEAHUB_DB_NAME:-seahub_db}';" 2>/dev/null || echo "0")
+      if [[ "$_tcount" -gt 10 ]]; then
+        info "Database tables created (${_tcount} tables in seahub_db)."
+        _tables_ready=true
+        break
+      fi
+      # Show progress every 30 seconds
+      if (( _t_attempt % 6 == 0 )); then
+        info "  Still waiting... (${_tcount} tables so far, need 10+)"
+      fi
+      sleep 5
+    done
+    if [[ "$_tables_ready" != "true" ]]; then
+      warn "Timed out waiting for tables (found ${_tcount:-0}). Seafile may not have initialized correctly."
+      warn "Check: docker logs seafile"
+    fi
+  else
+    # No DB access — fall back to a generous time-based wait
+    info "Waiting 60s for Seafile init to complete..."
+    sleep 60
+  fi
 
   # Run config-fixes
   if [[ -f "/opt/seafile-config-fixes.sh" ]]; then
@@ -9657,8 +9847,34 @@ until [ -d "$CONF_DIR" ]; do
   warn "Conf directory not yet present — retrying in 5 seconds..."
   sleep 5
 done
-info "Conf directory found. Waiting 60 seconds for database migrations to finish..."
-sleep 60
+info "Conf directory found. Waiting for database tables..."
+
+# Wait for tables to exist in seahub_db before running config-fixes.
+# In recovery, tables come from the DB restore. In fresh-DB recovery,
+# Seafile creates them during init.
+_ROOT_PASS="${INIT_SEAFILE_MYSQL_ROOT_PASSWORD:-}"
+if [[ -n "$_ROOT_PASS" && "${DB_INTERNAL:-true}" == "true" ]]; then
+  _tables_ready=false
+  for _t in {1..60}; do
+    _tcount=$(docker exec seafile-db mysql -u root -p"${_ROOT_PASS}" -N \
+      -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='${SEAFILE_MYSQL_DB_SEAHUB_DB_NAME:-seahub_db}';" 2>/dev/null || echo "0")
+    if [[ "$_tcount" -gt 10 ]]; then
+      info "Database tables verified (${_tcount} tables in seahub_db)."
+      _tables_ready=true
+      break
+    fi
+    if (( _t % 6 == 0 )); then
+      info "  Still waiting for tables... (${_tcount} so far)"
+    fi
+    sleep 5
+  done
+  if [[ "$_tables_ready" != "true" ]]; then
+    warn "Timed out waiting for tables. Config-fixes will proceed anyway."
+  fi
+else
+  info "No DB root access — waiting 60 seconds for migrations to finish..."
+  sleep 60
+fi
 
 # ---------------------------------------------------------------------------
 # Run config fixes

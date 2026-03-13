@@ -728,6 +728,42 @@ COMPOSEEOF
 
   _compute_profiles
   info "Active profiles: ${COMPOSE_PROFILES}"
+
+  # ── Clean stale Seafile state on fresh install ───────────────────────────
+  # Seafile checks for /shared/seafile-data inside the container to decide
+  # whether to run first-boot init (setup-seafile-mysql.py). On the host
+  # this maps to ${SEAFILE_VOLUME}/seafile-data. If it exists from a
+  # previous failed attempt, Seafile skips init entirely — no tables, no
+  # config, no working deployment. Remove both data and config so init runs.
+  # Also clear the DB data directory for a clean MariaDB init.
+  # NEVER do this in recovery mode — that data belongs to the user.
+  # ────────────────────────────────────────────────────────────────────────
+  if [[ "$SETUP_MODE" == "install" ]]; then
+    _SF_VOL="${SEAFILE_VOLUME:-/opt/seafile-data}"
+    _stale=false
+    if [[ -d "${_SF_VOL}/seafile-data" ]]; then
+      info "Removing stale seafile-data from previous install attempt..."
+      rm -rf "${_SF_VOL}/seafile-data"
+      _stale=true
+    fi
+    if [[ -d "${_SF_VOL}/seafile" ]]; then
+      info "Removing stale config directory from previous install attempt..."
+      rm -rf "${_SF_VOL}/seafile"
+      _stale=true
+    fi
+    if [[ "${DB_INTERNAL:-true}" == "true" ]]; then
+      _DB_VOL="${DB_INTERNAL_VOLUME:-/opt/seafile-db}"
+      if [[ -d "$_DB_VOL" ]] && ls "$_DB_VOL"/* &>/dev/null 2>&1; then
+        info "Clearing stale database data at ${_DB_VOL}..."
+        rm -rf "${_DB_VOL:?}"/*
+        _stale=true
+      fi
+    fi
+    if [[ "$_stale" == "true" ]]; then
+      info "Cleaned stale state — Seafile will run first-boot initialization."
+    fi
+  fi
+
   info "Starting stack with docker compose..."
   if COMPOSE_PROFILES="$COMPOSE_PROFILES" docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" up -d 2>&1; then
     info "Stack started successfully."
@@ -825,6 +861,37 @@ COMPOSEEOF
     sleep 5
     _retries=$((_retries - 1))
   done
+
+  # ── Wait for Seafile to finish creating database tables ──────────────────
+  # Container "up" doesn't mean init is done. Seafile's internal init creates
+  # tables in seahub_db. Config-fixes MUST NOT run until tables exist,
+  # otherwise it overwrites config files that Seafile's init is still writing.
+  # ────────────────────────────────────────────────────────────────────────
+  if [[ -n "${_DB_ROOT_PASS:-}" && "$_db_ready" == "true" ]]; then
+    info "Waiting for Seafile to create database tables..."
+    _tables_ready=false
+    for _t_attempt in {1..60}; do
+      _tcount=$(_mysql_cmd -N -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='${SEAFILE_MYSQL_DB_SEAHUB_DB_NAME:-seahub_db}';" 2>/dev/null || echo "0")
+      if [[ "$_tcount" -gt 10 ]]; then
+        info "Database tables created (${_tcount} tables in seahub_db)."
+        _tables_ready=true
+        break
+      fi
+      # Show progress every 30 seconds
+      if (( _t_attempt % 6 == 0 )); then
+        info "  Still waiting... (${_tcount} tables so far, need 10+)"
+      fi
+      sleep 5
+    done
+    if [[ "$_tables_ready" != "true" ]]; then
+      warn "Timed out waiting for tables (found ${_tcount:-0}). Seafile may not have initialized correctly."
+      warn "Check: docker logs seafile"
+    fi
+  else
+    # No DB access — fall back to a generous time-based wait
+    info "Waiting 60s for Seafile init to complete..."
+    sleep 60
+  fi
 
   # Run config-fixes
   if [[ -f "/opt/seafile-config-fixes.sh" ]]; then

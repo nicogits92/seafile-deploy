@@ -1,4 +1,4 @@
-# nicogits92/seafile-deploy 13 v4.0-alpha
+# nicogits92/seafile-deploy 13 v4.1-alpha
 
 <details>
 <summary>📋 Quick Navigation — click to expand</summary>
@@ -147,6 +147,8 @@ Once deployed, a `seafile` command is available system-wide for all day-to-day m
 | `seafile ping` | HTTP endpoint health check (notification, thumbnail, office suite) |
 | `seafile proxy-config` | Show reverse proxy config ready to paste (NPM Advanced tab) |
 | `seafile metadata --enable-all` | Enable Extended Properties on all libraries |
+| `seafile secrets` | View generated secrets reference (masked by default) |
+| `seafile secrets --show` | View generated secrets in plaintext |
 | `seafile update` | Apply `.env` changes, pull updated images, restart containers |
 | `seafile update --check` | Preview what changed in `.env` without applying anything |
 | `seafile logs` | Tail container logs (interactive picker) |
@@ -231,7 +233,7 @@ Caddy (bundled container, port 7080 by default)
 | `update.sh` | ✓ Yes | `/opt/update.sh` | Primary update tool — validates `.env`, diffs changes, pulls images, restarts containers |
 | `seafile-cli.sh` | No | `/usr/local/bin/seafile` | Management CLI — `seafile status`, `seafile update`, `seafile logs`, etc. |
 | `seafile-config-fixes.sh` | No | `/opt/seafile-config-fixes.sh` | Writes Seafile config files from `.env` values, sets up cron jobs |
-| `env-sync/seafile-env-sync.sh` | No | `/opt/seafile/seafile-env-sync.sh` | Mirrors `.env` to network share, commits to config history, triggers Portainer webhook |
+| `env-sync/seafile-env-sync.sh` | No | `/opt/seafile/seafile-env-sync.sh` | Mirrors `.env` and `.secrets` to network share, commits to config history, triggers Portainer webhook |
 | `env-sync/seafile-env-sync.service` | No | `/etc/systemd/system/` | Systemd unit for env sync (inotify watcher) |
 | `config-git-server/seafile-config-server.sh` | No | `/opt/seafile/seafile-config-server.sh` | Local git HTTP server for Portainer integration |
 | `config-git-server/seafile-config-server.service` | No | `/etc/systemd/system/` | Systemd unit for config git server (active when `PORTAINER_MANAGED=true`) |
@@ -372,7 +374,7 @@ Local disk skips network storage entirely and writes Seafile data to a path on t
 | | **Bundled** (default) | **External** |
 |---|---|---|
 | **`DB_INTERNAL`** | `true` | `false` |
-| **Setup required** | None — credentials auto-generated | Configure external infrastructure first |
+| **Setup required** | None — credentials auto-generated | Root password + remote connections (databases created automatically) |
 | **Database lives** | `/opt/seafile-db` (local) or a network share subdirectory | Your existing MySQL/MariaDB server |
 | **Disaster recovery** | Automatic nightly snapshot to share. Max 1 day data loss on VM failure. Zero loss if `DB_INTERNAL_VOLUME` set to share path. | Full DR — database is on a separate server |
 | **Best for** | Most deployments — simpler, self-contained | Shared DB infrastructure, DBA-managed servers |
@@ -381,7 +383,7 @@ Local disk skips network storage entirely and writes Seafile data to a path on t
 
 > **DR with bundled DB:** Database files default to `/opt/seafile-db` on local disk. A VM loss destroys them, even if Seafile's file data is safely on a network share. To protect against this, a nightly `mysqldump` runs automatically to `${SEAFILE_VOLUME}/db-backup/` on your network share, retaining the last 7 days. With `BACKUP_ENABLED=true`, a full dump also runs at each backup interval. Worst-case data loss on VM failure: one day of database changes. For zero-loss exposure, you can also set `DB_INTERNAL_VOLUME` to a share subdirectory, but note this trades some performance for extra safety, particularly on SMB where small random I/O is slower than local disk.
 
-If `DB_INTERNAL=false`: complete the external database section in [Step 3](#step-3---prepare-external-infrastructure) before running `seafile-deploy.sh`.
+If `DB_INTERNAL=false`: ensure your external database server allows remote connections and has a root password set — see [Step 3](#step-3---prepare-external-infrastructure). The installer creates the databases and user automatically using the root password you provide.
 
 ### 4. Reverse proxy
 
@@ -540,7 +542,7 @@ This step covers infrastructure that must be ready before you run the deploy scr
 
 | If you chose... | Prepare... |
 |-----------------|------------|
-| `DB_INTERNAL=false` (external database) | Database server, user, and permissions |
+| `DB_INTERNAL=false` (external database) | Root password set + remote connections allowed (databases created by installer) |
 | `STORAGE_TYPE=nfs` | NFS export on your NAS |
 | `STORAGE_TYPE=smb` | SMB share and credentials on your NAS |
 | `STORAGE_TYPE=glusterfs` | GlusterFS volume |
@@ -554,9 +556,11 @@ This step covers infrastructure that must be ready before you run the deploy scr
 
 This section applies only if you chose to use an external MySQL/MariaDB server. If using the bundled database (`DB_INTERNAL=true`, the default), skip this entirely.
 
+The installer automatically creates the three Seafile databases (`ccnet_db`, `seafile_db`, `seahub_db`), the `seafile` user, and all required grants using the root password you provide in `.env`. You do **not** need to run any SQL manually. Just ensure these two prerequisites are met:
+
 ### 1 - Verify the root password is set
 
-Seafile uses `INIT_SEAFILE_MYSQL_ROOT_PASSWORD` on first boot to authenticate as root. If root has no password or uses socket-based authentication, the `seafile` container will fail to initialise.
+The installer authenticates as root to create databases and the `seafile` user. If root has no password or uses socket-based authentication, this will fail.
 
 Connect to your database server as root and run:
 
@@ -572,6 +576,8 @@ ALTER USER 'root'@'localhost' IDENTIFIED BY 'your_root_password';
 FLUSH PRIVILEGES;
 ```
 
+This root password becomes `INIT_SEAFILE_MYSQL_ROOT_PASSWORD` in your `.env`. It is used once during setup and then cleared automatically.
+
 ### 2 - Allow remote connections from the Seafile VM
 
 MariaDB and MySQL bind to `127.0.0.1` by default. Edit your config to bind to `0.0.0.0`:
@@ -585,31 +591,10 @@ bind-address = 0.0.0.0
 
 Restart the service and open firewall port 3306 for your Seafile VM's subnet.
 
-### 3 - Create the databases and user
-
-Connect to your database and run:
-
-```sql
-CREATE DATABASE IF NOT EXISTS ccnet_db   CHARACTER SET utf8mb4;
-CREATE DATABASE IF NOT EXISTS seafile_db CHARACTER SET utf8mb4;
-CREATE DATABASE IF NOT EXISTS seahub_db  CHARACTER SET utf8mb4;
-
-CREATE USER IF NOT EXISTS 'seafile'@'192.168.x.%' IDENTIFIED BY 'your_db_password';
-
-GRANT ALL PRIVILEGES ON ccnet_db.*   TO 'seafile'@'192.168.x.%';
-GRANT ALL PRIVILEGES ON seafile_db.* TO 'seafile'@'192.168.x.%';
-GRANT ALL PRIVILEGES ON seahub_db.*  TO 'seafile'@'192.168.x.%';
-
-FLUSH PRIVILEGES;
-```
-
-Replace `192.168.x.%` with your Docker host's subnet and `your_db_password` with a strong password.
-
 **Verify connectivity before continuing:**
 
 ```bash
 nc -zv YOUR_DB_IP 3306
-mysql -h YOUR_DB_IP -u seafile -p
 ```
 
 </details>
@@ -956,7 +941,7 @@ This deployment uses several systemd services for background tasks. All are inst
 
 | Service | Purpose | When active |
 |---|---|---|
-| `seafile-env-sync` | Mirrors `.env` to network share, commits config history, triggers Portainer webhook | Always (inotify watcher) |
+| `seafile-env-sync` | Mirrors `.env` and `.secrets` to network share, commits config history, triggers Portainer webhook | Always (inotify watcher) |
 | `seafile-config-server` | Local git HTTP server for Portainer stack sync | Only when `PORTAINER_MANAGED=true` |
 | `seafile-storage-sync` | Background rsync during storage migration | Only during migration |
 | `seafile-recovery-finalize` | Restores DB and starts stack after recovery | Once after recovery, then disables |
@@ -1010,6 +995,8 @@ seafile <command> [args]
 | `seafile fix` | Run `seafile-config-fixes.sh` |
 | `seafile proxy-config` | Show reverse proxy config ready to paste (NPM Advanced tab, or general requirements for other proxies) |
 | `seafile metadata --enable-all` | Enable Extended Properties on all existing libraries via API |
+| `seafile secrets` | View generated secrets reference — timestamps and key names (values masked) |
+| `seafile secrets --show` | View generated secrets in plaintext — for troubleshooting database access, credential recovery, etc. |
 | `seafile gc` | Run garbage collection now (respects `GC_DRY_RUN` from `.env`) |
 | `seafile gc --status` | Show GC schedule, cron status, and last log tail |
 | `seafile gc --dry-run` | Show what GC would collect without removing anything |
@@ -1285,6 +1272,7 @@ All libraries, files, and user accounts will be fully restored. Worst-case data 
 
 **What regenerates automatically if lost:**
 - `/opt/seafile/.env` — restored from network share backup during recovery
+- `/opt/seafile/.secrets` — restored from network share backup (generated credentials reference for troubleshooting)
 - `seafile-config-fixes.sh` — restored from network share backup during recovery
 - **Database** (`DB_INTERNAL=true`) — restored from nightly snapshot at `${SEAFILE_VOLUME}/db-backup/` by `seafile-recovery-finalize`. Last 7 days retained. First snapshot is written at 1am on day 1.
 - `THUMBNAIL_PATH` (default `/opt/seafile-thumbnails`) — thumbnail cache, rebuilt on demand
@@ -1682,11 +1670,11 @@ mysql -h YOUR_DB_IP -u seafile -p
 
 If root auth fails, check that `INIT_SEAFILE_MYSQL_ROOT_PASSWORD` in `.env` matches what is set on the server. If root was using `unix_socket` auth, see **Step 3 - Verify the root password is set**.
 
-If the `seafile` user auth fails, the grant was either not run or used the wrong subnet. Verify on the database server as root:
+If the `seafile` user auth fails, the installer may not have been able to create it. Check on the database server as root:
 ```sql
-SHOW GRANTS FOR 'seafile'@'192.168.x.%';
+SELECT user, host FROM mysql.user WHERE user='seafile';
 ```
-If the user does not exist or the subnet is wrong, re-run the `CREATE USER` and `GRANT` statements from Step 3 with the correct subnet, then `FLUSH PRIVILEGES`.
+If the user does not exist, verify that `INIT_SEAFILE_MYSQL_ROOT_PASSWORD` in `.env` matches the actual root password on the database server, then re-run `seafile update` which will re-attempt database initialization.
 
 Finally, check the seafile container logs for the specific error message:
 ```bash
@@ -1832,6 +1820,7 @@ After `seafile-deploy.sh` → Fresh Install completes, all files are placed auto
 ├── seafile/
 │   ├── .env                          # Active configuration (source of truth)
 │   ├── .env.snapshot                 # Snapshot for diff comparison
+│   ├── .secrets                      # Generated secrets reference (troubleshooting only)
 │   ├── .config-history/              # Local git repo (config versioning)
 │   │   ├── .env                      # Tracked copy
 │   │   ├── docker-compose.yml        # Tracked copy
@@ -1863,6 +1852,7 @@ After `seafile-deploy.sh` → Fresh Install completes, all files are placed auto
 ```
 ${SEAFILE_VOLUME}/
 ├── .env                              # Backup copy (synced by env-sync)
+├── .secrets                          # Backup copy of secrets reference
 ├── seafile-config-fixes.sh           # Backup copy (written by config-fixes)
 ├── update.sh                         # Backup copy (written by update.sh)
 ├── seafile_storage_classes.json      # Multi-backend config (if enabled)
@@ -2077,6 +2067,24 @@ A bridge container approach was investigated: a sidecar that detects when Portai
 
 The cleaner solution is the Web Configuration Interface described above, which is purpose-built for this project's architecture. It understands the config generation layer, writes to `.env` correctly, and can trigger config-fixes directly for a single-restart experience. If implemented, it would replace the need for Portainer-based configuration entirely while still allowing Portainer to handle monitoring and stack lifecycle.
 
+#### Migrate Existing Seafile Instance
+
+A new option on the splash screen ("Migrate Existing Seafile") that imports an existing Seafile deployment — whether created using this project or the official Seafile documentation — into a fresh seafile-deploy installation.
+
+A Seafile instance consists of four components: file data (the seafile-data block storage directory), database (ccnet_db, seafile_db, seahub_db with all users, libraries, shares, and permissions), configuration (seahub_settings.py containing the critical SECRET_KEY), and user assets (avatars, custom logos). The migration flow would:
+
+1. Ask the user where the source Seafile is (local Docker, remote SSH, or pre-prepared dump + data directory)
+2. Run the normal fresh install wizard so the user configures their new deployment
+3. After the stack is up, import: `SECRET_KEY` from the source (preserves user sessions and API tokens), database via mysqldump/import, file data via rsync, and avatars
+4. Run config-fixes to apply the new `.env` settings on top of the imported data
+5. Verify: table count, file count, user count
+
+The `SECRET_KEY` preservation is critical — if it changes, all users get logged out and some encrypted fields become unreadable. Config-fixes already preserves existing SECRET_KEY if found, so this integrates naturally.
+
+For non-seafile-deploy sources (official Seafile installs), the main differences are config file paths (usually `/opt/seafile/conf/` vs our `${SEAFILE_VOLUME}/seafile/conf/`) and database access (local MySQL server vs Docker container). The migration wizard would detect the source type and adjust accordingly.
+
+Estimated effort: 400-600 lines across setup.template.sh (migration phase), shared-lib.sh (source detection, DB dump/import, rsync helpers), and guided-setup.sh (migration wizard). Recommend a dedicated implementation cycle with access to a test instance running an official Seafile deployment for validation.
+
 ---
 
 ## References
@@ -2133,13 +2141,13 @@ A complete reference for every variable in `.env`. All optional features default
 
 | Variable | Default | Notes |
 |---|---|---|
-| `DB_INTERNAL` | `true` | `true` = bundled MariaDB container. `false` = connect to an external server (complete Step 3 first). |
+| `DB_INTERNAL` | `true` | `true` = bundled MariaDB container. `false` = connect to an external server (ensure root password and remote connections are configured). |
 | `DB_INTERNAL_VOLUME` | `/opt/seafile-db` | Data path for the bundled MariaDB container. Set to a subdirectory of `SEAFILE_VOLUME` for full disaster recovery. |
 | `DB_INTERNAL_IMAGE` | `mariadb:10.11` | MariaDB image tag for the bundled container. |
 | `SEAFILE_MYSQL_DB_HOST` | *(auto-set)* | Auto-set to `seafile-db` when `DB_INTERNAL=true`. Set to your external server IP/hostname when `DB_INTERNAL=false`. |
 | `SEAFILE_MYSQL_DB_PASSWORD` | *(auto-generated)* | Auto-generated when `DB_INTERNAL=true` and blank. Set manually when `DB_INTERNAL=false`. |
-| `INIT_SEAFILE_MYSQL_ROOT_PASSWORD` | *(auto-generated)* | Auto-generated when `DB_INTERNAL=true` and blank. Set manually when `DB_INTERNAL=false`. Cleared automatically after first deploy. |
-| `SEAFILE_MYSQL_DB_USER` | `seafile` | Database username. Change only if you used a different name in Step 3. |
+| `INIT_SEAFILE_MYSQL_ROOT_PASSWORD` | *(auto-generated)* | Auto-generated when `DB_INTERNAL=true` and blank. Set to your external server's root password when `DB_INTERNAL=false`. Used once during setup to create databases and the `seafile` user, then cleared automatically. |
+| `SEAFILE_MYSQL_DB_USER` | `seafile` | Database username. The installer creates this user automatically. |
 | `SEAFILE_MYSQL_DB_PORT` | `3306` | Database port. Change only if your server uses a non-standard port. |
 
 ---
@@ -2430,7 +2438,7 @@ The `seafile config database` command provides guided migration between bundled 
 
 **Bundled → External Migration:**
 
-1. Prepare external server with empty databases: `ccnet_db`, `seafile_db`, `seahub_db`
+1. Prepare external server with root password set and remote connections allowed
 2. Run `seafile config database` and select "Migrate to external database"
 3. Enter external server credentials
 4. The wizard will:

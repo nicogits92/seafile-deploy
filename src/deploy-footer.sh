@@ -261,6 +261,7 @@ PYEOF
     esac
     if [[ -n "$val" ]]; then
       _set_env_secret "$var" "$val" "$env_file"
+      _record_secret "$var" "$val"
       generated+=("$var")
     fi
   done
@@ -321,6 +322,7 @@ content = re.sub(r'^' + re.escape(key) + r'=.*$', key + '=' + val, content, flag
 open(path, 'w').write(content)
 " "$_admin_pw" "$env_file"
           echo -e "    ${GREEN}✓${NC}  INIT_SEAFILE_ADMIN_PASSWORD set"
+          _record_secret "INIT_SEAFILE_ADMIN_PASSWORD" "$_admin_pw"
           ;;
       esac
     done
@@ -641,23 +643,23 @@ preflight_env_check() {
     echo ""
     echo -e "  ${DIM}Open your .env and fill in these values, then return here.${NC}"
     echo ""
-    echo -e "  ${BOLD}  e  ${NC}Open .env in editor  ${DIM}(${VISUAL:-${EDITOR:-nano}})${NC}"
-    echo -e "  ${DIM}  q  ${NC}Exit"
+    echo -e "  ${GREEN}${BOLD}  1  ${NC}Open .env in editor  ${DIM}(${VISUAL:-${EDITOR:-nano}})${NC}"
+    echo -e "  ${DIM}  2  Exit${NC}"
     echo ""
     echo -e "  ${DIM}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo ""
 
     local _choice
     while true; do
-      echo -ne "  ${BOLD}[e]dit / [q]uit (default: e):${NC} "
+      echo -ne "  ${BOLD}Select [1/2] (default: 1):${NC} "
       read -r _choice
-      _choice="${_choice:-e}"
-      case "${_choice,,}" in e|q) break ;; *) echo -e "  ${DIM}Enter e or q.${NC}" ;; esac
+      _choice="${_choice:-1}"
+      case "$_choice" in 1|2) break ;; *) echo -e "  ${DIM}Enter 1 or 2.${NC}" ;; esac
     done
 
-    case "${_choice,,}" in
-      e) ${VISUAL:-${EDITOR:-nano}} "$env_file" ;;
-      q) echo -e "\n  ${DIM}Run me again once all required fields are filled in.${NC}\n"; exit 0 ;;
+    case "$_choice" in
+      1) ${VISUAL:-${EDITOR:-nano}} "$env_file" ;;
+      2) echo -e "\n  ${DIM}Run me again once all required fields are filled in.${NC}\n"; exit 0 ;;
     esac
   done
 
@@ -667,33 +669,33 @@ preflight_env_check() {
 
     echo -e "  Unchanged vars show ${DIM}default${NC}. Review anything non-default before continuing."
     echo ""
-    echo -e "  ${BOLD}  y  ${NC}${BOLD}Looks good — continue${NC}"
+    echo -e "  ${GREEN}${BOLD}  1  ${NC}${BOLD}Looks good — continue${NC}"
     echo ""
-    echo -e "  ${BOLD}  e  ${NC}Open .env in editor  ${DIM}(${VISUAL:-${EDITOR:-nano}})${NC}"
+    echo -e "  ${CYAN}${BOLD}  2  ${NC}Open .env in editor  ${DIM}(${VISUAL:-${EDITOR:-nano}})${NC}"
     echo -e "  ${DIM}     (returns to required-fields check after saving)${NC}"
     echo ""
-    echo -e "  ${DIM}  q  ${NC}Exit"
+    echo -e "  ${DIM}  3  Exit${NC}"
     echo ""
     echo -e "  ${DIM}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo ""
 
     local _choice
     while true; do
-      echo -ne "  ${BOLD}[y]es / [e]dit / [q]uit (default: y):${NC} "
+      echo -ne "  ${BOLD}Select [1/2/3] (default: 1):${NC} "
       read -r _choice
-      _choice="${_choice:-y}"
-      case "${_choice,,}" in y|e|q) break ;; *) echo -e "  ${DIM}Enter y, e, or q.${NC}" ;; esac
+      _choice="${_choice:-1}"
+      case "$_choice" in 1|2|3) break ;; *) echo -e "  ${DIM}Enter 1, 2, or 3.${NC}" ;; esac
     done
 
     echo ""
-    case "${_choice,,}" in
-      y) break ;;
-      e)
+    case "$_choice" in
+      1) break ;;
+      2)
         ${VISUAL:-${EDITOR:-nano}} "$env_file"
         preflight_env_check "$env_file"
         return $?
         ;;
-      q) echo -e "  ${DIM}Goodbye.${NC}\n"; exit 0 ;;
+      3) echo -e "  ${DIM}Goodbye.${NC}\n"; exit 0 ;;
     esac
   done
 
@@ -712,12 +714,12 @@ preflight_env_check() {
       echo -e "  Does this match your intended deployment?"
     fi
     echo ""
-    echo -e "  ${BOLD}  y  ${NC}${BOLD}Yes — start the install${NC}"
+    echo -e "  ${GREEN}${BOLD}  1  ${NC}${BOLD}Yes — start the install${NC}"
     echo ""
-    echo -e "  ${BOLD}  e  ${NC}Open .env in editor  ${DIM}(${VISUAL:-${EDITOR:-nano}})${NC}"
+    echo -e "  ${CYAN}${BOLD}  2  ${NC}Open .env in editor  ${DIM}(${VISUAL:-${EDITOR:-nano}})${NC}"
     echo -e "  ${DIM}     (returns to required-fields check after saving)${NC}"
     echo ""
-    echo -e "  ${DIM}  q  ${NC}Exit"
+    echo -e "  ${DIM}  3  Exit${NC}"
     echo ""
     echo -e "  ${DIM}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo ""
@@ -725,28 +727,28 @@ preflight_env_check() {
     local _choice
     while true; do
       if [[ "$_default_action" == "q" ]]; then
-        echo -ne "  ${BOLD}[y]es / [e]dit / [q]uit (default: q):${NC} "
+        echo -ne "  ${BOLD}Select [1/2/3] (default: 3):${NC} "
       else
-        echo -ne "  ${BOLD}[y]es / [e]dit / [q]uit (default: y):${NC} "
+        echo -ne "  ${BOLD}Select [1/2/3] (default: 1):${NC} "
       fi
       read -r _choice
-      _choice="${_choice:-${_default_action}}"
-      case "${_choice,,}" in y|e|q) break ;; *) echo -e "  ${DIM}Enter y, e, or q.${NC}" ;; esac
+      _choice="${_choice:-$([[ "$_default_action" == "q" ]] && echo "3" || echo "1")}"
+      case "$_choice" in 1|2|3) break ;; *) echo -e "  ${DIM}Enter 1, 2, or 3.${NC}" ;; esac
     done
 
     echo ""
-    case "${_choice,,}" in
-      y)
+    case "$_choice" in
+      1)
         echo -e "  ${GREEN}✓  Configuration validated. Starting install...${NC}"
         echo ""
         break
         ;;
-      e)
+      2)
         ${VISUAL:-${EDITOR:-nano}} "$env_file"
         preflight_env_check "$env_file"
         return $?
         ;;
-      q) echo -e "  ${DIM}Goodbye.${NC}\n"; exit 0 ;;
+      3) echo -e "  ${DIM}Goodbye.${NC}\n"; exit 0 ;;
     esac
   done
 }

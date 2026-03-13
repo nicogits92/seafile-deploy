@@ -252,8 +252,34 @@ until [ -d "$CONF_DIR" ]; do
   warn "Conf directory not yet present — retrying in 5 seconds..."
   sleep 5
 done
-info "Conf directory found. Waiting 60 seconds for database migrations to finish..."
-sleep 60
+info "Conf directory found. Waiting for database tables..."
+
+# Wait for tables to exist in seahub_db before running config-fixes.
+# In recovery, tables come from the DB restore. In fresh-DB recovery,
+# Seafile creates them during init.
+_ROOT_PASS="${INIT_SEAFILE_MYSQL_ROOT_PASSWORD:-}"
+if [[ -n "$_ROOT_PASS" && "${DB_INTERNAL:-true}" == "true" ]]; then
+  _tables_ready=false
+  for _t in {1..60}; do
+    _tcount=$(docker exec seafile-db mysql -u root -p"${_ROOT_PASS}" -N \
+      -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='${SEAFILE_MYSQL_DB_SEAHUB_DB_NAME:-seahub_db}';" 2>/dev/null || echo "0")
+    if [[ "$_tcount" -gt 10 ]]; then
+      info "Database tables verified (${_tcount} tables in seahub_db)."
+      _tables_ready=true
+      break
+    fi
+    if (( _t % 6 == 0 )); then
+      info "  Still waiting for tables... (${_tcount} so far)"
+    fi
+    sleep 5
+  done
+  if [[ "$_tables_ready" != "true" ]]; then
+    warn "Timed out waiting for tables. Config-fixes will proceed anyway."
+  fi
+else
+  info "No DB root access — waiting 60 seconds for migrations to finish..."
+  sleep 60
+fi
 
 # ---------------------------------------------------------------------------
 # Run config fixes
