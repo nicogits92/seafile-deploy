@@ -730,27 +730,20 @@ COMPOSEEOF
   info "Active profiles: ${COMPOSE_PROFILES}"
 
   # ── Clean stale Seafile state on fresh install ───────────────────────────
-  # Seafile checks for /shared/seafile-data inside the container to decide
-  # whether to run first-boot init (setup-seafile-mysql.py). On the host
-  # this maps to ${SEAFILE_VOLUME}/seafile-data. If it exists from a
-  # previous failed attempt, Seafile skips init entirely — no tables, no
-  # config, no working deployment. Remove both data and config so init runs.
-  # Also clear the DB data directory for a clean MariaDB init.
+  # If a previous install attempt left data behind, clear everything so
+  # Seafile's first-boot init (setup-seafile-mysql.py) runs cleanly.
   # NEVER do this in recovery mode — that data belongs to the user.
   # ────────────────────────────────────────────────────────────────────────
   if [[ "$SETUP_MODE" == "install" ]]; then
     _SF_VOL="${SEAFILE_VOLUME:-/opt/seafile-data}"
     _stale=false
-    if [[ -d "${_SF_VOL}/seafile-data" ]]; then
-      info "Removing stale seafile-data from previous install attempt..."
-      rm -rf "${_SF_VOL}/seafile-data"
-      _stale=true
-    fi
-    if [[ -d "${_SF_VOL}/seafile" ]]; then
-      info "Removing stale config directory from previous install attempt..."
-      rm -rf "${_SF_VOL}/seafile"
-      _stale=true
-    fi
+    for _dir in "${_SF_VOL}/seafile-data" "${_SF_VOL}/seafile" "${_SF_VOL}/seahub-data"; do
+      if [[ -d "$_dir" ]]; then
+        info "Removing stale ${_dir} from previous install attempt..."
+        rm -rf "$_dir"
+        _stale=true
+      fi
+    done
     if [[ "${DB_INTERNAL:-true}" == "true" ]]; then
       _DB_VOL="${DB_INTERNAL_VOLUME:-/opt/seafile-db}"
       if [[ -d "$_DB_VOL" ]] && ls "$_DB_VOL"/* &>/dev/null 2>&1; then
@@ -764,116 +757,80 @@ COMPOSEEOF
     fi
   fi
 
-  info "Starting stack with docker compose..."
-  if COMPOSE_PROFILES="$COMPOSE_PROFILES" docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" up -d 2>&1; then
-    info "Stack started successfully."
-  else
-    warn "docker compose up reported an issue — check: docker ps && docker logs seafile"
-  fi
-
-  # ── Database initialization ──────────────────────────────────────────────
-  # Create databases and user ourselves rather than relying on Seafile's
-  # internal first-boot init, which has timing issues with config-fixes.
-  # If databases already exist, these statements are harmless no-ops.
-  # ──────────────────────────────────────────────────────────────────────────
-  _DB_HOST="${SEAFILE_MYSQL_DB_HOST:-seafile-db}"
-  _DB_PORT="${SEAFILE_MYSQL_DB_PORT:-3306}"
-  _DB_USER="${SEAFILE_MYSQL_DB_USER:-seafile}"
-  _DB_PASS="${SEAFILE_MYSQL_DB_PASSWORD:-}"
-  _DB_ROOT_PASS="${INIT_SEAFILE_MYSQL_ROOT_PASSWORD:-}"
-
-  if [[ -n "$_DB_ROOT_PASS" ]]; then
-    info "Waiting for database server to accept connections..."
-
-    # Build the mysql command — internal DB uses docker exec, external uses mysql client
-    if [[ "${DB_INTERNAL:-true}" == "true" ]]; then
-      _mysql_cmd() {
-        docker exec seafile-db mysql -u root -p"${_DB_ROOT_PASS}" "$@" 2>/dev/null
-      }
+  # ── Stage 1: Start database first ───────────────────────────────────────
+  # Seafile's init script (setup-seafile-mysql.py) needs the database to be
+  # accepting connections BEFORE the seafile container starts. If the DB
+  # isn't ready, Seafile retries briefly then gives up and starts without
+  # completing init — leaving empty databases and no config files.
+  # ────────────────────────────────────────────────────────────────────────
+  if [[ "${DB_INTERNAL:-true}" == "true" ]]; then
+    info "Stage 1: Starting database container..."
+    COMPOSE_PROFILES="$COMPOSE_PROFILES" docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" up -d seafile-db 2>&1
+    
+    info "Waiting for database to accept connections..."
+    _db_ready=false
+    for _attempt in {1..30}; do
+      if docker exec seafile-db mysqladmin ping -u root \
+          -p"${INIT_SEAFILE_MYSQL_ROOT_PASSWORD:-}" --silent 2>/dev/null; then
+        _db_ready=true
+        break
+      fi
+      sleep 3
+    done
+    if [[ "$_db_ready" == "true" ]]; then
+      info "Database is ready."
     else
-      _mysql_cmd() {
-        mysql -h "$_DB_HOST" -P "$_DB_PORT" -u root -p"${_DB_ROOT_PASS}" "$@" 2>/dev/null
-      }
+      warn "Database did not become ready in 90 seconds — Seafile init may fail."
+      warn "Check: docker logs seafile-db"
     fi
-
-    # Wait for DB to be ready (up to 90 seconds)
+  else
+    info "Stage 1: External database — verifying connectivity..."
     _db_ready=false
     for _attempt in {1..18}; do
-      if _mysql_cmd -e "SELECT 1" >/dev/null 2>&1; then
+      if mysql -h "${SEAFILE_MYSQL_DB_HOST}" -P "${SEAFILE_MYSQL_DB_PORT:-3306}" \
+          -u root -p"${INIT_SEAFILE_MYSQL_ROOT_PASSWORD:-}" -e "SELECT 1" &>/dev/null; then
         _db_ready=true
         break
       fi
       sleep 5
     done
-
     if [[ "$_db_ready" == "true" ]]; then
-      info "Database server is ready. Initializing Seafile databases..."
-
-      _mysql_cmd -e "
-        CREATE DATABASE IF NOT EXISTS \`${SEAFILE_MYSQL_DB_CCNET_DB_NAME:-ccnet_db}\`     CHARACTER SET utf8mb4;
-        CREATE DATABASE IF NOT EXISTS \`${SEAFILE_MYSQL_DB_SEAFILE_DB_NAME:-seafile_db}\`  CHARACTER SET utf8mb4;
-        CREATE DATABASE IF NOT EXISTS \`${SEAFILE_MYSQL_DB_SEAHUB_DB_NAME:-seahub_db}\`    CHARACTER SET utf8mb4;
-      "
-
-      # Create user if it doesn't exist — use '%' host for Docker networking
-      _user_exists=$(_mysql_cmd -N -e "SELECT COUNT(*) FROM mysql.user WHERE user='${_DB_USER}';" 2>/dev/null || echo "0")
-      if [[ "$_user_exists" == "0" ]]; then
-        _mysql_cmd -e "
-          CREATE USER '${_DB_USER}'@'%' IDENTIFIED BY '${_DB_PASS}';
-        "
-        info "Database user '${_DB_USER}' created."
-      else
-        info "Database user '${_DB_USER}' already exists."
-      fi
-
-      # Grant privileges (idempotent)
-      _mysql_cmd -e "
-        GRANT ALL PRIVILEGES ON \`${SEAFILE_MYSQL_DB_CCNET_DB_NAME:-ccnet_db}\`.*    TO '${_DB_USER}'@'%';
-        GRANT ALL PRIVILEGES ON \`${SEAFILE_MYSQL_DB_SEAFILE_DB_NAME:-seafile_db}\`.* TO '${_DB_USER}'@'%';
-        GRANT ALL PRIVILEGES ON \`${SEAFILE_MYSQL_DB_SEAHUB_DB_NAME:-seahub_db}\`.*  TO '${_DB_USER}'@'%';
-        FLUSH PRIVILEGES;
-      "
-
-      # Verify
-      _db_count=$(_mysql_cmd -N -e "SELECT COUNT(*) FROM INFORMATION_SCHEMA.SCHEMATA WHERE SCHEMA_NAME IN ('${SEAFILE_MYSQL_DB_CCNET_DB_NAME:-ccnet_db}','${SEAFILE_MYSQL_DB_SEAFILE_DB_NAME:-seafile_db}','${SEAFILE_MYSQL_DB_SEAHUB_DB_NAME:-seahub_db}');" 2>/dev/null || echo "0")
-      if [[ "$_db_count" == "3" ]]; then
-        info "All 3 Seafile databases verified."
-      else
-        warn "Expected 3 databases, found $_db_count — check manually."
-      fi
+      info "External database is reachable."
     else
-      warn "Database server did not become ready in 90 seconds."
-      warn "Databases may need to be created manually. See README — Step 3."
+      warn "Cannot reach external database — Seafile init may fail."
     fi
-  else
-    info "No root password available — skipping database initialization."
-    info "Seafile's internal init or an external DBA will handle database creation."
   fi
 
-  # Wait for seafile container to be healthy
-  info "Waiting for Seafile to initialize (this may take 1-3 minutes on first run)..."
-  _retries=60
-  while [[ $_retries -gt 0 ]]; do
-    if docker ps --format '{{.Names}} {{.Status}}' 2>/dev/null | grep -q "seafile.*healthy\|seafile.*Up"; then
-      info "Seafile container is up."
-      break
-    fi
-    sleep 5
-    _retries=$((_retries - 1))
-  done
-
-  # ── Wait for Seafile to finish creating database tables ──────────────────
-  # Container "up" doesn't mean init is done. Seafile's internal init creates
-  # tables in seahub_db. Config-fixes MUST NOT run until tables exist,
-  # otherwise it overwrites config files that Seafile's init is still writing.
+  # ── Stage 2: Start Seafile container and wait for init ──────────────────
+  # Start only the seafile container. Its entrypoint script runs
+  # setup-seafile-mysql.py which creates databases, tables, config files,
+  # and the admin user. We wait for this to complete before starting
+  # any sidecar containers that depend on a working database.
   # ────────────────────────────────────────────────────────────────────────
-  if [[ -n "${_DB_ROOT_PASS:-}" && "$_db_ready" == "true" ]]; then
-    info "Waiting for Seafile to create database tables..."
+  info "Stage 2: Starting Seafile container for first-boot initialization..."
+  COMPOSE_PROFILES="$COMPOSE_PROFILES" docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" up -d seafile 2>&1
+
+  info "Waiting for Seafile to initialize (this may take 1-3 minutes on first run)..."
+
+  # Build mysql command for table checking
+  if [[ "${DB_INTERNAL:-true}" == "true" ]]; then
+    _mysql_cmd() {
+      docker exec seafile-db mysql -u root -p"${INIT_SEAFILE_MYSQL_ROOT_PASSWORD:-}" "$@" 2>/dev/null
+    }
+  else
+    _mysql_cmd() {
+      mysql -h "${SEAFILE_MYSQL_DB_HOST}" -P "${SEAFILE_MYSQL_DB_PORT:-3306}" \
+        -u root -p"${INIT_SEAFILE_MYSQL_ROOT_PASSWORD:-}" "$@" 2>/dev/null
+    }
+  fi
+
+  # Wait for tables to appear in seahub_db (indicates init completed)
+  if [[ "$_db_ready" == "true" && -n "${INIT_SEAFILE_MYSQL_ROOT_PASSWORD:-}" ]]; then
     _tables_ready=false
-    for _t_attempt in {1..60}; do
+    for _t_attempt in {1..90}; do
       _tcount=$(_mysql_cmd -N -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='${SEAFILE_MYSQL_DB_SEAHUB_DB_NAME:-seahub_db}';" 2>/dev/null || echo "0")
       if [[ "$_tcount" -gt 10 ]]; then
-        info "Database tables created (${_tcount} tables in seahub_db)."
+        info "Seafile initialization complete (${_tcount} tables in seahub_db)."
         _tables_ready=true
         break
       fi
@@ -884,14 +841,25 @@ COMPOSEEOF
       sleep 5
     done
     if [[ "$_tables_ready" != "true" ]]; then
-      warn "Timed out waiting for tables (found ${_tcount:-0}). Seafile may not have initialized correctly."
+      warn "Timed out waiting for Seafile init (found ${_tcount:-0} tables after 7.5 minutes)."
       warn "Check: docker logs seafile"
     fi
   else
-    # No DB access — fall back to a generous time-based wait
-    info "Waiting 60s for Seafile init to complete..."
-    sleep 60
+    # No DB access for checking — wait generously
+    info "Waiting 90s for Seafile first-boot initialization..."
+    sleep 90
   fi
+
+  # ── Stage 3: Start remaining containers ─────────────────────────────────
+  info "Stage 3: Starting remaining containers..."
+  if COMPOSE_PROFILES="$COMPOSE_PROFILES" docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" up -d 2>&1; then
+    info "All containers started."
+  else
+    warn "docker compose up reported an issue — check: docker ps && docker logs seafile"
+  fi
+
+  # Brief pause for sidecars to connect to DB
+  sleep 10
 
   # Run config-fixes
   if [[ -f "/opt/seafile-config-fixes.sh" ]]; then

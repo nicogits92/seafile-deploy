@@ -383,7 +383,7 @@ Local disk skips network storage entirely and writes Seafile data to a path on t
 
 > **DR with bundled DB:** Database files default to `/opt/seafile-db` on local disk. A VM loss destroys them, even if Seafile's file data is safely on a network share. To protect against this, a nightly `mysqldump` runs automatically to `${SEAFILE_VOLUME}/db-backup/` on your network share, retaining the last 7 days. With `BACKUP_ENABLED=true`, a full dump also runs at each backup interval. Worst-case data loss on VM failure: one day of database changes. For zero-loss exposure, you can also set `DB_INTERNAL_VOLUME` to a share subdirectory, but note this trades some performance for extra safety, particularly on SMB where small random I/O is slower than local disk.
 
-If `DB_INTERNAL=false`: ensure your external database server allows remote connections and has a root password set — see [Step 3](#step-3---prepare-external-infrastructure). The installer creates the databases and user automatically using the root password you provide.
+If `DB_INTERNAL=false`: ensure your external database server allows remote connections and has a root password set — see [Step 3](#step-3---prepare-external-infrastructure). Seafile creates the databases and user automatically during first-boot initialization using the root password you provide.
 
 ### 4. Reverse proxy
 
@@ -542,7 +542,7 @@ This step covers infrastructure that must be ready before you run the deploy scr
 
 | If you chose... | Prepare... |
 |-----------------|------------|
-| `DB_INTERNAL=false` (external database) | Root password set + remote connections allowed (databases created by installer) |
+| `DB_INTERNAL=false` (external database) | Root password set + remote connections allowed (databases created by Seafile during first boot) |
 | `STORAGE_TYPE=nfs` | NFS export on your NAS |
 | `STORAGE_TYPE=smb` | SMB share and credentials on your NAS |
 | `STORAGE_TYPE=glusterfs` | GlusterFS volume |
@@ -556,11 +556,11 @@ This step covers infrastructure that must be ready before you run the deploy scr
 
 This section applies only if you chose to use an external MySQL/MariaDB server. If using the bundled database (`DB_INTERNAL=true`, the default), skip this entirely.
 
-The installer automatically creates the three Seafile databases (`ccnet_db`, `seafile_db`, `seahub_db`), the `seafile` user, and all required grants using the root password you provide in `.env`. You do **not** need to run any SQL manually. Just ensure these two prerequisites are met:
+The Seafile container automatically creates the three databases (`ccnet_db`, `seafile_db`, `seahub_db`), the `seafile` user, and all required grants during its first-boot initialization using the root password you provide in `.env`. You do **not** need to run any SQL manually. Just ensure these two prerequisites are met:
 
 ### 1 - Verify the root password is set
 
-The installer authenticates as root to create databases and the `seafile` user. If root has no password or uses socket-based authentication, this will fail.
+Seafile's first-boot initialization authenticates as root to create databases and the `seafile` user. If root has no password or uses socket-based authentication, this will fail.
 
 Connect to your database server as root and run:
 
@@ -724,8 +724,11 @@ Once configuration is complete, the installer:
 - Installs the Portainer Agent
 - Writes `docker-compose.yml` and `update.sh`
 - Installs the `seafile` CLI
-- Starts the stack and waits for initialization
-- Runs `seafile-config-fixes.sh` to apply all configuration
+- Deploys the stack in three stages:
+  1. Starts the database container and waits for it to accept connections
+  2. Starts the Seafile container and waits for first-boot initialization to complete (database creation, table migrations, config file generation)
+  3. Starts all remaining containers (Caddy, Redis, notification server, office suite, etc.)
+- Runs `seafile-config-fixes.sh` to apply your `.env` settings on top of Seafile's generated config
 
 A pre-run checklist appears before any changes are made. Press Enter to run with all steps selected.
 
@@ -1670,11 +1673,11 @@ mysql -h YOUR_DB_IP -u seafile -p
 
 If root auth fails, check that `INIT_SEAFILE_MYSQL_ROOT_PASSWORD` in `.env` matches what is set on the server. If root was using `unix_socket` auth, see **Step 3 - Verify the root password is set**.
 
-If the `seafile` user auth fails, the installer may not have been able to create it. Check on the database server as root:
+If the `seafile` user auth fails, Seafile's first-boot initialization may not have completed successfully. Check on the database server as root:
 ```sql
 SELECT user, host FROM mysql.user WHERE user='seafile';
 ```
-If the user does not exist, verify that `INIT_SEAFILE_MYSQL_ROOT_PASSWORD` in `.env` matches the actual root password on the database server, then re-run `seafile update` which will re-attempt database initialization.
+If the user does not exist, verify that `INIT_SEAFILE_MYSQL_ROOT_PASSWORD` in `.env` matches the actual root password on the database server. You may need to clear stale Seafile data and re-run the installer to trigger a fresh first-boot initialization.
 
 Finally, check the seafile container logs for the specific error message:
 ```bash
@@ -1973,6 +1976,23 @@ If you add a new profile-gated service, add it to `_compute_profiles()` in `src/
 **`shared-lib.sh` is the single source of truth** for default values, DO NOT CHANGE lists, helper functions, .env normalization, secret writing, and the interactive phase menu. Every generated script embeds it, so a change in one place propagates everywhere on the next build.
 
 The flow is:
+
+**First install (staged startup):**
+```
+seafile-deploy.sh → setup.sh
+    ├── Stage 1: Start seafile-db, wait for connections
+    ├── Stage 2: Start seafile container
+    │     └── Seafile's setup-seafile-mysql.py runs:
+    │           creates databases, user, tables, config files
+    │     └── Wait for tables in seahub_db (confirms init complete)
+    ├── Stage 3: Start remaining containers
+    └── Run seafile-config-fixes.sh --yes
+          └── Overwrites config files with .env values
+          └── Preserves SECRET_KEY from Seafile's init
+          └── Restarts containers
+```
+
+**Day-to-day updates:**
 ```
 seafile update (user command)
     └── update.sh
@@ -2146,8 +2166,8 @@ A complete reference for every variable in `.env`. All optional features default
 | `DB_INTERNAL_IMAGE` | `mariadb:10.11` | MariaDB image tag for the bundled container. |
 | `SEAFILE_MYSQL_DB_HOST` | *(auto-set)* | Auto-set to `seafile-db` when `DB_INTERNAL=true`. Set to your external server IP/hostname when `DB_INTERNAL=false`. |
 | `SEAFILE_MYSQL_DB_PASSWORD` | *(auto-generated)* | Auto-generated when `DB_INTERNAL=true` and blank. Set manually when `DB_INTERNAL=false`. |
-| `INIT_SEAFILE_MYSQL_ROOT_PASSWORD` | *(auto-generated)* | Auto-generated when `DB_INTERNAL=true` and blank. Set to your external server's root password when `DB_INTERNAL=false`. Used once during setup to create databases and the `seafile` user, then cleared automatically. |
-| `SEAFILE_MYSQL_DB_USER` | `seafile` | Database username. The installer creates this user automatically. |
+| `INIT_SEAFILE_MYSQL_ROOT_PASSWORD` | *(auto-generated)* | Auto-generated when `DB_INTERNAL=true` and blank. Set to your external server's root password when `DB_INTERNAL=false`. Used by Seafile's first-boot initialization to create databases and the `seafile` user, then cleared automatically by config-fixes. Recorded in `.secrets` for troubleshooting. |
+| `SEAFILE_MYSQL_DB_USER` | `seafile` | Database username. Created automatically by Seafile during first-boot initialization. |
 | `SEAFILE_MYSQL_DB_PORT` | `3306` | Database port. Change only if your server uses a non-standard port. |
 
 ---
