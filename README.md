@@ -68,7 +68,7 @@
 
 </details>
 
-This project began as a handful of disconnected helper scripts, created to solve some pain points I encountered trying to transintion from Nextcloud to Seafile. It has since balloond significantly in scope. I'm an amature at best as far as development goes so I am presenting this to the community to use, expand upon, modify, etc. It has been a fun project, and I hope it can prove to be useful!
+This project began as a handful of disconnected helper scripts, created to solve some pain points I encountered trying to transintion from Nextcloud to Seafile. It has since balloond significantly in scope. I'm an amature at best as far as development goes so I am presenting this to the community to use, expand upon, modify, etc. It has been a fun project, and I hope it can prove to be useful! Though many of the functions described below have been tested and seem to be working as intended, you should assume everything needs further testing, and not rely on any of these functionalities for a real production environment. consider the below document aspirational.
 
 Self-hosting Seafile should not require you to become a Seafile expert. This project gives you a Seafile 13 deployment that you can set up in an afternoon and manage confidently and simply for years, even if you have never touched Seafile before.
 
