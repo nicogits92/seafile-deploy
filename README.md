@@ -68,12 +68,13 @@
 
 </details>
 
+This project began as a handful of disconnected helper scripts, created to solve some pain points I encountered trying to transintion from Nextcloud to Seafile. It has since balloond significantly in scope. I'm an amature at best as far as development goes so I am presenting this to the community to use, expand upon, modify, etc. It has been a fun project, and I hope it can prove to be useful!
 
-Self-hosting Seafile should not require you to become a Seafile expert. This project gives you a production-ready Seafile 13 deployment that you can set up in an afternoon and manage confidently for years, even if you have never touched Seafile before.
+Self-hosting Seafile should not require you to become a Seafile expert. This project gives you a Seafile 13 deployment that you can set up in an afternoon and manage confidently and simply for years, even if you have never touched Seafile before.
 
-Everything is controlled through a single `.env` file. Change a value, run one command, and your stack updates itself. Switch office suites, enable antivirus scanning, add LDAP authentication, or move to a different reverse proxy without editing container configs or rewriting scripts. Every change is version-tracked automatically, with full rollback support. The deployment handles the complexity so you can focus on actually using Seafile.
+Everything is controlled through a single `.env` file. Change a value, run one command, and your stack updates itself. Switch office suites, enable antivirus scanning, add LDAP authentication, or move to a different reverse proxy without editing container configs or rewriting scripts. Every change is version-tracked automatically, with full rollback support. The deployment handles the complexity so you can focus on actually using Seafile how you want to use it.
 
-The defaults work out of the box for most homelab setups: a bundled database, NFS storage, and Collabora for document editing. But every major component is swappable. Bring your own database server, use SMB or iSCSI storage, run OnlyOffice instead of Collabora, or manage configuration remotely through a git repository. The Portainer Agent is included for container monitoring in all deployment modes. The same scripts and CLI work regardless of how you configure it.
+The defaults work out of the box for most homelab setups: a bundled database, NFS storage, and Collabora for document editing. But every major component is swappable. Bring your own database server, use SMB or iSCSI storage (iscsi and gluster fs as yet untested), run OnlyOffice instead of Collabora, or manage configuration remotely through a git repository. The Portainer Agent is included for container monitoring in all deployment modes. The same scripts and CLI work regardless of how you configure it.
 
 Disaster recovery is built in from day one. Your file data lives on network storage, database snapshots run automatically, and if the VM ever dies, you provision a new one, run the same deploy script, and pick up where you left off.
 
