@@ -67,7 +67,7 @@ _show_splash() {
   echo "  ╚══════╝╚══════╝╚═╝  ╚═╝╚═╝     ╚═╝╚══════╝╚══════╝"
   echo -e "${NC}"
   echo -e "  ${DIM}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-  echo -e "  ${BOLD}nicogits92 / seafile-deploy${NC}   ${DIM}Seafile ${_SEAFILE_VERSION} CE  ·  v4.3-alpha  ·  config-fixes${NC}"
+  echo -e "  ${BOLD}nicogits92 / seafile-deploy${NC}   ${DIM}Seafile ${_SEAFILE_VERSION} CE  ·  v4.4-alpha  ·  config-fixes${NC}"
   echo -e "  ${DIM}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
   echo ""
   echo -e "  ${DIM}Community deployment · not affiliated with Seafile Ltd.${NC}"
@@ -315,15 +315,33 @@ _max_upload="${MAX_UPLOAD_SIZE_MB:-0}"
 _trash="${TRASH_CLEAN_AFTER_DAYS:-30}"
 _2fa="${FORCE_2FA:-false}"
 _guest="${ENABLE_GUEST:-false}"
+_signup="${ENABLE_SIGNUP:-false}"
+_login_limit="${LOGIN_ATTEMPT_LIMIT:-5}"
+_share_pw="${SHARE_LINK_FORCE_USE_PASSWORD:-false}"
+_share_expire_default="${SHARE_LINK_EXPIRE_DAYS_DEFAULT:-0}"
+_share_expire_max="${SHARE_LINK_EXPIRE_DAYS_MAX:-0}"
+_session_age="${SESSION_COOKIE_AGE:-0}"
+_history_days="${FILE_HISTORY_KEEP_DAYS:-0}"
+_site_name="${SITE_NAME:-Seafile}"
+_site_title="${SITE_TITLE:-Seafile}"
 
 cat << USERSEOF
 # --- User and library settings ---
 FORCE_PASSWORD_CHANGE = False
+SITE_NAME = '${_site_name}'
+SITE_TITLE = '${_site_title}'
 $([ "$_quota" != "0" ] && echo "USER_DEFAULT_QUOTA = ${_quota} * 1024")
 $([ "$_max_upload" != "0" ] && echo "MAX_UPLOAD_SIZE = ${_max_upload}")
 $([ "$_trash" != "0" ] && echo "TRASH_CLEAN_AFTER_DAYS = ${_trash}")
 $([ "${_2fa,,}" == "true" ] && echo "ENABLE_FORCE_2FA = True")
 $([ "${_guest,,}" == "true" ] && echo "ENABLE_GUEST = True")
+$([ "${_signup,,}" == "true" ] && echo "ENABLE_SIGNUP = True" || echo "ENABLE_SIGNUP = False")
+$([ "$_login_limit" != "0" ] && echo "LOGIN_ATTEMPT_LIMIT = ${_login_limit}")
+$([ "${_share_pw,,}" == "true" ] && echo "SHARE_LINK_FORCE_USE_PASSWORD = True")
+$([ "$_share_expire_default" != "0" ] && echo "SHARE_LINK_EXPIRE_DAYS_DEFAULT = ${_share_expire_default}")
+$([ "$_share_expire_max" != "0" ] && echo "SHARE_LINK_EXPIRE_DAYS_MAX = ${_share_expire_max}")
+$([ "$_session_age" != "0" ] && echo "SESSION_COOKIE_AGE = ${_session_age}")
+$([ "$_history_days" != "0" ] && echo "FILE_HISTORY_KEEP_DAYS = ${_history_days}")
 
 USERSEOF
 
@@ -371,7 +389,7 @@ fi
 # =============================================================================
 if [[ "${_SELECTED[2]}" == "true" ]]; then
 info "Writing seafevents.conf..."
-cat > "${CONF_DIR}/seafevents.conf" << 'SEAFEVENTSEOF'
+cat > "${CONF_DIR}/seafevents.conf" << SEAFEVENTSEOF
 [SEAHUB EMAIL]
 enabled = true
 interval = 30m
@@ -382,9 +400,10 @@ enabled = true
 [FILE HISTORY]
 enabled = true
 suffix = md,txt,doc,docx,xls,xlsx,ppt,pptx,sdoc
+$([ "${FILE_HISTORY_KEEP_DAYS:-0}" != "0" ] && echo "keep_days = ${FILE_HISTORY_KEEP_DAYS}")
 
 [AUDIT]
-enabled = true
+enabled = $([ "${AUDIT_ENABLED:-true}" == "true" ] && echo "true" || echo "false")
 
 [VIRUS SCAN]
 enabled = false

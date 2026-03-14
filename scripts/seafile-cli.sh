@@ -722,6 +722,11 @@ _cfg_section_features() {
     "SEAFDAV_ENABLED:WebDAV access"
     "GC_ENABLED:Garbage collection"
     "BACKUP_ENABLED:Automated backup"
+    "ENABLE_GUEST:Guest accounts (external sharing)"
+    "FORCE_2FA:Force two-factor authentication"
+    "ENABLE_SIGNUP:Allow public registration"
+    "SHARE_LINK_FORCE_USE_PASSWORD:Require passwords on share links"
+    "AUDIT_ENABLED:Audit logging"
   )
   
   local orig_values=()

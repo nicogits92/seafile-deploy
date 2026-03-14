@@ -761,7 +761,7 @@ _detect_remote_seafile() {
 # ---------------------------------------------------------------------------
 # Deployment version
 # ---------------------------------------------------------------------------
-DEPLOY_VERSION="v4.3-alpha"
+DEPLOY_VERSION="v4.4-alpha"
 
 # ---------------------------------------------------------------------------
 # Colours (safe to re-source — just variable assignments)
@@ -1186,7 +1186,7 @@ CLAMAV_IMAGE=clamav/clamav:stable
 # Without this, users cannot reset their passwords via email.
 # =============================================================================
 
-SMTP_ENABLED=true
+SMTP_ENABLED=false
 SMTP_HOST=
 # Common ports: 465 (SSL), 587 (STARTTLS), 25 (plain — not recommended)
 # Set SMTP_ENABLED=false if you do not need outbound email — Seafile will work
@@ -1221,6 +1221,43 @@ FORCE_2FA=false
 
 # Allow users to be created as guests (read-only external sharing accounts).
 ENABLE_GUEST=false
+
+# Allow public registration (strangers can create accounts). Most private
+# deployments should leave this false.
+ENABLE_SIGNUP=false
+
+# Lock user account after this many consecutive failed login attempts.
+# 0 = no limit. Locked users can be unlocked by the admin.
+LOGIN_ATTEMPT_LIMIT=5
+
+# Require a password on every share link. Prevents accidental public exposure.
+SHARE_LINK_FORCE_USE_PASSWORD=false
+
+# Default and maximum expiration for share links (days). 0 = no limit.
+SHARE_LINK_EXPIRE_DAYS_DEFAULT=0
+SHARE_LINK_EXPIRE_DAYS_MAX=0
+
+# Session timeout in seconds. 0 = browser session (closes on quit).
+# 86400 = 1 day, 604800 = 1 week (Seafile default).
+SESSION_COOKIE_AGE=0
+
+# Number of days to keep file history. 0 = keep forever (default).
+FILE_HISTORY_KEEP_DAYS=0
+
+# Enable audit logging (tracks file access, downloads, shares).
+AUDIT_ENABLED=true
+
+# =============================================================================
+# OPTIONAL — Branding
+# =============================================================================
+# Customise the Seafile web interface appearance.
+# Changes take effect after running: seafile update
+# =============================================================================
+
+# Site name shown in browser tab and emails.
+SITE_NAME=Seafile
+# Site title shown on the login page.
+SITE_TITLE=Seafile
 
 
 # =============================================================================
@@ -2081,6 +2118,9 @@ WIZ_LDAP_ENABLED=""
 WIZ_BACKUP_ENABLED=""
 WIZ_GUEST_ENABLED=""
 WIZ_FORCE_2FA=""
+WIZ_ENABLE_SIGNUP=""
+WIZ_SHARE_LINK_PW=""
+WIZ_LOGIN_LIMIT=""
 WIZ_GITOPS_ENABLED=""
 
 # Storage-specific values
@@ -2705,7 +2745,7 @@ wizard_step_features() {
   local -a feature_items=()
 
   # Always available
-  feature_items+=("WIZ_SMTP_ENABLED|Email notifications (SMTP)|true")
+  feature_items+=("WIZ_SMTP_ENABLED|Email notifications (SMTP)|false")
   feature_items+=("WIZ_GC_ENABLED|Garbage collection (weekly cleanup)|true")
 
   # Only if not local storage
@@ -2719,6 +2759,9 @@ wizard_step_features() {
   feature_items+=("WIZ_LDAP_ENABLED|LDAP/Active Directory authentication|false")
   feature_items+=("WIZ_GUEST_ENABLED|Guest accounts (external sharing)|false")
   feature_items+=("WIZ_FORCE_2FA|Force two-factor authentication|false")
+  feature_items+=("WIZ_ENABLE_SIGNUP|Allow public registration|false")
+  feature_items+=("WIZ_SHARE_LINK_PW|Require passwords on share links|false")
+  feature_items+=("WIZ_LOGIN_LIMIT|Lock account after 5 failed logins|true")
 
   _wiz_checklist "Optional features (space toggles, Enter confirms):" "${feature_items[@]}"
 
@@ -2925,6 +2968,9 @@ wizard_show_summary() {
   [[ "$WIZ_BACKUP_ENABLED" == "true" ]] && features+="Backup, "
   [[ "$WIZ_GUEST_ENABLED" == "true" ]] && features+="Guests, "
   [[ "$WIZ_FORCE_2FA" == "true" ]] && features+="2FA, "
+  [[ "$WIZ_ENABLE_SIGNUP" == "true" ]] && features+="Registration, "
+  [[ "$WIZ_SHARE_LINK_PW" == "true" ]] && features+="Share link passwords, "
+  [[ "$WIZ_LOGIN_LIMIT" == "true" ]] && features+="Login limits, "
   features="${features%, }"  # Remove trailing comma
   [[ -z "$features" ]] && features="None"
   echo -e "    Enabled:        ${features}"
@@ -3152,7 +3198,7 @@ CLAMAV_IMAGE=clamav/clamav:stable
 # Without this, users cannot reset their passwords via email.
 # =============================================================================
 
-SMTP_ENABLED=true
+SMTP_ENABLED=false
 SMTP_HOST=
 # Common ports: 465 (SSL), 587 (STARTTLS), 25 (plain — not recommended)
 # Set SMTP_ENABLED=false if you do not need outbound email — Seafile will work
@@ -3187,6 +3233,43 @@ FORCE_2FA=false
 
 # Allow users to be created as guests (read-only external sharing accounts).
 ENABLE_GUEST=false
+
+# Allow public registration (strangers can create accounts). Most private
+# deployments should leave this false.
+ENABLE_SIGNUP=false
+
+# Lock user account after this many consecutive failed login attempts.
+# 0 = no limit. Locked users can be unlocked by the admin.
+LOGIN_ATTEMPT_LIMIT=5
+
+# Require a password on every share link. Prevents accidental public exposure.
+SHARE_LINK_FORCE_USE_PASSWORD=false
+
+# Default and maximum expiration for share links (days). 0 = no limit.
+SHARE_LINK_EXPIRE_DAYS_DEFAULT=0
+SHARE_LINK_EXPIRE_DAYS_MAX=0
+
+# Session timeout in seconds. 0 = browser session (closes on quit).
+# 86400 = 1 day, 604800 = 1 week (Seafile default).
+SESSION_COOKIE_AGE=0
+
+# Number of days to keep file history. 0 = keep forever (default).
+FILE_HISTORY_KEEP_DAYS=0
+
+# Enable audit logging (tracks file access, downloads, shares).
+AUDIT_ENABLED=true
+
+# =============================================================================
+# OPTIONAL — Branding
+# =============================================================================
+# Customise the Seafile web interface appearance.
+# Changes take effect after running: seafile update
+# =============================================================================
+
+# Site name shown in browser tab and emails.
+SITE_NAME=Seafile
+# Site title shown on the login page.
+SITE_TITLE=Seafile
 
 
 # =============================================================================
@@ -3548,6 +3631,9 @@ ENVTEMPLATE
   _set_val "BACKUP_ENABLED" "${WIZ_BACKUP_ENABLED:-false}"
   _set_val "ENABLE_GUEST" "$WIZ_GUEST_ENABLED"
   _set_val "FORCE_2FA" "$WIZ_FORCE_2FA"
+  _set_val "ENABLE_SIGNUP" "${WIZ_ENABLE_SIGNUP:-false}"
+  _set_val "SHARE_LINK_FORCE_USE_PASSWORD" "${WIZ_SHARE_LINK_PW:-false}"
+  _set_val "LOGIN_ATTEMPT_LIMIT" "$([ "${WIZ_LOGIN_LIMIT:-true}" == "true" ] && echo "5" || echo "0")"
   _set_val "GITOPS_INTEGRATION" "$WIZ_GITOPS_ENABLED"
 
   # Multi-backend storage classes
@@ -3885,7 +3971,7 @@ CLAMAV_IMAGE=clamav/clamav:stable
 # Without this, users cannot reset their passwords via email.
 # =============================================================================
 
-SMTP_ENABLED=true
+SMTP_ENABLED=false
 SMTP_HOST=
 # Common ports: 465 (SSL), 587 (STARTTLS), 25 (plain — not recommended)
 # Set SMTP_ENABLED=false if you do not need outbound email — Seafile will work
@@ -3920,6 +4006,43 @@ FORCE_2FA=false
 
 # Allow users to be created as guests (read-only external sharing accounts).
 ENABLE_GUEST=false
+
+# Allow public registration (strangers can create accounts). Most private
+# deployments should leave this false.
+ENABLE_SIGNUP=false
+
+# Lock user account after this many consecutive failed login attempts.
+# 0 = no limit. Locked users can be unlocked by the admin.
+LOGIN_ATTEMPT_LIMIT=5
+
+# Require a password on every share link. Prevents accidental public exposure.
+SHARE_LINK_FORCE_USE_PASSWORD=false
+
+# Default and maximum expiration for share links (days). 0 = no limit.
+SHARE_LINK_EXPIRE_DAYS_DEFAULT=0
+SHARE_LINK_EXPIRE_DAYS_MAX=0
+
+# Session timeout in seconds. 0 = browser session (closes on quit).
+# 86400 = 1 day, 604800 = 1 week (Seafile default).
+SESSION_COOKIE_AGE=0
+
+# Number of days to keep file history. 0 = keep forever (default).
+FILE_HISTORY_KEEP_DAYS=0
+
+# Enable audit logging (tracks file access, downloads, shares).
+AUDIT_ENABLED=true
+
+# =============================================================================
+# OPTIONAL — Branding
+# =============================================================================
+# Customise the Seafile web interface appearance.
+# Changes take effect after running: seafile update
+# =============================================================================
+
+# Site name shown in browser tab and emails.
+SITE_NAME=Seafile
+# Site title shown on the login page.
+SITE_TITLE=Seafile
 
 
 # =============================================================================
@@ -4595,7 +4718,7 @@ CLAMAV_IMAGE=clamav/clamav:stable
 # Without this, users cannot reset their passwords via email.
 # =============================================================================
 
-SMTP_ENABLED=true
+SMTP_ENABLED=false
 SMTP_HOST=
 # Common ports: 465 (SSL), 587 (STARTTLS), 25 (plain — not recommended)
 # Set SMTP_ENABLED=false if you do not need outbound email — Seafile will work
@@ -4630,6 +4753,43 @@ FORCE_2FA=false
 
 # Allow users to be created as guests (read-only external sharing accounts).
 ENABLE_GUEST=false
+
+# Allow public registration (strangers can create accounts). Most private
+# deployments should leave this false.
+ENABLE_SIGNUP=false
+
+# Lock user account after this many consecutive failed login attempts.
+# 0 = no limit. Locked users can be unlocked by the admin.
+LOGIN_ATTEMPT_LIMIT=5
+
+# Require a password on every share link. Prevents accidental public exposure.
+SHARE_LINK_FORCE_USE_PASSWORD=false
+
+# Default and maximum expiration for share links (days). 0 = no limit.
+SHARE_LINK_EXPIRE_DAYS_DEFAULT=0
+SHARE_LINK_EXPIRE_DAYS_MAX=0
+
+# Session timeout in seconds. 0 = browser session (closes on quit).
+# 86400 = 1 day, 604800 = 1 week (Seafile default).
+SESSION_COOKIE_AGE=0
+
+# Number of days to keep file history. 0 = keep forever (default).
+FILE_HISTORY_KEEP_DAYS=0
+
+# Enable audit logging (tracks file access, downloads, shares).
+AUDIT_ENABLED=true
+
+# =============================================================================
+# OPTIONAL — Branding
+# =============================================================================
+# Customise the Seafile web interface appearance.
+# Changes take effect after running: seafile update
+# =============================================================================
+
+# Site name shown in browser tab and emails.
+SITE_NAME=Seafile
+# Site title shown on the login page.
+SITE_TITLE=Seafile
 
 
 # =============================================================================
@@ -5273,7 +5433,7 @@ export DEBIAN_FRONTEND=noninteractive
 # ---------------------------------------------------------------------------
 # Deployment version
 # ---------------------------------------------------------------------------
-DEPLOY_VERSION="v4.3-alpha"
+DEPLOY_VERSION="v4.4-alpha"
 
 # ---------------------------------------------------------------------------
 # Colours (safe to re-source — just variable assignments)
@@ -5698,7 +5858,7 @@ CLAMAV_IMAGE=clamav/clamav:stable
 # Without this, users cannot reset their passwords via email.
 # =============================================================================
 
-SMTP_ENABLED=true
+SMTP_ENABLED=false
 SMTP_HOST=
 # Common ports: 465 (SSL), 587 (STARTTLS), 25 (plain — not recommended)
 # Set SMTP_ENABLED=false if you do not need outbound email — Seafile will work
@@ -5733,6 +5893,43 @@ FORCE_2FA=false
 
 # Allow users to be created as guests (read-only external sharing accounts).
 ENABLE_GUEST=false
+
+# Allow public registration (strangers can create accounts). Most private
+# deployments should leave this false.
+ENABLE_SIGNUP=false
+
+# Lock user account after this many consecutive failed login attempts.
+# 0 = no limit. Locked users can be unlocked by the admin.
+LOGIN_ATTEMPT_LIMIT=5
+
+# Require a password on every share link. Prevents accidental public exposure.
+SHARE_LINK_FORCE_USE_PASSWORD=false
+
+# Default and maximum expiration for share links (days). 0 = no limit.
+SHARE_LINK_EXPIRE_DAYS_DEFAULT=0
+SHARE_LINK_EXPIRE_DAYS_MAX=0
+
+# Session timeout in seconds. 0 = browser session (closes on quit).
+# 86400 = 1 day, 604800 = 1 week (Seafile default).
+SESSION_COOKIE_AGE=0
+
+# Number of days to keep file history. 0 = keep forever (default).
+FILE_HISTORY_KEEP_DAYS=0
+
+# Enable audit logging (tracks file access, downloads, shares).
+AUDIT_ENABLED=true
+
+# =============================================================================
+# OPTIONAL — Branding
+# =============================================================================
+# Customise the Seafile web interface appearance.
+# Changes take effect after running: seafile update
+# =============================================================================
+
+# Site name shown in browser tab and emails.
+SITE_NAME=Seafile
+# Site title shown on the login page.
+SITE_TITLE=Seafile
 
 
 # =============================================================================
@@ -8242,6 +8439,11 @@ _cfg_section_features() {
     "SEAFDAV_ENABLED:WebDAV access"
     "GC_ENABLED:Garbage collection"
     "BACKUP_ENABLED:Automated backup"
+    "ENABLE_GUEST:Guest accounts (external sharing)"
+    "FORCE_2FA:Force two-factor authentication"
+    "ENABLE_SIGNUP:Allow public registration"
+    "SHARE_LINK_FORCE_USE_PASSWORD:Require passwords on share links"
+    "AUDIT_ENABLED:Audit logging"
   )
   
   local orig_values=()
@@ -10959,7 +11161,7 @@ _show_splash() {
   echo "  ╚══════╝╚══════╝╚═╝  ╚═╝╚═╝     ╚═╝╚══════╝╚══════╝"
   echo -e "${NC}"
   echo -e "  ${DIM}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-  echo -e "  ${BOLD}nicogits92 / seafile-deploy${NC}   ${DIM}Seafile ${_SEAFILE_VERSION} CE  ·  v4.3-alpha  ·  config-fixes${NC}"
+  echo -e "  ${BOLD}nicogits92 / seafile-deploy${NC}   ${DIM}Seafile ${_SEAFILE_VERSION} CE  ·  v4.4-alpha  ·  config-fixes${NC}"
   echo -e "  ${DIM}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
   echo ""
   echo -e "  ${DIM}Community deployment · not affiliated with Seafile Ltd.${NC}"
@@ -11207,15 +11409,33 @@ _max_upload="${MAX_UPLOAD_SIZE_MB:-0}"
 _trash="${TRASH_CLEAN_AFTER_DAYS:-30}"
 _2fa="${FORCE_2FA:-false}"
 _guest="${ENABLE_GUEST:-false}"
+_signup="${ENABLE_SIGNUP:-false}"
+_login_limit="${LOGIN_ATTEMPT_LIMIT:-5}"
+_share_pw="${SHARE_LINK_FORCE_USE_PASSWORD:-false}"
+_share_expire_default="${SHARE_LINK_EXPIRE_DAYS_DEFAULT:-0}"
+_share_expire_max="${SHARE_LINK_EXPIRE_DAYS_MAX:-0}"
+_session_age="${SESSION_COOKIE_AGE:-0}"
+_history_days="${FILE_HISTORY_KEEP_DAYS:-0}"
+_site_name="${SITE_NAME:-Seafile}"
+_site_title="${SITE_TITLE:-Seafile}"
 
 cat << USERSEOF
 # --- User and library settings ---
 FORCE_PASSWORD_CHANGE = False
+SITE_NAME = '${_site_name}'
+SITE_TITLE = '${_site_title}'
 $([ "$_quota" != "0" ] && echo "USER_DEFAULT_QUOTA = ${_quota} * 1024")
 $([ "$_max_upload" != "0" ] && echo "MAX_UPLOAD_SIZE = ${_max_upload}")
 $([ "$_trash" != "0" ] && echo "TRASH_CLEAN_AFTER_DAYS = ${_trash}")
 $([ "${_2fa,,}" == "true" ] && echo "ENABLE_FORCE_2FA = True")
 $([ "${_guest,,}" == "true" ] && echo "ENABLE_GUEST = True")
+$([ "${_signup,,}" == "true" ] && echo "ENABLE_SIGNUP = True" || echo "ENABLE_SIGNUP = False")
+$([ "$_login_limit" != "0" ] && echo "LOGIN_ATTEMPT_LIMIT = ${_login_limit}")
+$([ "${_share_pw,,}" == "true" ] && echo "SHARE_LINK_FORCE_USE_PASSWORD = True")
+$([ "$_share_expire_default" != "0" ] && echo "SHARE_LINK_EXPIRE_DAYS_DEFAULT = ${_share_expire_default}")
+$([ "$_share_expire_max" != "0" ] && echo "SHARE_LINK_EXPIRE_DAYS_MAX = ${_share_expire_max}")
+$([ "$_session_age" != "0" ] && echo "SESSION_COOKIE_AGE = ${_session_age}")
+$([ "$_history_days" != "0" ] && echo "FILE_HISTORY_KEEP_DAYS = ${_history_days}")
 
 USERSEOF
 
@@ -11263,7 +11483,7 @@ fi
 # =============================================================================
 if [[ "${_SELECTED[2]}" == "true" ]]; then
 info "Writing seafevents.conf..."
-cat > "${CONF_DIR}/seafevents.conf" << 'SEAFEVENTSEOF'
+cat > "${CONF_DIR}/seafevents.conf" << SEAFEVENTSEOF
 [SEAHUB EMAIL]
 enabled = true
 interval = 30m
@@ -11274,9 +11494,10 @@ enabled = true
 [FILE HISTORY]
 enabled = true
 suffix = md,txt,doc,docx,xls,xlsx,ppt,pptx,sdoc
+$([ "${FILE_HISTORY_KEEP_DAYS:-0}" != "0" ] && echo "keep_days = ${FILE_HISTORY_KEEP_DAYS}")
 
 [AUDIT]
-enabled = true
+enabled = $([ "${AUDIT_ENABLED:-true}" == "true" ] && echo "true" || echo "false")
 
 [VIRUS SCAN]
 enabled = false
@@ -12054,7 +12275,7 @@ heading() { echo -e "\n${BOLD}${CYAN}==> $1${NC}"; }
 # ---------------------------------------------------------------------------
 # Deployment version
 # ---------------------------------------------------------------------------
-DEPLOY_VERSION="v4.3-alpha"
+DEPLOY_VERSION="v4.4-alpha"
 
 # ---------------------------------------------------------------------------
 # Colours (safe to re-source — just variable assignments)
@@ -12479,7 +12700,7 @@ CLAMAV_IMAGE=clamav/clamav:stable
 # Without this, users cannot reset their passwords via email.
 # =============================================================================
 
-SMTP_ENABLED=true
+SMTP_ENABLED=false
 SMTP_HOST=
 # Common ports: 465 (SSL), 587 (STARTTLS), 25 (plain — not recommended)
 # Set SMTP_ENABLED=false if you do not need outbound email — Seafile will work
@@ -12514,6 +12735,43 @@ FORCE_2FA=false
 
 # Allow users to be created as guests (read-only external sharing accounts).
 ENABLE_GUEST=false
+
+# Allow public registration (strangers can create accounts). Most private
+# deployments should leave this false.
+ENABLE_SIGNUP=false
+
+# Lock user account after this many consecutive failed login attempts.
+# 0 = no limit. Locked users can be unlocked by the admin.
+LOGIN_ATTEMPT_LIMIT=5
+
+# Require a password on every share link. Prevents accidental public exposure.
+SHARE_LINK_FORCE_USE_PASSWORD=false
+
+# Default and maximum expiration for share links (days). 0 = no limit.
+SHARE_LINK_EXPIRE_DAYS_DEFAULT=0
+SHARE_LINK_EXPIRE_DAYS_MAX=0
+
+# Session timeout in seconds. 0 = browser session (closes on quit).
+# 86400 = 1 day, 604800 = 1 week (Seafile default).
+SESSION_COOKIE_AGE=0
+
+# Number of days to keep file history. 0 = keep forever (default).
+FILE_HISTORY_KEEP_DAYS=0
+
+# Enable audit logging (tracks file access, downloads, shares).
+AUDIT_ENABLED=true
+
+# =============================================================================
+# OPTIONAL — Branding
+# =============================================================================
+# Customise the Seafile web interface appearance.
+# Changes take effect after running: seafile update
+# =============================================================================
+
+# Site name shown in browser tab and emails.
+SITE_NAME=Seafile
+# Site title shown on the login page.
+SITE_TITLE=Seafile
 
 
 # =============================================================================

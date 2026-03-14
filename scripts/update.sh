@@ -67,7 +67,7 @@ heading() { echo -e "\n${BOLD}${CYAN}==> $1${NC}"; }
 # ---------------------------------------------------------------------------
 # Deployment version
 # ---------------------------------------------------------------------------
-DEPLOY_VERSION="v4.3-alpha"
+DEPLOY_VERSION="v4.4-alpha"
 
 # ---------------------------------------------------------------------------
 # Colours (safe to re-source — just variable assignments)
@@ -492,7 +492,7 @@ CLAMAV_IMAGE=clamav/clamav:stable
 # Without this, users cannot reset their passwords via email.
 # =============================================================================
 
-SMTP_ENABLED=true
+SMTP_ENABLED=false
 SMTP_HOST=
 # Common ports: 465 (SSL), 587 (STARTTLS), 25 (plain — not recommended)
 # Set SMTP_ENABLED=false if you do not need outbound email — Seafile will work
@@ -527,6 +527,43 @@ FORCE_2FA=false
 
 # Allow users to be created as guests (read-only external sharing accounts).
 ENABLE_GUEST=false
+
+# Allow public registration (strangers can create accounts). Most private
+# deployments should leave this false.
+ENABLE_SIGNUP=false
+
+# Lock user account after this many consecutive failed login attempts.
+# 0 = no limit. Locked users can be unlocked by the admin.
+LOGIN_ATTEMPT_LIMIT=5
+
+# Require a password on every share link. Prevents accidental public exposure.
+SHARE_LINK_FORCE_USE_PASSWORD=false
+
+# Default and maximum expiration for share links (days). 0 = no limit.
+SHARE_LINK_EXPIRE_DAYS_DEFAULT=0
+SHARE_LINK_EXPIRE_DAYS_MAX=0
+
+# Session timeout in seconds. 0 = browser session (closes on quit).
+# 86400 = 1 day, 604800 = 1 week (Seafile default).
+SESSION_COOKIE_AGE=0
+
+# Number of days to keep file history. 0 = keep forever (default).
+FILE_HISTORY_KEEP_DAYS=0
+
+# Enable audit logging (tracks file access, downloads, shares).
+AUDIT_ENABLED=true
+
+# =============================================================================
+# OPTIONAL — Branding
+# =============================================================================
+# Customise the Seafile web interface appearance.
+# Changes take effect after running: seafile update
+# =============================================================================
+
+# Site name shown in browser tab and emails.
+SITE_NAME=Seafile
+# Site title shown on the login page.
+SITE_TITLE=Seafile
 
 
 # =============================================================================

@@ -23,6 +23,9 @@ WIZ_LDAP_ENABLED=""
 WIZ_BACKUP_ENABLED=""
 WIZ_GUEST_ENABLED=""
 WIZ_FORCE_2FA=""
+WIZ_ENABLE_SIGNUP=""
+WIZ_SHARE_LINK_PW=""
+WIZ_LOGIN_LIMIT=""
 WIZ_GITOPS_ENABLED=""
 
 # Storage-specific values
@@ -647,7 +650,7 @@ wizard_step_features() {
   local -a feature_items=()
 
   # Always available
-  feature_items+=("WIZ_SMTP_ENABLED|Email notifications (SMTP)|true")
+  feature_items+=("WIZ_SMTP_ENABLED|Email notifications (SMTP)|false")
   feature_items+=("WIZ_GC_ENABLED|Garbage collection (weekly cleanup)|true")
 
   # Only if not local storage
@@ -661,6 +664,9 @@ wizard_step_features() {
   feature_items+=("WIZ_LDAP_ENABLED|LDAP/Active Directory authentication|false")
   feature_items+=("WIZ_GUEST_ENABLED|Guest accounts (external sharing)|false")
   feature_items+=("WIZ_FORCE_2FA|Force two-factor authentication|false")
+  feature_items+=("WIZ_ENABLE_SIGNUP|Allow public registration|false")
+  feature_items+=("WIZ_SHARE_LINK_PW|Require passwords on share links|false")
+  feature_items+=("WIZ_LOGIN_LIMIT|Lock account after 5 failed logins|true")
 
   _wiz_checklist "Optional features (space toggles, Enter confirms):" "${feature_items[@]}"
 
@@ -867,6 +873,9 @@ wizard_show_summary() {
   [[ "$WIZ_BACKUP_ENABLED" == "true" ]] && features+="Backup, "
   [[ "$WIZ_GUEST_ENABLED" == "true" ]] && features+="Guests, "
   [[ "$WIZ_FORCE_2FA" == "true" ]] && features+="2FA, "
+  [[ "$WIZ_ENABLE_SIGNUP" == "true" ]] && features+="Registration, "
+  [[ "$WIZ_SHARE_LINK_PW" == "true" ]] && features+="Share link passwords, "
+  [[ "$WIZ_LOGIN_LIMIT" == "true" ]] && features+="Login limits, "
   features="${features%, }"  # Remove trailing comma
   [[ -z "$features" ]] && features="None"
   echo -e "    Enabled:        ${features}"
@@ -973,6 +982,9 @@ ENVTEMPLATE
   _set_val "BACKUP_ENABLED" "${WIZ_BACKUP_ENABLED:-false}"
   _set_val "ENABLE_GUEST" "$WIZ_GUEST_ENABLED"
   _set_val "FORCE_2FA" "$WIZ_FORCE_2FA"
+  _set_val "ENABLE_SIGNUP" "${WIZ_ENABLE_SIGNUP:-false}"
+  _set_val "SHARE_LINK_FORCE_USE_PASSWORD" "${WIZ_SHARE_LINK_PW:-false}"
+  _set_val "LOGIN_ATTEMPT_LIMIT" "$([ "${WIZ_LOGIN_LIMIT:-true}" == "true" ] && echo "5" || echo "0")"
   _set_val "GITOPS_INTEGRATION" "$WIZ_GITOPS_ENABLED"
 
   # Multi-backend storage classes

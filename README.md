@@ -1,4 +1,4 @@
-# nicogits92/seafile-deploy 13 v4.3-alpha
+# nicogits92/seafile-deploy 13 v4.4-alpha
 
 <details>
 <summary>📋 Quick Navigation — click to expand</summary>
@@ -32,7 +32,8 @@
 [The seafile CLI](#the-seafile-cli) ·
 [Git-Managed Configuration](#git-managed-configuration) ·
 [Config History](#config-history) ·
-[Image Version Management](#image-version-management)
+[Image Version Management](#image-version-management) ·
+[Optional Features Reference](#optional-features-reference)
 
 **Disaster recovery, migration & alternate setups**
 [Disaster Recovery](#disaster-recovery) ·
@@ -416,19 +417,24 @@ Set `OFFICE_SUITE=collabora`, `OFFICE_SUITE=onlyoffice`, or `OFFICE_SUITE=none` 
 
 ### 6. Optional features checklist
 
-Enable or change any of these before running `seafile-deploy.sh`, or any time later with `seafile update`.
+Enable or change any of these before running `seafile-deploy.sh`, or any time later with `seafile update`. See the [Optional Features Reference](#optional-features-reference) for detailed documentation of each feature.
 
 | Feature | `.env` key | Default | Notes |
 |---|---|---|---|
-| Email notifications | `SMTP_ENABLED` | **on** | Required for password resets and share notifications. Fill in all `SMTP_*` values. |
+| Email notifications | `SMTP_ENABLED` | off | Required for password resets and share notifications. Fill in all `SMTP_*` values. |
 | Garbage collection | `GC_ENABLED` | **on** | Reclaims storage from deleted files. Weekly on Sunday at 3am. |
 | DB snapshot to share | *(automatic)* | **on** | When `DB_INTERNAL=true` and not local storage — nightly `mysqldump` to `${SEAFILE_VOLUME}/db-backup/`. No config needed. |
+| Lock after failed logins | `LOGIN_ATTEMPT_LIMIT` | **on** (5) | Locks account after 5 failed attempts. Admin can unlock. Set to 0 to disable. |
 | Antivirus scanning | `CLAMAV_ENABLED` | off | Adds ~1 GB RAM. First start is slow while ClamAV downloads definitions. |
 | WebDAV access | `SEAFDAV_ENABLED` | off | Mount as a network drive. LDAP users need a WebDAV token from their profile. |
 | LDAP / Active Directory | `LDAP_ENABLED` | off | Fill in all `LDAP_*` values for your directory. |
 | Full offsite backup | `BACKUP_ENABLED` | off | Rsyncs share + `mysqldump` to `BACKUP_DEST`. Must be a different path from `SEAFILE_VOLUME`. |
 | Guest accounts | `ENABLE_GUEST` | off | Allows read-only external sharing accounts. |
 | Forced 2FA | `FORCE_2FA` | off | Forces all users to enable two-factor auth on next login. |
+| Public registration | `ENABLE_SIGNUP` | off | Allow strangers to create accounts. Leave off for private deployments. |
+| Share link passwords | `SHARE_LINK_FORCE_USE_PASSWORD` | off | Require a password on every share link. |
+| Audit logging | `AUDIT_ENABLED` | **on** | Tracks file access, downloads, and shares. |
+| Branding | `SITE_NAME`, `SITE_TITLE` | Seafile | Customise the site name shown in browser tabs and login page. |
 | GitOps sync | `GITOPS_INTEGRATION` | off | Auto-pull config changes from a private Git repo. |
 | Traefik labels | `TRAEFIK_ENABLED` | off | Enable if using Traefik as your reverse proxy. |
 ---
@@ -504,6 +510,9 @@ This stack runs well as a dedicated VM. RAM requirements depend on which office 
 
 ## Step 2 - Install Debian 13
 
+<details>
+<summary><strong>Debian 13 installation walkthrough</strong> (click to expand — skip if you already have a Debian 13 VM)</summary>
+
 > **Why a dedicated VM?** This stack could technically run alongside other services on a shared Docker host, but if you are already running a hypervisor (Proxmox, ESXi, Unraid, etc.) a dedicated VM is strongly recommended. It keeps Seafile isolated -- if something goes wrong, needs to be rebuilt, or needs to be migrated, you can do it without touching anything else. It also makes the disaster recovery steps at the end of this guide straightforward: provision a new VM, run one command, done.
 
 > **Using a pre-built Debian 13 cloud image or template?** Skip this step entirely. See [OS - Using a Pre-built Debian Image](#os--using-a-pre-built-debian-image) under Alternate Deployment Methods.
@@ -531,9 +540,9 @@ Boot the [Debian 13 netinstall ISO](https://www.debian.org/distrib/netinst) and 
 
 7. Reboot and log in as root via SSH or your hypervisor console.
 
----
-
 > **Using a Linux distribution other than Debian 13?** This deployment is built and tested exclusively on Debian 13 (Trixie) and that is the only officially supported OS. Ubuntu 24.04 LTS is likely compatible — the package names, systemd behaviour, and Docker installation method are nearly identical — but is not tested. RHEL/Fedora/Rocky use `dnf` instead of `apt` and have different default firewall rules (`firewalld`), which would require manual adjustments before running the installer. Alpine Linux is not compatible. If you are starting fresh and have a choice, use Debian 13.
+
+</details>
 
 
 ## Step 3 - Prepare External Infrastructure
@@ -1728,6 +1737,226 @@ See the [Seafile Web API docs](https://manual.seafile.com/13.0/develop/web_api_v
 
 ---
 
+## Optional Features Reference
+
+Detailed documentation for every configurable feature. All features can be enabled during the guided setup wizard, via `seafile config`, or by editing `.env` directly and running `seafile update`.
+
+<details>
+<summary><strong>Email Notifications (SMTP)</strong></summary>
+
+**Key:** `SMTP_ENABLED` · **Default:** `false`
+
+Email is required for password resets, share notifications, and file update digests. When disabled, Seafile works normally but cannot send any outbound email.
+
+**Configuration:** Set `SMTP_ENABLED=true` and fill in all `SMTP_*` values. The wizard collects these interactively when you enable email in the features checklist. Common providers:
+
+| Provider | Host | Port | Encryption |
+|----------|------|------|------------|
+| Gmail | smtp.gmail.com | 587 | STARTTLS |
+| Outlook/O365 | smtp.office365.com | 587 | STARTTLS |
+| Mailgun/Sendgrid | varies | 587 | STARTTLS |
+
+Gmail and Outlook require an "App Password" — your regular login password will not work if 2FA is enabled on the email account.
+
+**Related keys:** `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASSWORD`, `SMTP_FROM`, `SMTP_USE_TLS`, `SMTP_USE_SSL`
+
+</details>
+
+<details>
+<summary><strong>Garbage Collection</strong></summary>
+
+**Key:** `GC_ENABLED` · **Default:** `true`
+
+When users delete files, Seafile marks the underlying storage blocks as unused but does not remove them immediately. Garbage collection (GC) reclaims this space by removing orphaned blocks.
+
+**Schedule:** Runs weekly on Sunday at 3am by default. Customise with `GC_SCHEDULE` (cron format). GC runs inside the Seafile container and logs to `/var/log/seafile-gc.log`.
+
+**When to disable:** Only if you are running GC externally or on a cluster where GC is managed by a different node.
+
+**Related keys:** `GC_SCHEDULE`
+
+</details>
+
+<details>
+<summary><strong>Antivirus Scanning (ClamAV)</strong></summary>
+
+**Key:** `CLAMAV_ENABLED` · **Default:** `false`
+
+Adds the `seafile-clamav` container which scans every uploaded file for malware using ClamAV. Infected files are quarantined and the uploader is notified.
+
+**Resource impact:** +1GB RAM minimum. First startup takes 5-15 minutes while ClamAV downloads virus definitions. Definition updates happen automatically.
+
+**How it works:** Config-fixes writes `ENABLE_VIRUS_SCAN = True` to `seahub_settings.py` and enables the `[VIRUS SCAN]` section in `seafevents.conf`. The ClamAV container exposes a clamd socket that Seafile connects to at `seafile-clamav:3310`.
+
+</details>
+
+<details>
+<summary><strong>WebDAV Access</strong></summary>
+
+**Key:** `SEAFDAV_ENABLED` · **Default:** `false`
+
+Allows mounting Seafile libraries as a network drive using the WebDAV protocol. Access via `https://yourdomain.com/seafdav`.
+
+**Compatible clients:** macOS Finder, Windows Explorer (Map Network Drive), DAVx5 (Android), Cyberduck, rclone.
+
+**Note:** LDAP users cannot use their LDAP password for WebDAV (Seafile 12+). They must generate a WebDAV-specific token from their Seafile profile page.
+
+</details>
+
+<details>
+<summary><strong>LDAP / Active Directory</strong></summary>
+
+**Key:** `LDAP_ENABLED` · **Default:** `false`
+
+Allows users to log in with their LDAP or Active Directory credentials. Seafile queries the directory server on each login — no password synchronisation or local copies are stored.
+
+**Configuration:** Set `LDAP_ENABLED=true` and fill in the LDAP connection details. The wizard collects these interactively. Required values: `LDAP_URL`, `LDAP_BASE_DN`, `LDAP_BIND_DN`, `LDAP_BIND_PASSWORD`. Optional: `LDAP_LOGIN_ATTR` (default `mail`), `LDAP_FILTER`.
+
+**Active Directory example:** Set `LDAP_LOGIN_ATTR=sAMAccountName` so users log in with their Windows username rather than email.
+
+</details>
+
+<details>
+<summary><strong>Offsite Backup</strong></summary>
+
+**Key:** `BACKUP_ENABLED` · **Default:** `false`
+
+Runs a scheduled rsync of the Seafile data share plus a database dump to a remote destination. This is a full offsite backup — separate from the nightly DB snapshots that are always active on network storage.
+
+**Configuration:** Set `BACKUP_ENABLED=true`, `BACKUP_DEST` (rsync-compatible path like `user@backupserver:/path`), and optionally `BACKUP_SCHEDULE` (cron format, default: `0 2 * * *` — daily at 2am).
+
+**Not available with local storage** — there's no network share to back up from.
+
+</details>
+
+<details>
+<summary><strong>Guest Accounts</strong></summary>
+
+**Key:** `ENABLE_GUEST` · **Default:** `false`
+
+Allows the admin to create guest accounts — users with read-only access who can view shared libraries but cannot create or upload content. Useful for sharing documents with external collaborators without giving them full accounts.
+
+</details>
+
+<details>
+<summary><strong>Two-Factor Authentication</strong></summary>
+
+**Key:** `FORCE_2FA` · **Default:** `false`
+
+When enabled, all users are required to set up two-factor authentication (TOTP) on their next login. Users who have not yet configured 2FA will be prompted to do so before they can access any libraries.
+
+**Caution:** Enabling this on a running instance forces every user to set up 2FA immediately. Communicate with your users before flipping this switch, or you may lock people out.
+
+</details>
+
+<details>
+<summary><strong>Public Registration</strong></summary>
+
+**Key:** `ENABLE_SIGNUP` · **Default:** `false`
+
+Controls whether strangers can create accounts on your Seafile instance by visiting the registration page. Most private deployments should leave this disabled — accounts are created by the admin instead.
+
+When enabled, a "Sign Up" link appears on the login page.
+
+</details>
+
+<details>
+<summary><strong>Login Attempt Limit</strong></summary>
+
+**Key:** `LOGIN_ATTEMPT_LIMIT` · **Default:** `5`
+
+Locks a user account after the specified number of consecutive failed login attempts. This protects against brute-force password attacks. Locked users can be unlocked by the admin from the Seafile web interface under System Administration → Users.
+
+Set to `0` to disable the limit entirely.
+
+</details>
+
+<details>
+<summary><strong>Share Link Passwords</strong></summary>
+
+**Key:** `SHARE_LINK_FORCE_USE_PASSWORD` · **Default:** `false`
+
+When enabled, every share link requires a password. This prevents accidental public exposure of files — users cannot create a share link without setting a password on it.
+
+**Related keys:** `SHARE_LINK_EXPIRE_DAYS_DEFAULT` (default expiration in days, 0 = no default), `SHARE_LINK_EXPIRE_DAYS_MAX` (maximum allowed expiration, 0 = unlimited).
+
+</details>
+
+<details>
+<summary><strong>Audit Logging</strong></summary>
+
+**Key:** `AUDIT_ENABLED` · **Default:** `true`
+
+Tracks file access, downloads, shares, and permission changes in the Seafile audit log. Viewable by the admin under System Administration → Audit Log. Useful for compliance, security reviews, and investigating incidents.
+
+Disable only if you have specific privacy requirements that prohibit access logging.
+
+</details>
+
+<details>
+<summary><strong>Branding</strong></summary>
+
+**Keys:** `SITE_NAME`, `SITE_TITLE` · **Default:** `Seafile`
+
+Customise the name shown in browser tabs (`SITE_NAME`) and on the login page (`SITE_TITLE`). Changes take effect after running `seafile update`.
+
+These are simple text strings — no HTML or special characters needed. Example: `SITE_NAME=Acme Files`, `SITE_TITLE=Acme Team Drive`.
+
+</details>
+
+<details>
+<summary><strong>Session Timeout</strong></summary>
+
+**Key:** `SESSION_COOKIE_AGE` · **Default:** `0` (browser session)
+
+Controls how long a user stays logged in. Value is in seconds. When set to `0`, the session expires when the browser is closed.
+
+Common values: `86400` (1 day), `604800` (1 week), `2592000` (30 days).
+
+</details>
+
+<details>
+<summary><strong>File History Retention</strong></summary>
+
+**Key:** `FILE_HISTORY_KEEP_DAYS` · **Default:** `0` (keep forever)
+
+Controls how many days of file edit history to retain. Seafile keeps a version for every save — on active documents this can consume significant database space over time.
+
+Set to `0` to keep all history forever. Set to `90` to keep 90 days, for example. Older versions are cleaned up automatically.
+
+</details>
+
+<details>
+<summary><strong>User Quota</strong></summary>
+
+**Key:** `DEFAULT_USER_QUOTA_GB` · **Default:** `0` (unlimited)
+
+Sets the default storage quota for new users, in GB. Existing users are not affected — their quotas can be set individually from the admin panel.
+
+Set to `0` for unlimited storage. Set to `10` to give each user 10 GB by default.
+
+</details>
+
+<details>
+<summary><strong>Upload Size Limit</strong></summary>
+
+**Key:** `MAX_UPLOAD_SIZE_MB` · **Default:** `0` (unlimited)
+
+Maximum file size for uploads, in MB. Set to `0` for no limit. This is enforced server-side — the Caddy proxy is already configured with `client_max_body_size 0` (unlimited) so the limit only applies at the Seafile application level.
+
+</details>
+
+<details>
+<summary><strong>Trash Auto-Clean</strong></summary>
+
+**Key:** `TRASH_CLEAN_AFTER_DAYS` · **Default:** `30`
+
+Number of days before items in user trash are permanently deleted. Set to `0` to never auto-delete — users must empty their trash manually.
+
+</details>
+
+---
+
 ## Troubleshooting
 
 <details>
@@ -1920,6 +2149,9 @@ Check the affected container's logs first -- the error message there will identi
 ---
 
 ## Developer Guide
+
+<details>
+<summary><strong>Developer Guide</strong> — for anyone modifying or extending this deployment (click to expand)</summary>
 
 This section is for anyone modifying or extending this deployment. If you are just using it, you can safely skip everything here.
 
@@ -2240,6 +2472,8 @@ A bridge container approach was investigated: a sidecar that detects when Portai
 
 The cleaner solution is the Web Configuration Interface described above, which is purpose-built for this project's architecture. It understands the config generation layer, writes to `.env` correctly, and can trigger config-fixes directly for a single-restart experience. If implemented, it would replace the need for Portainer-based configuration entirely while still allowing Portainer to handle monitoring and stack lifecycle.
 
+</details>
+
 ---
 
 ## References
@@ -2360,7 +2594,7 @@ All credentials for both office suites are generated on first boot, regardless o
 
 | Variable | Default | Notes |
 |---|---|---|
-| `SMTP_ENABLED` | `true` | Enables outbound email. Set to `false` to disable — Seafile works without SMTP but users cannot reset passwords by email. |
+| `SMTP_ENABLED` | `false` | Enables outbound email. Set to `true` and fill in all `SMTP_*` values — Seafile works without SMTP but users cannot reset passwords by email. |
 | `SMTP_HOST` | — | SMTP server hostname |
 | `SMTP_PORT` | `465` | Common values: 465 (SSL), 587 (STARTTLS), 25 (plain — not recommended) |
 | `SMTP_USE_TLS` | `true` | |
