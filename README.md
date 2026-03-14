@@ -405,14 +405,14 @@ Switching proxy type after deploy is safe. Run `seafile fix` after changing `PRO
 
 ### 5. Office suite
 
-| | **Collabora** (default) | **OnlyOffice** |
-|---|---|---|
-| **Minimum RAM** | 4 GB | 8 GB |
-| **Strength** | ODF support, lower footprint | Microsoft Office fidelity, Track Changes |
-| **Setup** | Zero config — all credentials auto-generated | Zero config — all credentials auto-generated |
-| **Best for** | Personal/small team | Teams sharing a lot of `.docx`/`.xlsx` |
+| | **Collabora** (default) | **OnlyOffice** | **None** |
+|---|---|---|---|
+| **Minimum RAM** | 4 GB | 8 GB | 2 GB |
+| **Strength** | ODF support, lower footprint | Microsoft Office fidelity, Track Changes | Lightest — file sync only |
+| **Setup** | Zero config — all credentials auto-generated | Zero config — all credentials auto-generated | Nothing to configure |
+| **Best for** | Personal/small team | Teams sharing a lot of `.docx`/`.xlsx` | Storage-only or resource-constrained VMs |
 
-Set `OFFICE_SUITE=collabora` or `OFFICE_SUITE=onlyoffice` in `.env`. All office suite credentials (Collabora admin console, OnlyOffice JWT) are auto-generated on first boot. You never need to fill them in. Switching later is safe. Run `seafile update` after changing the value and the old container stops, the new one starts.
+Set `OFFICE_SUITE=collabora`, `OFFICE_SUITE=onlyoffice`, or `OFFICE_SUITE=none` in `.env`. All office suite credentials (Collabora admin console, OnlyOffice JWT) are auto-generated on first boot. You never need to fill them in. Switching later is safe — run `seafile update` after changing the value and the old container stops, the new one starts. Setting `none` simply skips the office suite container entirely.
 
 ### 6. Optional features checklist
 
@@ -2328,7 +2328,7 @@ A complete reference for every variable in `.env`. All optional features default
 
 | Variable | Default | Notes |
 |---|---|---|
-| `OFFICE_SUITE` | `collabora` | `collabora` or `onlyoffice`. Changing this and running `seafile update` switches suites. |
+| `OFFICE_SUITE` | `collabora` | `collabora`, `onlyoffice`, or `none`. Changing this and running `seafile update` switches suites or disables office editing entirely. |
 | `COLLABORA_IMAGE` | `collabora/code:25.04.8.1.1` | Collabora image tag |
 | `ONLYOFFICE_PORT` | `6233` | Port OnlyOffice exposes on the Docker host |
 | `ONLYOFFICE_VOLUME` | `/opt/onlyoffice` | Local path for OnlyOffice persistent data |

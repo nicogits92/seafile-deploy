@@ -623,7 +623,8 @@ wizard_step_office() {
 
   _wiz_select WIZ_OFFICE_SUITE "Select office suite:" "collabora" \
     "collabora|Collabora Online (recommended) - 4GB RAM minimum" \
-    "onlyoffice|OnlyOffice - Better MS Office fidelity, 8GB RAM minimum"
+    "onlyoffice|OnlyOffice - Better MS Office fidelity, 8GB RAM minimum" \
+    "none|No office suite - File sync and sharing only"
 
   if [[ "$WIZ_OFFICE_SUITE" == "onlyoffice" ]]; then
     echo -e "  ${YELLOW}Note:${NC} OnlyOffice requires at least 8GB RAM."

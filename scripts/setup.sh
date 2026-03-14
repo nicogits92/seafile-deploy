@@ -413,6 +413,7 @@ INIT_SEAFILE_ADMIN_PASSWORD=
 # seafile update switches between them automatically when you change this value.
 # =============================================================================
 
+# Office suite: collabora (default), onlyoffice, or none (no document editing)
 OFFICE_SUITE=collabora
 
 # --- Office Suite Credentials (AUTO-GENERATED) ---
@@ -7193,6 +7194,7 @@ INIT_SEAFILE_ADMIN_PASSWORD=
 # seafile update switches between them automatically when you change this value.
 # =============================================================================
 
+# Office suite: collabora (default), onlyoffice, or none (no document editing)
 OFFICE_SUITE=collabora
 
 # --- Office Suite Credentials (AUTO-GENERATED) ---
@@ -8159,7 +8161,16 @@ _show_splash() {
 
 ENV_FILE="/opt/seafile/.env"
 SNAPSHOT_FILE="/opt/seafile/.env.snapshot"
-CONTAINERS=(seafile-caddy seafile-redis seafile seadoc notification-server thumbnail-server seafile-metadata seafile-collabora)
+
+# Build active container list from .env (same logic as CLI and setup)
+CONTAINERS=(seafile-caddy seafile-redis seafile seadoc notification-server thumbnail-server seafile-metadata)
+case "${OFFICE_SUITE:-collabora}" in
+  onlyoffice) CONTAINERS+=(seafile-onlyoffice) ;;
+  none)       ;;  # No office suite container
+  *)          CONTAINERS+=(seafile-collabora)  ;;
+esac
+[[ "${CLAMAV_ENABLED:-false}" == "true" ]] && CONTAINERS+=(seafile-clamav)
+[[ "${DB_INTERNAL:-true}"    == "true" ]] && CONTAINERS+=(seafile-db)
 
 _PHASES=(
   "Update system packages (apt-get upgrade)"

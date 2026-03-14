@@ -1136,6 +1136,7 @@ INIT_SEAFILE_ADMIN_PASSWORD=
 # seafile update switches between them automatically when you change this value.
 # =============================================================================
 
+# Office suite: collabora (default), onlyoffice, or none (no document editing)
 OFFICE_SUITE=collabora
 
 # --- Office Suite Credentials (AUTO-GENERATED) ---
@@ -2680,7 +2681,8 @@ wizard_step_office() {
 
   _wiz_select WIZ_OFFICE_SUITE "Select office suite:" "collabora" \
     "collabora|Collabora Online (recommended) - 4GB RAM minimum" \
-    "onlyoffice|OnlyOffice - Better MS Office fidelity, 8GB RAM minimum"
+    "onlyoffice|OnlyOffice - Better MS Office fidelity, 8GB RAM minimum" \
+    "none|No office suite - File sync and sharing only"
 
   if [[ "$WIZ_OFFICE_SUITE" == "onlyoffice" ]]; then
     echo -e "  ${YELLOW}Note:${NC} OnlyOffice requires at least 8GB RAM."
@@ -3100,6 +3102,7 @@ INIT_SEAFILE_ADMIN_PASSWORD=
 # seafile update switches between them automatically when you change this value.
 # =============================================================================
 
+# Office suite: collabora (default), onlyoffice, or none (no document editing)
 OFFICE_SUITE=collabora
 
 # --- Office Suite Credentials (AUTO-GENERATED) ---
@@ -3832,6 +3835,7 @@ INIT_SEAFILE_ADMIN_PASSWORD=
 # seafile update switches between them automatically when you change this value.
 # =============================================================================
 
+# Office suite: collabora (default), onlyoffice, or none (no document editing)
 OFFICE_SUITE=collabora
 
 # --- Office Suite Credentials (AUTO-GENERATED) ---
@@ -4541,6 +4545,7 @@ INIT_SEAFILE_ADMIN_PASSWORD=
 # seafile update switches between them automatically when you change this value.
 # =============================================================================
 
+# Office suite: collabora (default), onlyoffice, or none (no document editing)
 OFFICE_SUITE=collabora
 
 # --- Office Suite Credentials (AUTO-GENERATED) ---
@@ -5643,6 +5648,7 @@ INIT_SEAFILE_ADMIN_PASSWORD=
 # seafile update switches between them automatically when you change this value.
 # =============================================================================
 
+# Office suite: collabora (default), onlyoffice, or none (no document editing)
 OFFICE_SUITE=collabora
 
 # --- Office Suite Credentials (AUTO-GENERATED) ---
@@ -12423,6 +12429,7 @@ INIT_SEAFILE_ADMIN_PASSWORD=
 # seafile update switches between them automatically when you change this value.
 # =============================================================================
 
+# Office suite: collabora (default), onlyoffice, or none (no document editing)
 OFFICE_SUITE=collabora
 
 # --- Office Suite Credentials (AUTO-GENERATED) ---
@@ -13389,7 +13396,16 @@ _show_splash() {
 
 ENV_FILE="/opt/seafile/.env"
 SNAPSHOT_FILE="/opt/seafile/.env.snapshot"
-CONTAINERS=(seafile-caddy seafile-redis seafile seadoc notification-server thumbnail-server seafile-metadata seafile-collabora)
+
+# Build active container list from .env (same logic as CLI and setup)
+CONTAINERS=(seafile-caddy seafile-redis seafile seadoc notification-server thumbnail-server seafile-metadata)
+case "${OFFICE_SUITE:-collabora}" in
+  onlyoffice) CONTAINERS+=(seafile-onlyoffice) ;;
+  none)       ;;  # No office suite container
+  *)          CONTAINERS+=(seafile-collabora)  ;;
+esac
+[[ "${CLAMAV_ENABLED:-false}" == "true" ]] && CONTAINERS+=(seafile-clamav)
+[[ "${DB_INTERNAL:-true}"    == "true" ]] && CONTAINERS+=(seafile-db)
 
 _PHASES=(
   "Update system packages (apt-get upgrade)"
