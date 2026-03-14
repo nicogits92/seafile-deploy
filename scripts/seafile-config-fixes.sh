@@ -67,7 +67,7 @@ _show_splash() {
   echo "  ╚══════╝╚══════╝╚═╝  ╚═╝╚═╝     ╚═╝╚══════╝╚══════╝"
   echo -e "${NC}"
   echo -e "  ${DIM}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-  echo -e "  ${BOLD}nicogits92 / seafile-deploy${NC}   ${DIM}Seafile ${_SEAFILE_VERSION} CE  ·  v4.4-alpha  ·  config-fixes${NC}"
+  echo -e "  ${BOLD}nicogits92 / seafile-deploy${NC}   ${DIM}Seafile ${_SEAFILE_VERSION} CE  ·  v4.5-alpha  ·  config-fixes${NC}"
   echo -e "  ${DIM}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
   echo ""
   echo -e "  ${DIM}Community deployment · not affiliated with Seafile Ltd.${NC}"
@@ -802,12 +802,13 @@ fi
 # BACKUP_ENABLED — full backup (database + rsync of storage share)
 # ---------------------------------------------------------------------------
 if [[ "${BACKUP_ENABLED:-false}" == "true" ]]; then
-  if [[ -z "${BACKUP_DEST:-}" ]]; then
-    warn "BACKUP_ENABLED=true but BACKUP_DEST is blank — skipping backup setup."
-    warn "  Set BACKUP_DEST in .env and re-run: seafile fix"
-  elif [[ "${BACKUP_DEST}" == "${SEAFILE_VOLUME}" ]]; then
-    warn "BACKUP_DEST is the same as SEAFILE_VOLUME — this would back up to itself."
-    warn "  Set BACKUP_DEST to a different path or mount and re-run: seafile fix"
+  _BK_DEST="${BACKUP_MOUNT:-/mnt/seafile_backup}"
+  if [[ -z "$_BK_DEST" ]]; then
+    warn "BACKUP_ENABLED=true but BACKUP_MOUNT is blank — skipping backup setup."
+    warn "  Set BACKUP_MOUNT in .env and re-run: seafile fix"
+  elif [[ "$_BK_DEST" == "${SEAFILE_VOLUME}" ]]; then
+    warn "BACKUP_MOUNT is the same as SEAFILE_VOLUME — this would back up to itself."
+    warn "  Set BACKUP_MOUNT to a different path and re-run: seafile fix"
   else
     info "Writing backup script to /opt/seafile-backup.sh..."
 
@@ -830,7 +831,7 @@ for db in \
       --single-transaction \
       --quick \
       "${db}" \
-    | gzip > "${BACKUP_DEST}/db/${db}_${TIMESTAMP}.sql.gz" \
+    | gzip > "${BACKUP_MOUNT}/db/${db}_${TIMESTAMP}.sql.gz" \
     && log "  Dumped ${db}" \
     || err "  Failed to dump ${db}"
 done
@@ -850,7 +851,7 @@ for db in \
     --single-transaction \
     --quick \
     "${db}" \
-    | gzip > "${BACKUP_DEST}/db/${db}_${TIMESTAMP}.sql.gz" \
+    | gzip > "${BACKUP_MOUNT}/db/${db}_${TIMESTAMP}.sql.gz" \
     && log "  Dumped ${db}" \
     || err "  Failed to dump ${db}"
 done
@@ -875,7 +876,7 @@ ENV_FILE="/opt/seafile/.env"
 [[ -f "\$ENV_FILE" ]] && set -a && source "\$ENV_FILE" && set +a
 
 SEAFILE_VOLUME="${SEAFILE_VOLUME}"
-BACKUP_DEST="${BACKUP_DEST}"
+BACKUP_MOUNT="${_BK_DEST}"
 DB_HOST="${SEAFILE_MYSQL_DB_HOST}"
 DB_PORT="${SEAFILE_MYSQL_DB_PORT:-3306}"
 DB_USER="${SEAFILE_MYSQL_DB_USER:-seafile}"
@@ -883,19 +884,19 @@ DB_PASS="${SEAFILE_MYSQL_DB_PASSWORD}"
 TIMESTAMP="\$(date '+%Y%m%d_%H%M%S')"
 
 log "Starting Seafile backup — \${TIMESTAMP}"
-mkdir -p "\${BACKUP_DEST}/db" "\${BACKUP_DEST}/data"
+mkdir -p "\${BACKUP_MOUNT}/db" "\${BACKUP_MOUNT}/data"
 
 ${_DB_DUMP_SNIPPET}
 
 # Remove database dumps older than 14 days
-find "\${BACKUP_DEST}/db" -name "*.sql.gz" -mtime +14 -delete 2>/dev/null || true
+find "\${BACKUP_MOUNT}/db" -name "*.sql.gz" -mtime +14 -delete 2>/dev/null || true
 
 # --- Data rsync ---
 # Exclude db-backup/ — it lives on the share but should not be recursively rsynced
-log "Rsyncing \${SEAFILE_VOLUME} → \${BACKUP_DEST}/data ..."
+log "Rsyncing \${SEAFILE_VOLUME} → \${BACKUP_MOUNT}/data ..."
 rsync -aH --delete \
   --exclude='db-backup/' \
-  "\${SEAFILE_VOLUME}/" "\${BACKUP_DEST}/data/" \
+  "\${SEAFILE_VOLUME}/" "\${BACKUP_MOUNT}/data/" \
   && log "rsync complete" \
   || err "rsync failed — partial backup may exist"
 
@@ -912,7 +913,7 @@ PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin
 ${BACKUP_SCHEDULE:-0 2 * * *} root /opt/seafile-backup.sh
 BACKUPCRONEOF
     chmod 644 /etc/cron.d/seafile-backup
-    info "Backup cron written: ${BACKUP_SCHEDULE:-0 2 * * *} → ${BACKUP_DEST}"
+    info "Backup cron written: ${BACKUP_SCHEDULE:-0 2 * * *} → ${_BK_DEST}"
   fi
 else
   # Backup disabled — remove cron if it exists

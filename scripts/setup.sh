@@ -38,7 +38,7 @@ export DEBIAN_FRONTEND=noninteractive
 # ---------------------------------------------------------------------------
 # Deployment version
 # ---------------------------------------------------------------------------
-DEPLOY_VERSION="v4.4-alpha"
+DEPLOY_VERSION="v4.5-alpha"
 
 # ---------------------------------------------------------------------------
 # Colours (safe to re-source — just variable assignments)
@@ -595,17 +595,33 @@ GC_DRY_RUN=false
 # =============================================================================
 # OPTIONAL — Backup
 # =============================================================================
-# Automated backup of both the database and storage share on a cron schedule.
-# Writes mysqldump archives and rsyncs SEAFILE_VOLUME to BACKUP_DEST.
+# Automated backup of database and Seafile data on a cron schedule.
+# Dumps all databases and rsyncs SEAFILE_VOLUME to the backup destination.
+# The backup destination is mounted automatically — just provide the
+# connection details below, the same way you configured main storage.
 # =============================================================================
 
 BACKUP_ENABLED=false
 # When to run backups. Default: daily at 2am.
 BACKUP_SCHEDULE="0 2 * * *"
-# Path to write backups to. Can be a local path or a mounted share.
-# Must be different from SEAFILE_VOLUME — backing up to the same share
-# you are backing up defeats the purpose.
-BACKUP_DEST=
+
+# Backup destination storage type: nfs, smb, or local.
+# "local" means a path already available on this machine (second disk, USB, etc.)
+BACKUP_STORAGE_TYPE=nfs
+
+# Mount point for the backup destination.
+BACKUP_MOUNT=/mnt/seafile_backup
+
+# NFS backup destination (when BACKUP_STORAGE_TYPE=nfs)
+BACKUP_NFS_SERVER=
+BACKUP_NFS_EXPORT=
+
+# SMB backup destination (when BACKUP_STORAGE_TYPE=smb)
+BACKUP_SMB_SERVER=
+BACKUP_SMB_SHARE=
+BACKUP_SMB_USERNAME=
+BACKUP_SMB_PASSWORD=
+BACKUP_SMB_DOMAIN=
 
 
 # =============================================================================
@@ -1885,6 +1901,53 @@ _mount_storage() {
 _is_first="false"
 [[ "$SETUP_MODE" == "install" || "$SETUP_MODE" == "migrate" ]] && _is_first="true"
 _mount_storage "${SEAFILE_VOLUME:-$STORAGE_MOUNT}" "$_is_first"
+
+# ── Mount backup destination (if BACKUP_ENABLED and not local type) ──────
+if [[ "${BACKUP_ENABLED:-false}" == "true" ]]; then
+  _BACKUP_MOUNT="${BACKUP_MOUNT:-/mnt/seafile_backup}"
+  _BACKUP_STYPE="${BACKUP_STORAGE_TYPE:-nfs}"
+
+  mkdir -p "$_BACKUP_MOUNT"
+
+  if [[ "$_BACKUP_STYPE" == "local" ]]; then
+    info "Backup storage type is local — using ${_BACKUP_MOUNT} directly."
+    mkdir -p "$_BACKUP_MOUNT"
+  elif mountpoint -q "$_BACKUP_MOUNT" 2>/dev/null; then
+    info "Backup destination already mounted at $_BACKUP_MOUNT."
+  else
+    case "$_BACKUP_STYPE" in
+      nfs)
+        local _bk_opts="auto,x-systemd.automount,_netdev,nfsvers=4,rsize=1048576,wsize=1048576,hard,timeo=600,retrans=2,nofail"
+        info "Mounting backup NFS share ${BACKUP_NFS_SERVER}:${BACKUP_NFS_EXPORT} at ${_BACKUP_MOUNT}..."
+        if ! grep -qF "$_BACKUP_MOUNT" /etc/fstab; then
+          echo "${BACKUP_NFS_SERVER}:${BACKUP_NFS_EXPORT} ${_BACKUP_MOUNT} nfs ${_bk_opts} 0 0" >> /etc/fstab
+          info "Added backup NFS entry to /etc/fstab."
+        fi
+        systemctl daemon-reload
+        mount "$_BACKUP_MOUNT" \
+          || warn "Failed to mount backup NFS share — backups will not work until mount is fixed."
+        ;;
+      smb)
+        local _bk_opts="auto,x-systemd.automount,_netdev,nofail,uid=0,gid=0,file_mode=0700,dir_mode=0700"
+        local _bk_creds="/etc/seafile-backup-smb-credentials"
+        if [[ ! -f "$_bk_creds" ]]; then
+          printf 'username=%s\npassword=%s\n' "${BACKUP_SMB_USERNAME}" "${BACKUP_SMB_PASSWORD}" > "$_bk_creds"
+          [[ -n "${BACKUP_SMB_DOMAIN:-}" ]] && echo "domain=${BACKUP_SMB_DOMAIN}" >> "$_bk_creds"
+          chmod 600 "$_bk_creds"
+        fi
+        info "Mounting backup SMB share //${BACKUP_SMB_SERVER}/${BACKUP_SMB_SHARE} at ${_BACKUP_MOUNT}..."
+        if ! grep -qF "$_BACKUP_MOUNT" /etc/fstab; then
+          echo "//${BACKUP_SMB_SERVER}/${BACKUP_SMB_SHARE} ${_BACKUP_MOUNT} cifs credentials=${_bk_creds},${_bk_opts} 0 0" >> /etc/fstab
+          info "Added backup SMB entry to /etc/fstab."
+        fi
+        systemctl daemon-reload
+        mount "$_BACKUP_MOUNT" \
+          || warn "Failed to mount backup SMB share — backups will not work until mount is fixed."
+        ;;
+    esac
+  fi
+  info "Backup destination ready at $_BACKUP_MOUNT."
+fi
 
 fi
 
@@ -5766,7 +5829,7 @@ _show_splash() {
   echo "  ╚══════╝╚══════╝╚═╝  ╚═╝╚═╝     ╚═╝╚══════╝╚══════╝"
   echo -e "${NC}"
   echo -e "  ${DIM}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-  echo -e "  ${BOLD}nicogits92 / seafile-deploy${NC}   ${DIM}Seafile ${_SEAFILE_VERSION} CE  ·  v4.4-alpha  ·  config-fixes${NC}"
+  echo -e "  ${BOLD}nicogits92 / seafile-deploy${NC}   ${DIM}Seafile ${_SEAFILE_VERSION} CE  ·  v4.5-alpha  ·  config-fixes${NC}"
   echo -e "  ${DIM}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
   echo ""
   echo -e "  ${DIM}Community deployment · not affiliated with Seafile Ltd.${NC}"
@@ -6501,12 +6564,13 @@ fi
 # BACKUP_ENABLED — full backup (database + rsync of storage share)
 # ---------------------------------------------------------------------------
 if [[ "${BACKUP_ENABLED:-false}" == "true" ]]; then
-  if [[ -z "${BACKUP_DEST:-}" ]]; then
-    warn "BACKUP_ENABLED=true but BACKUP_DEST is blank — skipping backup setup."
-    warn "  Set BACKUP_DEST in .env and re-run: seafile fix"
-  elif [[ "${BACKUP_DEST}" == "${SEAFILE_VOLUME}" ]]; then
-    warn "BACKUP_DEST is the same as SEAFILE_VOLUME — this would back up to itself."
-    warn "  Set BACKUP_DEST to a different path or mount and re-run: seafile fix"
+  _BK_DEST="${BACKUP_MOUNT:-/mnt/seafile_backup}"
+  if [[ -z "$_BK_DEST" ]]; then
+    warn "BACKUP_ENABLED=true but BACKUP_MOUNT is blank — skipping backup setup."
+    warn "  Set BACKUP_MOUNT in .env and re-run: seafile fix"
+  elif [[ "$_BK_DEST" == "${SEAFILE_VOLUME}" ]]; then
+    warn "BACKUP_MOUNT is the same as SEAFILE_VOLUME — this would back up to itself."
+    warn "  Set BACKUP_MOUNT to a different path and re-run: seafile fix"
   else
     info "Writing backup script to /opt/seafile-backup.sh..."
 
@@ -6529,7 +6593,7 @@ for db in \
       --single-transaction \
       --quick \
       "${db}" \
-    | gzip > "${BACKUP_DEST}/db/${db}_${TIMESTAMP}.sql.gz" \
+    | gzip > "${BACKUP_MOUNT}/db/${db}_${TIMESTAMP}.sql.gz" \
     && log "  Dumped ${db}" \
     || err "  Failed to dump ${db}"
 done
@@ -6549,7 +6613,7 @@ for db in \
     --single-transaction \
     --quick \
     "${db}" \
-    | gzip > "${BACKUP_DEST}/db/${db}_${TIMESTAMP}.sql.gz" \
+    | gzip > "${BACKUP_MOUNT}/db/${db}_${TIMESTAMP}.sql.gz" \
     && log "  Dumped ${db}" \
     || err "  Failed to dump ${db}"
 done
@@ -6574,7 +6638,7 @@ ENV_FILE="/opt/seafile/.env"
 [[ -f "\$ENV_FILE" ]] && set -a && source "\$ENV_FILE" && set +a
 
 SEAFILE_VOLUME="${SEAFILE_VOLUME}"
-BACKUP_DEST="${BACKUP_DEST}"
+BACKUP_MOUNT="${_BK_DEST}"
 DB_HOST="${SEAFILE_MYSQL_DB_HOST}"
 DB_PORT="${SEAFILE_MYSQL_DB_PORT:-3306}"
 DB_USER="${SEAFILE_MYSQL_DB_USER:-seafile}"
@@ -6582,19 +6646,19 @@ DB_PASS="${SEAFILE_MYSQL_DB_PASSWORD}"
 TIMESTAMP="\$(date '+%Y%m%d_%H%M%S')"
 
 log "Starting Seafile backup — \${TIMESTAMP}"
-mkdir -p "\${BACKUP_DEST}/db" "\${BACKUP_DEST}/data"
+mkdir -p "\${BACKUP_MOUNT}/db" "\${BACKUP_MOUNT}/data"
 
 ${_DB_DUMP_SNIPPET}
 
 # Remove database dumps older than 14 days
-find "\${BACKUP_DEST}/db" -name "*.sql.gz" -mtime +14 -delete 2>/dev/null || true
+find "\${BACKUP_MOUNT}/db" -name "*.sql.gz" -mtime +14 -delete 2>/dev/null || true
 
 # --- Data rsync ---
 # Exclude db-backup/ — it lives on the share but should not be recursively rsynced
-log "Rsyncing \${SEAFILE_VOLUME} → \${BACKUP_DEST}/data ..."
+log "Rsyncing \${SEAFILE_VOLUME} → \${BACKUP_MOUNT}/data ..."
 rsync -aH --delete \
   --exclude='db-backup/' \
-  "\${SEAFILE_VOLUME}/" "\${BACKUP_DEST}/data/" \
+  "\${SEAFILE_VOLUME}/" "\${BACKUP_MOUNT}/data/" \
   && log "rsync complete" \
   || err "rsync failed — partial backup may exist"
 
@@ -6611,7 +6675,7 @@ PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin
 ${BACKUP_SCHEDULE:-0 2 * * *} root /opt/seafile-backup.sh
 BACKUPCRONEOF
     chmod 644 /etc/cron.d/seafile-backup
-    info "Backup cron written: ${BACKUP_SCHEDULE:-0 2 * * *} → ${BACKUP_DEST}"
+    info "Backup cron written: ${BACKUP_SCHEDULE:-0 2 * * *} → ${_BK_DEST}"
   fi
 else
   # Backup disabled — remove cron if it exists
@@ -6880,7 +6944,7 @@ heading() { echo -e "\n${BOLD}${CYAN}==> $1${NC}"; }
 # ---------------------------------------------------------------------------
 # Deployment version
 # ---------------------------------------------------------------------------
-DEPLOY_VERSION="v4.4-alpha"
+DEPLOY_VERSION="v4.5-alpha"
 
 # ---------------------------------------------------------------------------
 # Colours (safe to re-source — just variable assignments)
@@ -7437,17 +7501,33 @@ GC_DRY_RUN=false
 # =============================================================================
 # OPTIONAL — Backup
 # =============================================================================
-# Automated backup of both the database and storage share on a cron schedule.
-# Writes mysqldump archives and rsyncs SEAFILE_VOLUME to BACKUP_DEST.
+# Automated backup of database and Seafile data on a cron schedule.
+# Dumps all databases and rsyncs SEAFILE_VOLUME to the backup destination.
+# The backup destination is mounted automatically — just provide the
+# connection details below, the same way you configured main storage.
 # =============================================================================
 
 BACKUP_ENABLED=false
 # When to run backups. Default: daily at 2am.
 BACKUP_SCHEDULE="0 2 * * *"
-# Path to write backups to. Can be a local path or a mounted share.
-# Must be different from SEAFILE_VOLUME — backing up to the same share
-# you are backing up defeats the purpose.
-BACKUP_DEST=
+
+# Backup destination storage type: nfs, smb, or local.
+# "local" means a path already available on this machine (second disk, USB, etc.)
+BACKUP_STORAGE_TYPE=nfs
+
+# Mount point for the backup destination.
+BACKUP_MOUNT=/mnt/seafile_backup
+
+# NFS backup destination (when BACKUP_STORAGE_TYPE=nfs)
+BACKUP_NFS_SERVER=
+BACKUP_NFS_EXPORT=
+
+# SMB backup destination (when BACKUP_STORAGE_TYPE=smb)
+BACKUP_SMB_SERVER=
+BACKUP_SMB_SHARE=
+BACKUP_SMB_USERNAME=
+BACKUP_SMB_PASSWORD=
+BACKUP_SMB_DOMAIN=
 
 
 # =============================================================================

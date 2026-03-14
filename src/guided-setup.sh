@@ -67,7 +67,15 @@ WIZ_LDAP_ADMIN_DN=""
 WIZ_LDAP_ADMIN_PASSWORD=""
 WIZ_LDAP_LOGIN_ATTR=""
 
-WIZ_BACKUP_DEST=""
+WIZ_BACKUP_STORAGE_TYPE=""
+WIZ_BACKUP_NFS_SERVER=""
+WIZ_BACKUP_NFS_EXPORT=""
+WIZ_BACKUP_SMB_SERVER=""
+WIZ_BACKUP_SMB_SHARE=""
+WIZ_BACKUP_SMB_USERNAME=""
+WIZ_BACKUP_SMB_PASSWORD=""
+WIZ_BACKUP_SMB_DOMAIN=""
+WIZ_BACKUP_MOUNT=""
 
 WIZ_GITOPS_REPO=""
 WIZ_GITOPS_BRANCH=""
@@ -652,11 +660,7 @@ wizard_step_features() {
   # Always available
   feature_items+=("WIZ_SMTP_ENABLED|Email notifications (SMTP)|false")
   feature_items+=("WIZ_GC_ENABLED|Garbage collection (weekly cleanup)|true")
-
-  # Only if not local storage
-  if [[ "$WIZ_STORAGE_TYPE" != "local" ]]; then
-    feature_items+=("WIZ_BACKUP_ENABLED|Offsite backup (rsync to remote path)|false")
-  fi
+  feature_items+=("WIZ_BACKUP_ENABLED|Automated backup (database + files)|false")
 
   # Always available
   feature_items+=("WIZ_CLAMAV_ENABLED|Antivirus scanning (ClamAV, +1GB RAM)|false")
@@ -669,12 +673,6 @@ wizard_step_features() {
   feature_items+=("WIZ_LOGIN_LIMIT|Lock account after 5 failed logins|true")
 
   _wiz_checklist "Optional features (space toggles, Enter confirms):" "${feature_items[@]}"
-
-  # Show note about disabled features
-  if [[ "$WIZ_STORAGE_TYPE" == "local" ]]; then
-    echo -e "  ${DIM}Note: Offsite backup and DB snapshots are not available with local storage.${NC}"
-    echo ""
-  fi
 }
 
 # ===========================================================================
@@ -832,12 +830,57 @@ wizard_collect_feature_values() {
 
   # Backup
   if [[ "$WIZ_BACKUP_ENABLED" == "true" ]]; then
-    _wiz_header "Backup Configuration"
+    _wiz_header "Backup Destination"
 
-    _wiz_info "Backups are rsynced to a destination path."
-    _wiz_info "This must be different from SEAFILE_VOLUME."
+    echo -e "  ${DIM}Backups include a full database dump and an rsync of all Seafile${NC}"
+    echo -e "  ${DIM}data. The destination must be a different location from your${NC}"
+    echo -e "  ${DIM}main Seafile storage.${NC}"
     echo ""
-    _wiz_input WIZ_BACKUP_DEST "Backup destination" "e.g. /mnt/backup/seafile" "" "true"
+
+    _wiz_select WIZ_BACKUP_STORAGE_TYPE "Where should backups be stored?" "nfs" \
+      "nfs|NFS share" \
+      "smb|SMB/CIFS share" \
+      "local|Local path (second disk, USB, or existing mount)"
+
+    case "$WIZ_BACKUP_STORAGE_TYPE" in
+      nfs)
+        _wiz_input WIZ_BACKUP_NFS_SERVER "NFS server" "IP or hostname" "" "true"
+        _wiz_input WIZ_BACKUP_NFS_EXPORT "NFS export path" "e.g. /volume1/seafile-backup" "" "true"
+        echo -ne "  ${BOLD}Mount point${NC} [/mnt/seafile_backup]: "
+        read -r WIZ_BACKUP_MOUNT
+        WIZ_BACKUP_MOUNT="${WIZ_BACKUP_MOUNT:-/mnt/seafile_backup}"
+        ;;
+      smb)
+        _wiz_input WIZ_BACKUP_SMB_SERVER "SMB server" "IP or hostname" "" "true"
+        _wiz_input WIZ_BACKUP_SMB_SHARE "Share name" "e.g. seafile-backup" "" "true"
+        _wiz_input WIZ_BACKUP_SMB_USERNAME "Username" "" "" "true"
+        _wiz_password WIZ_BACKUP_SMB_PASSWORD "Password" "true"
+        echo -ne "  ${BOLD}Domain${NC} (leave blank for standalone/workgroup): "
+        read -r WIZ_BACKUP_SMB_DOMAIN
+        echo -ne "  ${BOLD}Mount point${NC} [/mnt/seafile_backup]: "
+        read -r WIZ_BACKUP_MOUNT
+        WIZ_BACKUP_MOUNT="${WIZ_BACKUP_MOUNT:-/mnt/seafile_backup}"
+        ;;
+      local)
+        echo ""
+        echo -e "  ${DIM}Enter the path to your backup destination. This should be a${NC}"
+        echo -e "  ${DIM}second disk, USB drive, or other mount — not the same disk${NC}"
+        echo -e "  ${DIM}as your OS or Seafile data.${NC}"
+        echo ""
+        while true; do
+          echo -ne "  ${BOLD}Backup path${NC}: "
+          read -r WIZ_BACKUP_MOUNT
+          if [[ -z "$WIZ_BACKUP_MOUNT" ]]; then
+            echo -e "  ${DIM}Required.${NC}"
+          elif [[ "$WIZ_BACKUP_MOUNT" == "${WIZ_STORAGE_MOUNT:-/mnt/seafile_nfs}" ]]; then
+            echo -e "  ${RED}This is the same as your Seafile storage mount.${NC}"
+            echo -e "  ${DIM}Backups must go to a different location.${NC}"
+          else
+            break
+          fi
+        done
+        ;;
+    esac
   fi
 }
 
@@ -1028,7 +1071,21 @@ ENVTEMPLATE
   fi
 
   if [[ "$WIZ_BACKUP_ENABLED" == "true" ]]; then
-    _set_val "BACKUP_DEST" "$WIZ_BACKUP_DEST"
+    _set_val "BACKUP_STORAGE_TYPE" "${WIZ_BACKUP_STORAGE_TYPE:-nfs}"
+    _set_val "BACKUP_MOUNT" "${WIZ_BACKUP_MOUNT:-/mnt/seafile_backup}"
+    case "${WIZ_BACKUP_STORAGE_TYPE}" in
+      nfs)
+        _set_val "BACKUP_NFS_SERVER" "$WIZ_BACKUP_NFS_SERVER"
+        _set_val "BACKUP_NFS_EXPORT" "$WIZ_BACKUP_NFS_EXPORT"
+        ;;
+      smb)
+        _set_val "BACKUP_SMB_SERVER" "$WIZ_BACKUP_SMB_SERVER"
+        _set_val "BACKUP_SMB_SHARE" "$WIZ_BACKUP_SMB_SHARE"
+        _set_val "BACKUP_SMB_USERNAME" "$WIZ_BACKUP_SMB_USERNAME"
+        _set_val "BACKUP_SMB_PASSWORD" "$WIZ_BACKUP_SMB_PASSWORD"
+        _set_val "BACKUP_SMB_DOMAIN" "${WIZ_BACKUP_SMB_DOMAIN:-}"
+        ;;
+    esac
   fi
 
   if [[ "$WIZ_GITOPS_ENABLED" == "true" ]]; then

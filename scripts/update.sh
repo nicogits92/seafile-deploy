@@ -67,7 +67,7 @@ heading() { echo -e "\n${BOLD}${CYAN}==> $1${NC}"; }
 # ---------------------------------------------------------------------------
 # Deployment version
 # ---------------------------------------------------------------------------
-DEPLOY_VERSION="v4.4-alpha"
+DEPLOY_VERSION="v4.5-alpha"
 
 # ---------------------------------------------------------------------------
 # Colours (safe to re-source — just variable assignments)
@@ -624,17 +624,33 @@ GC_DRY_RUN=false
 # =============================================================================
 # OPTIONAL — Backup
 # =============================================================================
-# Automated backup of both the database and storage share on a cron schedule.
-# Writes mysqldump archives and rsyncs SEAFILE_VOLUME to BACKUP_DEST.
+# Automated backup of database and Seafile data on a cron schedule.
+# Dumps all databases and rsyncs SEAFILE_VOLUME to the backup destination.
+# The backup destination is mounted automatically — just provide the
+# connection details below, the same way you configured main storage.
 # =============================================================================
 
 BACKUP_ENABLED=false
 # When to run backups. Default: daily at 2am.
 BACKUP_SCHEDULE="0 2 * * *"
-# Path to write backups to. Can be a local path or a mounted share.
-# Must be different from SEAFILE_VOLUME — backing up to the same share
-# you are backing up defeats the purpose.
-BACKUP_DEST=
+
+# Backup destination storage type: nfs, smb, or local.
+# "local" means a path already available on this machine (second disk, USB, etc.)
+BACKUP_STORAGE_TYPE=nfs
+
+# Mount point for the backup destination.
+BACKUP_MOUNT=/mnt/seafile_backup
+
+# NFS backup destination (when BACKUP_STORAGE_TYPE=nfs)
+BACKUP_NFS_SERVER=
+BACKUP_NFS_EXPORT=
+
+# SMB backup destination (when BACKUP_STORAGE_TYPE=smb)
+BACKUP_SMB_SERVER=
+BACKUP_SMB_SHARE=
+BACKUP_SMB_USERNAME=
+BACKUP_SMB_PASSWORD=
+BACKUP_SMB_DOMAIN=
 
 
 # =============================================================================

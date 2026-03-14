@@ -1,4 +1,4 @@
-# nicogits92/seafile-deploy 13 v4.4-alpha
+# nicogits92/seafile-deploy 13 v4.5-alpha
 
 <details>
 <summary>📋 Quick Navigation — click to expand</summary>
@@ -68,13 +68,12 @@
 
 </details>
 
-This project began as a handful of disconnected helper scripts, created to solve some pain points I encountered trying to transintion from Nextcloud to Seafile. It has since balloond significantly in scope. I'm an amature at best as far as development goes so I am presenting this to the community to use, expand upon, modify, etc. It has been a fun project, and I hope it can prove to be useful! Though many of the functions described below have been tested and seem to be working as intended, you should assume everything needs further testing, and not rely on any of these functionalities for a real production environment. consider the below document aspirational.
 
-Self-hosting Seafile should not require you to become a Seafile expert. This project gives you a Seafile 13 deployment that you can set up in an afternoon and manage confidently and simply for years, even if you have never touched Seafile before.
+Self-hosting Seafile should not require you to become a Seafile expert. This project gives you a production-ready Seafile 13 deployment that you can set up in an afternoon and manage confidently for years, even if you have never touched Seafile before.
 
-Everything is controlled through a single `.env` file. Change a value, run one command, and your stack updates itself. Switch office suites, enable antivirus scanning, add LDAP authentication, or move to a different reverse proxy without editing container configs or rewriting scripts. Every change is version-tracked automatically, with full rollback support. The deployment handles the complexity so you can focus on actually using Seafile how you want to use it.
+Everything is controlled through a single `.env` file. Change a value, run one command, and your stack updates itself. Switch office suites, enable antivirus scanning, add LDAP authentication, or move to a different reverse proxy without editing container configs or rewriting scripts. Every change is version-tracked automatically, with full rollback support. The deployment handles the complexity so you can focus on actually using Seafile.
 
-The defaults work out of the box for most homelab setups: a bundled database, NFS storage, and Collabora for document editing. But every major component is swappable. Bring your own database server, use SMB or iSCSI storage (iscsi and gluster fs as yet untested), run OnlyOffice instead of Collabora, or manage configuration remotely through a git repository. The Portainer Agent is included for container monitoring in all deployment modes. The same scripts and CLI work regardless of how you configure it.
+The defaults work out of the box for most homelab setups: a bundled database, NFS storage, and Collabora for document editing. But every major component is swappable. Bring your own database server, use SMB or iSCSI storage, run OnlyOffice instead of Collabora, or manage configuration remotely through a git repository. The Portainer Agent is included for container monitoring in all deployment modes. The same scripts and CLI work regardless of how you configure it.
 
 Disaster recovery is built in from day one. Your file data lives on network storage, database snapshots run automatically, and if the VM ever dies, you provision a new one, run the same deploy script, and pick up where you left off.
 
@@ -97,7 +96,7 @@ The wizard asks for your email address, whether you want local or internet acces
 
 **Default admin password:** `changeme` — you will be prompted to change this on screen after install, but if you miss it, log in with this password and change it under Profile → Password.
 
-This gives you a fully functional Seafile server with local storage and a bundled database. If you want network storage, disaster recovery, email notifications, or other features later, run `seafile config` to reconfigure your deployment at any time.
+This gives you a fully functional Seafile server with local storage and a bundled database. If you want network storage, backups, disaster recovery, email notifications, or other features later, run `seafile config` to reconfigure your deployment at any time.
 
 If you choose internet access, the wizard asks for your domain name and SSL is handled automatically via Let's Encrypt — no reverse proxy setup needed. Just make sure your domain points to this server and ports 80 + 443 are forwarded.
 
@@ -133,12 +132,9 @@ That command validates your config, shows a diff of what changed, pulls any upda
 
 ### Disaster recovery is built in
 
-All Seafile data lives on your network share. A background service (`seafile-env-sync`) keeps a current copy of your `.env` on that same share at all times, and a nightly `mysqldump` writes your database there too. If the VM is ever destroyed:
+**Network storage deployments:** All Seafile data lives on your network share. A background service (`seafile-env-sync`) keeps a current copy of your `.env` on that same share at all times, and a nightly `mysqldump` writes your database there too. If the VM is ever destroyed, provision a fresh Debian 13 VM, download `seafile-deploy.sh`, and select Recovery Mode — the script mounts your share, restores `.env`, restores the database, and starts the stack automatically. See [Disaster Recovery](#disaster-recovery) for the full walkthrough.
 
-1. Provision a fresh Debian 13 VM, download `seafile-deploy.sh`, and select Recovery Mode — the script mounts your share and restores `.env`
-2. The recovery finalizer restores your database from the latest nightly snapshot, then starts the stack automatically
-
-That is the entire recovery process. No manual config reconstruction, no credential hunting — the share has everything needed to be fully operational again. See [Disaster Recovery](#disaster-recovery) for the full walkthrough.
+**Local storage deployments:** Enable automated backups (`BACKUP_ENABLED=true`) during setup. The installer mounts a separate NFS or SMB share as the backup destination and writes daily database dumps + file data rsyncs there. If the VM is lost, provision a new one and use option 3 (Migrate) with "prepared backup" pointing at the backup share. See [Automated Backup](#automated-backup) in the Optional Features Reference.
 
 ### The `seafile` CLI at a glance
 
@@ -283,7 +279,7 @@ Work through these six decisions before touching any files. Everything else is c
 | **Config management** | Local CLI | Local CLI | Git repo (no SSH needed for config) |
 | **Portainer support** | Via toggle after setup | Via toggle after setup | Via toggle after setup |
 
-**Minimal mode** gets Seafile running with the fewest possible decisions. Select **Just give me Seafile** at the deployment mode prompt. It uses local storage and a bundled database. You can add network storage, SSL, email, LDAP, and any other feature later by running `seafile config`. See [Quick Start](#quick-start) for the walkthrough.
+**Minimal mode** gets Seafile running with the fewest possible decisions. Select **Just give me Seafile** at the deployment mode prompt. It uses local storage and a bundled database. You can add network storage, backups, SSL, email, LDAP, and any other feature later by running `seafile config`. See [Quick Start](#quick-start) for the walkthrough.
 
 **Standard mode** is the default for production use. Docker Compose reads `/opt/seafile/.env` directly. You manage configuration via `seafile config` on the host. Version history is tracked automatically via a local git repo.
 
@@ -303,7 +299,7 @@ Work through these six decisions before touching any files. Everything else is c
 
 Set `STORAGE_TYPE` in `.env`. All network types support full disaster recovery. If the VM is destroyed, provision a new one, run `seafile-deploy.sh`, and select Recovery Mode. Local disk does not support recovery.
 
-> **Recommendation:** NFS for most setups. If your NAS is Windows-first, SMB is fine for file data but keep `DB_INTERNAL_VOLUME` on local disk. Only use iSCSI if you specifically need raw-device block I/O performance. Avoid local disk for anything beyond a test install.
+> **Recommendation:** NFS for most setups. If your NAS is Windows-first, SMB is fine for file data but keep `DB_INTERNAL_VOLUME` on local disk. Only use iSCSI if you specifically need raw-device block I/O performance. Local disk works well for small deployments — enable automated backups (`BACKUP_ENABLED=true`) to protect against VM loss.
 
 <details>
 <summary>Storage type comparison — pros, cons, and when to use each</summary>
@@ -363,13 +359,14 @@ iSCSI presents a raw block device over the network. The VM formats and mounts it
 
 **Local disk** `STORAGE_TYPE=local`
 
-Local disk skips network storage entirely and writes Seafile data to a path on the VM's own disk. This is only appropriate for testing or development. If the VM is destroyed, all file data is gone. The disaster recovery flow does not apply because there is no network share to restore from. DB snapshots are also skipped since there is no remote share to write them to.
+Local disk skips network storage for the primary data volume and writes Seafile data to a path on the VM's own disk. This is the simplest option and works well for small deployments or testing. The tradeoff is that VM loss means data loss — unless you enable automated backups.
 
 - ✓ Zero setup — works immediately with no NAS or storage backend
 - ✓ Best raw I/O performance (NVMe/SSD on the host)
-- ✗ **No disaster recovery** — VM loss = permanent data loss
-- ✗ No DB snapshot backup
-- ✗ Not suitable for production use
+- ✗ VM loss = data loss without backups enabled
+- ✗ No automatic DB snapshots to network share (no share to write to)
+
+**Making local storage production-safe:** Enable `BACKUP_ENABLED=true` during setup. The wizard will walk you through mounting a separate NFS or SMB share as the backup destination. Daily backups of your database and file data will be written there automatically. If the VM is ever lost, provision a new one and use option 3 (Migrate) with "prepared backup" pointing at the backup share to restore everything. This gives you a complete data protection story with local storage — the only difference from network storage is that recovery requires a migration step rather than the one-click Recovery Mode.
 
 </details>
 
@@ -429,7 +426,7 @@ Enable or change any of these before running `seafile-deploy.sh`, or any time la
 | Antivirus scanning | `CLAMAV_ENABLED` | off | Adds ~1 GB RAM. First start is slow while ClamAV downloads definitions. |
 | WebDAV access | `SEAFDAV_ENABLED` | off | Mount as a network drive. LDAP users need a WebDAV token from their profile. |
 | LDAP / Active Directory | `LDAP_ENABLED` | off | Fill in all `LDAP_*` values for your directory. |
-| Full offsite backup | `BACKUP_ENABLED` | off | Rsyncs share + `mysqldump` to `BACKUP_DEST`. Must be a different path from `SEAFILE_VOLUME`. |
+| Automated backup | `BACKUP_ENABLED` | off | Backs up database + files to a separate NFS, SMB, or local destination. Mounted automatically. |
 | Guest accounts | `ENABLE_GUEST` | off | Allows read-only external sharing accounts. |
 | Forced 2FA | `FORCE_2FA` | off | Forces all users to enable two-factor auth on next login. |
 | Public registration | `ENABLE_SIGNUP` | off | Allow strangers to create accounts. Leave off for private deployments. |
@@ -1251,7 +1248,9 @@ If the VM is lost but your network share data and database are intact, use Recov
 
 > **Prerequisite:** Recovery mode restores `seafile-config-fixes.sh` from a backup on the network share. This backup is written automatically every time `seafile-config-fixes.sh` is run. As long as it has been run at least once on the original deployment (Step 4), the backup will exist and recovery is fully automatic.
 
-> **Minimal installs:** If you used the "Just give me Seafile" quick setup with local storage, disaster recovery is not available — your data lives on the VM's disk. To enable recovery, first migrate to network storage using `seafile config` or `seafile migrate-storage`, then recovery will work normally.
+> **Local storage with backups:** If you used local storage (`STORAGE_TYPE=local`) with `BACKUP_ENABLED=true`, Recovery Mode is not available (there is no primary network share to restore from). Instead, provision a new VM, run `seafile-deploy.sh`, and select option 3 (Migrate) → "Prepared backup". Point it at your backup mount — the database dumps and file data are there. This gives you a full restoration from your automated backups.
+
+> **Local storage without backups:** If you used local storage without backups enabled, disaster recovery is not possible — your data lived on the VM's disk. To add protection, enable backups with `seafile config` or migrate to network storage with `seafile config storage`.
 
 ### Steps
 
@@ -1818,15 +1817,29 @@ Allows users to log in with their LDAP or Active Directory credentials. Seafile 
 </details>
 
 <details>
-<summary><strong>Offsite Backup</strong></summary>
+<summary><strong>Automated Backup</strong></summary>
 
 **Key:** `BACKUP_ENABLED` · **Default:** `false`
 
-Runs a scheduled rsync of the Seafile data share plus a database dump to a remote destination. This is a full offsite backup — separate from the nightly DB snapshots that are always active on network storage.
+Runs a scheduled backup of both the Seafile database (all three databases via `mysqldump`) and all file data (via `rsync`). The backup destination is mounted automatically during installation — you provide the connection details in the wizard, the same way you set up your main storage.
 
-**Configuration:** Set `BACKUP_ENABLED=true`, `BACKUP_DEST` (rsync-compatible path like `user@backupserver:/path`), and optionally `BACKUP_SCHEDULE` (cron format, default: `0 2 * * *` — daily at 2am).
+**Backup destination types:**
 
-**Not available with local storage** — there's no network share to back up from.
+| Type | What you provide | How it's mounted |
+|------|-----------------|-----------------|
+| **NFS** | Server IP + export path | Mounted via fstab, same as main storage |
+| **SMB/CIFS** | Server + share + credentials | Mounted via fstab with credential file |
+| **Local path** | Path on this machine | Used directly (second disk, USB, etc.) |
+
+The backup destination must be different from `SEAFILE_VOLUME`. Backing up to the same location defeats the purpose.
+
+**What gets backed up:** Database dumps (`ccnet_db`, `seafile_db`, `seahub_db` as `.sql.gz` files) + a full rsync of all Seafile file data. Database dumps older than 14 days are automatically removed. The rsync uses `--delete` to keep the backup as an exact mirror.
+
+**Schedule:** Default `0 2 * * *` (daily at 2am). Customise with `BACKUP_SCHEDULE` (cron format).
+
+**Why this matters for local storage:** If you chose `STORAGE_TYPE=local`, your Seafile data lives on the VM's local disk with no network share providing redundancy. Enabling automated backup to an NFS or SMB share gives you offsite protection — if the VM is lost, your data survives on the backup share. This is especially important when combined with `DB_INTERNAL=true`, where the database is also on local disk.
+
+**Related keys:** `BACKUP_SCHEDULE`, `BACKUP_STORAGE_TYPE`, `BACKUP_MOUNT`, `BACKUP_NFS_SERVER`, `BACKUP_NFS_EXPORT`, `BACKUP_SMB_SERVER`, `BACKUP_SMB_SHARE`, `BACKUP_SMB_USERNAME`, `BACKUP_SMB_PASSWORD`
 
 </details>
 
