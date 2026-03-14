@@ -906,14 +906,92 @@ while true; do
       break
       ;;
     3)
+      echo -e "\n  ${CYAN}Starting Migration...${NC}\n"
+      sleep 0.5
+      if prompt_migration_type; then
+        # Migration type selected — run guided setup for target config
+        # The wizard configures storage, proxy, features etc. for the new deployment
+        check_env_and_configure
+
+        # Normalize .env
+        if [[ -f "$ENV_FILE" ]] && [[ -s "$ENV_FILE" ]]; then
+          _normalize_env "$ENV_FILE"
+        fi
+
+        # Secret generation + preflight
+        if [[ -f "$ENV_FILE" ]]; then
+          echo -e "  ${DIM}Configuration loaded from ${ENV_FILE}.${NC}"
+          echo ""
+          prompt_secret_generation "$ENV_FILE"
+          _load_env "$ENV_FILE"
+          preflight_env_check "$ENV_FILE"
+        else
+          echo -e "  ${YELLOW}No .env found at ${ENV_FILE}.${NC}"
+          echo -e "  ${DIM}This should not happen after guided setup. Please report this bug.${NC}"
+          echo ""
+          continue
+        fi
+
+        # Export migration variables for setup.sh
+        export SETUP_MODE=migrate
+        export MIGRATE_TYPE="${MIGRATE_TYPE}"
+        export MIGRATE_DUMP_DIR="${MIGRATE_DUMP_DIR:-}"
+        export MIGRATE_DATA_DIR="${MIGRATE_DATA_DIR:-}"
+        export MIGRATE_CONF_DIR="${MIGRATE_CONF_DIR:-}"
+        export MIGRATE_SSH_HOST="${MIGRATE_SSH_HOST:-}"
+        export MIGRATE_SSH_USER="${MIGRATE_SSH_USER:-}"
+        export MIGRATE_SSH_PORT="${MIGRATE_SSH_PORT:-22}"
+        export MIGRATE_SOURCE_TYPE="${MIGRATE_SOURCE_TYPE:-}"
+        export MIGRATE_REMOTE_DATA_DIR="${MIGRATE_REMOTE_DATA_DIR:-}"
+        export MIGRATE_REMOTE_CONF_DIR="${MIGRATE_REMOTE_CONF_DIR:-}"
+        export MIGRATE_REMOTE_DB="${MIGRATE_REMOTE_DB:-}"
+        export MIGRATE_REMOTE_DB_USER="${MIGRATE_REMOTE_DB_USER:-}"
+        export MIGRATE_REMOTE_DB_PASS="${MIGRATE_REMOTE_DB_PASS:-}"
+        export MIGRATE_REMOTE_DB_HOST="${MIGRATE_REMOTE_DB_HOST:-}"
+
+        run_embedded "setup.sh" extract_setup
+
+        # ── Post-migration health check ──────────────────────────────────
+        echo ""
+        echo -e "  ${DIM}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+        echo ""
+        echo -e "  ${GREEN}${BOLD}  ✓ Migration complete!${NC}"
+        echo ""
+        echo -e "  ${BOLD}  1  ${NC}Run health checks"
+        echo -e "     ${DIM}seafile status · seafile ping · seafile version${NC}"
+        echo ""
+        echo -e "  ${DIM}  2  Exit to terminal${NC}"
+        echo ""
+        echo -e "  ${DIM}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+        echo ""
+        echo -ne "  ${BOLD}Select [1/2] (default: 1):${NC} "
+        read -r _mig_health
+        _mig_health="${_mig_health:-1}"
+        echo ""
+        case "$_mig_health" in
+          1)
+            seafile status
+            seafile ping
+            seafile version
+            ;;
+          *)
+            echo -e "  ${DIM}Run 'seafile status' any time to check on your deployment.${NC}"
+            echo ""
+            ;;
+        esac
+        break
+      fi
+      # prompt_migration_type returned 1 (user chose Back) — loop to splash
+      ;;
+    4)
       play_snake
       ;;
-    q|Q)
+    0)
       echo -e "\n  ${DIM}Goodbye.${NC}\n"
       exit 0
       ;;
     *)
-      echo -e "  ${DIM}Invalid selection — try 1, 2, 3, or q.${NC}"
+      echo -e "  ${DIM}Invalid selection — try 0, 1, 2, 3, or 4.${NC}"
       sleep 1
       ;;
   esac

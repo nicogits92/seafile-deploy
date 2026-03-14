@@ -23,8 +23,9 @@
 # What it does:
 #   1  Fresh Install   — runs install-dependencies.sh
 #   2  Recovery Mode   — runs recover.sh
-#   3  Have Fun        — Snake
-#   q  Quit
+#   3  Migrate / Adopt — runs migrate flow
+#   4  Have Fun        — Snake
+#   0  Quit
 # =============================================================================
 
 set -euo pipefail
@@ -83,14 +84,17 @@ show_splash() {
   echo -e "  ${YELLOW}${BOLD}  2  ${NC}${BOLD}Recovery Mode${NC}"
   echo -e "     ${DIM}Restore a lost VM from an existing NFS share${NC}"
   echo ""
-  echo -e "  ${PURPLE}${BOLD}  3  ${NC}${BOLD}Have Fun${NC}"
+  echo -e "  ${CYAN}${BOLD}  3  ${NC}${BOLD}Migrate / Adopt Existing Seafile${NC}"
+  echo -e "     ${DIM}Import data from another server or adopt an existing instance${NC}"
+  echo ""
+  echo -e "  ${PURPLE}${BOLD}  4  ${NC}${BOLD}Have Fun${NC}"
   echo -e "     ${DIM}Take a break · while you still can${NC}"
   echo ""
-  echo -e "  ${DIM}  q  Quit${NC}"
+  echo -e "  ${DIM}  0  Quit${NC}"
   echo ""
   echo -e "  ${DIM}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
   echo ""
-  echo -ne "  ${BOLD}Select [1/2/3/q]:${NC} "
+  echo -ne "  ${BOLD}Select [0-4]:${NC} "
 }
 
 # ---------------------------------------------------------------------------
@@ -466,6 +470,278 @@ prompt_storage_config() {
 }
 
 
+# ---------------------------------------------------------------------------
+# Migration sub-menu — called when user selects option 3 from splash screen
+# Sets MIGRATE_TYPE to: adopt | prepared | ssh
+# For SSH: also collects MIGRATE_SSH_HOST, MIGRATE_SSH_USER, MIGRATE_SSH_PORT
+# For Prepared: collects MIGRATE_DUMP_DIR, MIGRATE_DATA_DIR, MIGRATE_CONF_DIR
+# ---------------------------------------------------------------------------
+prompt_migration_type() {
+  echo ""
+  echo -e "  ${DIM}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+  echo ""
+  echo -e "  ${BOLD}What describes your situation?${NC}"
+  echo ""
+  echo -e "  ${GREEN}${BOLD}  1  ${NC}${BOLD}Adopt in place${NC}"
+  echo -e "     ${DIM}Seafile is already running with its storage and/or database.${NC}"
+  echo -e "     ${DIM}Install seafile-deploy as the management layer on top.${NC}"
+  echo ""
+  echo -e "  ${CYAN}${BOLD}  2  ${NC}${BOLD}Migrate from prepared backup${NC}"
+  echo -e "     ${DIM}I have database dumps (.sql.gz) and a data directory${NC}"
+  echo -e "     ${DIM}ready on this machine or on a mount.${NC}"
+  echo ""
+  echo -e "  ${YELLOW}${BOLD}  3  ${NC}${BOLD}Migrate from another server (SSH)${NC}"
+  echo -e "     ${DIM}Copy databases and files from a remote Seafile instance.${NC}"
+  echo -e "     ${DIM}Requires SSH access to the source server.${NC}"
+  echo ""
+  echo -e "  ${DIM}  0  Back${NC}"
+  echo ""
+  echo -e "  ${DIM}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+  echo ""
+
+  local _mig_choice
+  while true; do
+    echo -ne "  ${BOLD}Select [0-3]:${NC} "
+    read -r _mig_choice
+    case "$_mig_choice" in 0|1|2|3) break ;; *) echo -e "  ${DIM}Enter 0, 1, 2, or 3.${NC}" ;; esac
+  done
+
+  case "$_mig_choice" in
+    0) return 1 ;;  # Go back to splash
+    1) export MIGRATE_TYPE="adopt" ;;
+    2) _collect_prepared_source || return 1 ;;
+    3) _collect_ssh_source || return 1 ;;
+  esac
+  return 0
+}
+
+# ---------------------------------------------------------------------------
+# Collect prepared backup source paths
+# ---------------------------------------------------------------------------
+_collect_prepared_source() {
+  export MIGRATE_TYPE="prepared"
+  echo ""
+  echo -e "  ${BOLD}Prepared Backup — Source Paths${NC}"
+  echo ""
+  echo -e "  ${DIM}Point to the directory containing your database dumps and${NC}"
+  echo -e "  ${DIM}Seafile data. The dumps can be .sql.gz or .sql files named${NC}"
+  echo -e "  ${DIM}with the database name (e.g. ccnet_db.sql.gz, seahub_db.sql.gz).${NC}"
+  echo ""
+
+  # Database dumps directory
+  while true; do
+    echo -ne "  ${BOLD}Database dumps directory${NC}: "
+    read -r MIGRATE_DUMP_DIR
+    MIGRATE_DUMP_DIR="${MIGRATE_DUMP_DIR%/}"
+    if [[ -z "$MIGRATE_DUMP_DIR" ]]; then
+      echo -e "  ${DIM}Required — path to directory containing .sql.gz or .sql files.${NC}"
+    elif [[ ! -d "$MIGRATE_DUMP_DIR" ]]; then
+      echo -e "  ${RED}Directory not found: ${MIGRATE_DUMP_DIR}${NC}"
+    else
+      local _dump_count=$(ls "$MIGRATE_DUMP_DIR"/*.sql* 2>/dev/null | wc -l)
+      if [[ "$_dump_count" -eq 0 ]]; then
+        echo -e "  ${YELLOW}No .sql or .sql.gz files found in ${MIGRATE_DUMP_DIR}${NC}"
+        echo -ne "  ${DIM}Continue anyway? [y/N]:${NC} "
+        read -r _cont
+        [[ "${_cont,,}" == "y" ]] && break
+      else
+        echo -e "  ${DIM}Found ${_dump_count} dump file(s).${NC}"
+        break
+      fi
+    fi
+  done
+  export MIGRATE_DUMP_DIR
+
+  # Seafile data directory
+  echo ""
+  echo -e "  ${DIM}This is the directory containing seafile-data/ (block storage),${NC}"
+  echo -e "  ${DIM}the conf/ directory (with seahub_settings.py), and seahub-data/.${NC}"
+  echo -e "  ${DIM}For Docker installs this is the volume mapped to /shared.${NC}"
+  echo -e "  ${DIM}For manual installs it is usually /opt/seafile.${NC}"
+  echo ""
+  while true; do
+    echo -ne "  ${BOLD}Seafile data directory${NC}: "
+    read -r MIGRATE_DATA_DIR
+    MIGRATE_DATA_DIR="${MIGRATE_DATA_DIR%/}"
+    if [[ -z "$MIGRATE_DATA_DIR" ]]; then
+      echo -e "  ${DIM}Required.${NC}"
+    elif [[ ! -d "$MIGRATE_DATA_DIR" ]]; then
+      echo -e "  ${RED}Directory not found: ${MIGRATE_DATA_DIR}${NC}"
+    else
+      # Auto-detect layout
+      if [[ -d "${MIGRATE_DATA_DIR}/seafile-data" ]]; then
+        echo -e "  ${GREEN}✓${NC} Found seafile-data/"
+      elif [[ -d "${MIGRATE_DATA_DIR}/storage" ]]; then
+        echo -e "  ${YELLOW}Found storage/ directly — this looks like the seafile-data dir itself.${NC}"
+        echo -e "  ${DIM}Point to the parent directory instead.${NC}"
+        continue
+      else
+        echo -e "  ${YELLOW}No seafile-data/ found — files may be in a different layout.${NC}"
+      fi
+      # Look for config
+      if [[ -f "${MIGRATE_DATA_DIR}/seafile/conf/seahub_settings.py" ]]; then
+        echo -e "  ${GREEN}✓${NC} Found config at seafile/conf/ (Docker layout)"
+        export MIGRATE_CONF_DIR="${MIGRATE_DATA_DIR}/seafile/conf"
+      elif [[ -f "${MIGRATE_DATA_DIR}/conf/seahub_settings.py" ]]; then
+        echo -e "  ${GREEN}✓${NC} Found config at conf/ (manual layout)"
+        export MIGRATE_CONF_DIR="${MIGRATE_DATA_DIR}/conf"
+      else
+        echo -e "  ${DIM}No config directory detected — SECRET_KEY will be generated fresh.${NC}"
+        export MIGRATE_CONF_DIR=""
+      fi
+      # Look for avatars
+      if [[ -d "${MIGRATE_DATA_DIR}/seafile/seahub-data/avatars" ]]; then
+        echo -e "  ${GREEN}✓${NC} Found avatars"
+      elif [[ -d "${MIGRATE_DATA_DIR}/seahub-data/avatars" ]]; then
+        echo -e "  ${GREEN}✓${NC} Found avatars (manual layout)"
+      fi
+      break
+    fi
+  done
+  export MIGRATE_DATA_DIR
+  return 0
+}
+
+# ---------------------------------------------------------------------------
+# Collect SSH source details
+# ---------------------------------------------------------------------------
+_collect_ssh_source() {
+  export MIGRATE_TYPE="ssh"
+  echo ""
+  echo -e "  ${BOLD}SSH Migration — Source Server${NC}"
+  echo ""
+
+  while true; do
+    echo -ne "  ${BOLD}SSH host${NC} (IP or hostname): "
+    read -r MIGRATE_SSH_HOST
+    [[ -n "$MIGRATE_SSH_HOST" ]] && break
+    echo -e "  ${DIM}Required.${NC}"
+  done
+  echo -ne "  ${BOLD}SSH user${NC} [root]: "
+  read -r MIGRATE_SSH_USER
+  MIGRATE_SSH_USER="${MIGRATE_SSH_USER:-root}"
+  echo -ne "  ${BOLD}SSH port${NC} [22]: "
+  read -r MIGRATE_SSH_PORT
+  MIGRATE_SSH_PORT="${MIGRATE_SSH_PORT:-22}"
+
+  export MIGRATE_SSH_HOST MIGRATE_SSH_USER MIGRATE_SSH_PORT
+
+  # Test connection
+  echo ""
+  echo -e "  ${DIM}Testing SSH connection...${NC}"
+  if ssh -o ConnectTimeout=10 -o BatchMode=yes -p "$MIGRATE_SSH_PORT" \
+      "${MIGRATE_SSH_USER}@${MIGRATE_SSH_HOST}" "echo ok" &>/dev/null; then
+    echo -e "  ${GREEN}✓${NC} Connected to ${MIGRATE_SSH_USER}@${MIGRATE_SSH_HOST}"
+  else
+    echo -e "  ${RED}✗${NC} Cannot connect. Ensure SSH key auth is configured:"
+    echo -e "    ${DIM}ssh-copy-id -p ${MIGRATE_SSH_PORT} ${MIGRATE_SSH_USER}@${MIGRATE_SSH_HOST}${NC}"
+    echo ""
+    echo -ne "  ${DIM}Try again? [Y/n]:${NC} "
+    read -r _retry
+    if [[ "${_retry,,}" != "n" ]]; then
+      _collect_ssh_source
+      return $?
+    fi
+    return 1
+  fi
+
+  # Auto-detect source Seafile
+  echo -e "  ${DIM}Detecting Seafile installation...${NC}"
+  _detect_remote_seafile
+  return 0
+}
+
+# ---------------------------------------------------------------------------
+# Auto-detect Seafile on a remote server via SSH
+# ---------------------------------------------------------------------------
+_detect_remote_seafile() {
+  local _ssh="ssh -o ConnectTimeout=10 -p ${MIGRATE_SSH_PORT} ${MIGRATE_SSH_USER}@${MIGRATE_SSH_HOST}"
+
+  # Try Docker first
+  local _docker_volume=""
+  _docker_volume=$($_ssh "docker inspect seafile --format '{{range .Mounts}}{{if eq .Destination \"/shared\"}}{{.Source}}{{end}}{{end}}'" 2>/dev/null || true)
+
+  if [[ -n "$_docker_volume" ]]; then
+    echo -e "  ${GREEN}✓${NC} Docker deployment detected"
+    echo -e "    ${DIM}Data volume: ${_docker_volume}${NC}"
+    export MIGRATE_SOURCE_TYPE="docker"
+    export MIGRATE_REMOTE_DATA_DIR="$_docker_volume"
+    export MIGRATE_REMOTE_CONF_DIR="${_docker_volume}/seafile/conf"
+
+    # Get database info
+    local _db_host=$($_ssh "docker exec seafile grep -oP 'host\s*=\s*\K.*' /opt/seafile/conf/seafile.conf 2>/dev/null" || true)
+    if [[ "$_db_host" == "seafile-db" || "$_db_host" == "127.0.0.1" || -z "$_db_host" ]]; then
+      export MIGRATE_REMOTE_DB="docker"
+      echo -e "  ${GREEN}✓${NC} Internal database (Docker container)"
+    else
+      export MIGRATE_REMOTE_DB="external"
+      export MIGRATE_REMOTE_DB_HOST="$_db_host"
+      echo -e "  ${GREEN}✓${NC} External database at ${_db_host}"
+    fi
+  else
+    # Try manual install paths
+    local _conf_path=""
+    for _try_path in "/opt/seafile/conf" "/opt/seafile/seafile/conf"; do
+      if $_ssh "test -f ${_try_path}/seahub_settings.py" 2>/dev/null; then
+        _conf_path="$_try_path"
+        break
+      fi
+    done
+
+    if [[ -n "$_conf_path" ]]; then
+      echo -e "  ${GREEN}✓${NC} Manual/package installation detected"
+      echo -e "    ${DIM}Config: ${_conf_path}${NC}"
+      export MIGRATE_SOURCE_TYPE="manual"
+      export MIGRATE_REMOTE_CONF_DIR="$_conf_path"
+
+      # Derive data dir from seafile.conf
+      local _data_dir=$($_ssh "grep -oP 'dir\s*=\s*\K.*' ${_conf_path}/seafile.conf 2>/dev/null | head -1" || true)
+      _data_dir="${_data_dir:-/opt/seafile/seafile-data}"
+      export MIGRATE_REMOTE_DATA_DIR=$(dirname "$_data_dir")
+      echo -e "    ${DIM}Data: ${MIGRATE_REMOTE_DATA_DIR}${NC}"
+      export MIGRATE_REMOTE_DB="local"
+    else
+      echo -e "  ${YELLOW}Could not auto-detect Seafile installation.${NC}"
+      echo -e "  ${DIM}You may need to use 'Migrate from prepared backup' instead.${NC}"
+      return 1
+    fi
+  fi
+
+  # Get quick stats
+  local _version=$($_ssh "ls -d ${MIGRATE_REMOTE_DATA_DIR}/seafile/seafile-server-* 2>/dev/null | tail -1 | grep -oP '[0-9]+\.[0-9]+\.[0-9]+'" 2>/dev/null || true)
+  local _data_size=$($_ssh "du -sh ${MIGRATE_REMOTE_DATA_DIR}/seafile-data 2>/dev/null | cut -f1" 2>/dev/null || true)
+
+  # Extract remote DB credentials for dump
+  local _remote_db_user="" _remote_db_pass=""
+  if [[ "$MIGRATE_SOURCE_TYPE" == "docker" ]]; then
+    _remote_db_user=$($_ssh "docker exec seafile grep -oP 'user\s*=\s*\K.*' /opt/seafile/conf/seafile.conf 2>/dev/null | head -1" || true)
+    _remote_db_pass=$($_ssh "docker exec seafile grep -oP 'password\s*=\s*\K.*' /opt/seafile/conf/seafile.conf 2>/dev/null | head -1" || true)
+  else
+    _remote_db_user=$($_ssh "grep -oP 'user\s*=\s*\K.*' ${MIGRATE_REMOTE_CONF_DIR}/seafile.conf 2>/dev/null | head -1" || true)
+    _remote_db_pass=$($_ssh "grep -oP 'password\s*=\s*\K.*' ${MIGRATE_REMOTE_CONF_DIR}/seafile.conf 2>/dev/null | head -1" || true)
+  fi
+  _remote_db_user="${_remote_db_user:-seafile}"
+
+  if [[ -n "$_remote_db_pass" ]]; then
+    echo -e "  ${GREEN}✓${NC} Database credentials extracted"
+    export MIGRATE_REMOTE_DB_USER="$_remote_db_user"
+    export MIGRATE_REMOTE_DB_PASS="$_remote_db_pass"
+  else
+    echo -e "  ${YELLOW}Could not extract DB password from remote config.${NC}"
+    echo -ne "  ${BOLD}Remote database password${NC}: "
+    read -rs _remote_db_pass
+    echo ""
+    export MIGRATE_REMOTE_DB_USER="$_remote_db_user"
+    export MIGRATE_REMOTE_DB_PASS="$_remote_db_pass"
+  fi
+
+  echo ""
+  echo -e "  ${BOLD}Source summary:${NC}"
+  [[ -n "$_version" ]] && echo -e "    Seafile version:  ${BOLD}${_version}${NC}"
+  [[ -n "$_data_size" ]] && echo -e "    Data size:        ${BOLD}${_data_size}${NC}"
+  echo ""
+}
+
 # ===========================================================================
 # Shared Library (embedded from src/shared-lib.sh)
 # ===========================================================================
@@ -485,7 +761,7 @@ prompt_storage_config() {
 # ---------------------------------------------------------------------------
 # Deployment version
 # ---------------------------------------------------------------------------
-DEPLOY_VERSION="v4.1-alpha"
+DEPLOY_VERSION="v4.3-alpha"
 
 # ---------------------------------------------------------------------------
 # Colours (safe to re-source — just variable assignments)
@@ -1703,6 +1979,77 @@ SECHDR
   fi
 
   echo "$(date '+%Y-%m-%d %H:%M:%S')  ${key}=${value}" >> "$secrets_file"
+}
+
+# ---------------------------------------------------------------------------
+# Import database dumps — shared by recovery-finalize and migration.
+# Looks for .sql.gz or .sql files in the given directory matching each
+# Seafile database name. Supports both exact names (ccnet_db.sql.gz)
+# and timestamped names (ccnet_db_20260313_010000.sql.gz).
+# ---------------------------------------------------------------------------
+_import_db_dumps() {
+  local dump_dir="$1"
+  local root_pass="$2"
+  local db_method="${3:-internal}"  # "internal" = docker exec, "external" = mysql client
+
+  local _db_user="${SEAFILE_MYSQL_DB_USER:-seafile}"
+  local _db_host="${SEAFILE_MYSQL_DB_HOST:-seafile-db}"
+  local _db_port="${SEAFILE_MYSQL_DB_PORT:-3306}"
+
+  for db in \
+      "${SEAFILE_MYSQL_DB_CCNET_DB_NAME:-ccnet_db}" \
+      "${SEAFILE_MYSQL_DB_SEAFILE_DB_NAME:-seafile_db}" \
+      "${SEAFILE_MYSQL_DB_SEAHUB_DB_NAME:-seahub_db}"; do
+
+    # Find the dump file — try timestamped first (newest), then exact name
+    local dump_file=""
+    dump_file=$(ls -t "${dump_dir}/${db}_"*.sql.gz 2>/dev/null | head -1 || true)
+    [[ -z "$dump_file" ]] && dump_file=$(ls -t "${dump_dir}/${db}_"*.sql 2>/dev/null | head -1 || true)
+    [[ -z "$dump_file" ]] && dump_file=$(ls "${dump_dir}/${db}.sql.gz" 2>/dev/null || true)
+    [[ -z "$dump_file" ]] && dump_file=$(ls "${dump_dir}/${db}.sql" 2>/dev/null || true)
+
+    if [[ -z "$dump_file" ]]; then
+      warn "  No dump found for ${db} in ${dump_dir} — skipping."
+      continue
+    fi
+
+    info "  Importing ${db} from $(basename "$dump_file")..."
+
+    # Ensure target database exists
+    if [[ "$db_method" == "internal" ]]; then
+      docker exec seafile-db mysql -u root -p"${root_pass}" \
+        -e "CREATE DATABASE IF NOT EXISTS \`${db}\` CHARACTER SET utf8mb4;" 2>/dev/null
+    else
+      mysql -h "$_db_host" -P "$_db_port" -u root -p"${root_pass}" \
+        -e "CREATE DATABASE IF NOT EXISTS \`${db}\` CHARACTER SET utf8mb4;" 2>/dev/null
+    fi
+
+    # Import — handle both .sql.gz and .sql
+    local _import_ok=false
+    if [[ "$dump_file" == *.gz ]]; then
+      if [[ "$db_method" == "internal" ]]; then
+        gunzip -c "$dump_file" | docker exec -i seafile-db \
+          mysql -u root -p"${root_pass}" "$db" 2>/dev/null && _import_ok=true
+      else
+        gunzip -c "$dump_file" | mysql -h "$_db_host" -P "$_db_port" \
+          -u root -p"${root_pass}" "$db" 2>/dev/null && _import_ok=true
+      fi
+    else
+      if [[ "$db_method" == "internal" ]]; then
+        docker exec -i seafile-db mysql -u root -p"${root_pass}" "$db" \
+          < "$dump_file" 2>/dev/null && _import_ok=true
+      else
+        mysql -h "$_db_host" -P "$_db_port" -u root -p"${root_pass}" "$db" \
+          < "$dump_file" 2>/dev/null && _import_ok=true
+      fi
+    fi
+
+    if [[ "$_import_ok" == "true" ]]; then
+      info "  ✓ ${db} imported successfully."
+    else
+      warn "  ✗ Failed to import ${db} — check dump file and database access."
+    fi
+  done
 }
 
 # ===========================================================================
@@ -4883,15 +5230,17 @@ extract_setup() {
 cat << 'SETUP_EMBED_EOF'
 #!/bin/bash
 # =============================================================================
-# Seafile 13 — Unified Setup Script (install + recover)
+# Seafile 13 — Unified Setup Script (install + recover + migrate)
 # =============================================================================
-# Handles both fresh installs and disaster recovery from a single codebase.
-# Called by seafile-deploy.sh with SETUP_MODE=install or SETUP_MODE=recover.
+# Handles fresh installs, disaster recovery, and migration from a single codebase.
+# Called by seafile-deploy.sh with SETUP_MODE=install, recover, or migrate.
 #
-# MODE=install: Sources .env from /opt/seafile/.env (placed by wizard),
-#               installs everything, deploys the stack.
-# MODE=recover: Early-mounts storage to restore .env, then runs the same
-#               setup phases, then installs recovery-finalize service.
+# MODE=install:  Sources .env from /opt/seafile/.env (placed by wizard),
+#                installs everything, deploys the stack.
+# MODE=recover:  Early-mounts storage to restore .env, then runs the same
+#                setup phases, then installs recovery-finalize service.
+# MODE=migrate:  Runs install phases 1-8, then imports data from an existing
+#                Seafile instance (adopt in place, prepared backup, or SSH).
 # =============================================================================
 
 set -e
@@ -4919,7 +5268,7 @@ export DEBIAN_FRONTEND=noninteractive
 # ---------------------------------------------------------------------------
 # Deployment version
 # ---------------------------------------------------------------------------
-DEPLOY_VERSION="v4.1-alpha"
+DEPLOY_VERSION="v4.3-alpha"
 
 # ---------------------------------------------------------------------------
 # Colours (safe to re-source — just variable assignments)
@@ -6139,6 +6488,77 @@ SECHDR
   echo "$(date '+%Y-%m-%d %H:%M:%S')  ${key}=${value}" >> "$secrets_file"
 }
 
+# ---------------------------------------------------------------------------
+# Import database dumps — shared by recovery-finalize and migration.
+# Looks for .sql.gz or .sql files in the given directory matching each
+# Seafile database name. Supports both exact names (ccnet_db.sql.gz)
+# and timestamped names (ccnet_db_20260313_010000.sql.gz).
+# ---------------------------------------------------------------------------
+_import_db_dumps() {
+  local dump_dir="$1"
+  local root_pass="$2"
+  local db_method="${3:-internal}"  # "internal" = docker exec, "external" = mysql client
+
+  local _db_user="${SEAFILE_MYSQL_DB_USER:-seafile}"
+  local _db_host="${SEAFILE_MYSQL_DB_HOST:-seafile-db}"
+  local _db_port="${SEAFILE_MYSQL_DB_PORT:-3306}"
+
+  for db in \
+      "${SEAFILE_MYSQL_DB_CCNET_DB_NAME:-ccnet_db}" \
+      "${SEAFILE_MYSQL_DB_SEAFILE_DB_NAME:-seafile_db}" \
+      "${SEAFILE_MYSQL_DB_SEAHUB_DB_NAME:-seahub_db}"; do
+
+    # Find the dump file — try timestamped first (newest), then exact name
+    local dump_file=""
+    dump_file=$(ls -t "${dump_dir}/${db}_"*.sql.gz 2>/dev/null | head -1 || true)
+    [[ -z "$dump_file" ]] && dump_file=$(ls -t "${dump_dir}/${db}_"*.sql 2>/dev/null | head -1 || true)
+    [[ -z "$dump_file" ]] && dump_file=$(ls "${dump_dir}/${db}.sql.gz" 2>/dev/null || true)
+    [[ -z "$dump_file" ]] && dump_file=$(ls "${dump_dir}/${db}.sql" 2>/dev/null || true)
+
+    if [[ -z "$dump_file" ]]; then
+      warn "  No dump found for ${db} in ${dump_dir} — skipping."
+      continue
+    fi
+
+    info "  Importing ${db} from $(basename "$dump_file")..."
+
+    # Ensure target database exists
+    if [[ "$db_method" == "internal" ]]; then
+      docker exec seafile-db mysql -u root -p"${root_pass}" \
+        -e "CREATE DATABASE IF NOT EXISTS \`${db}\` CHARACTER SET utf8mb4;" 2>/dev/null
+    else
+      mysql -h "$_db_host" -P "$_db_port" -u root -p"${root_pass}" \
+        -e "CREATE DATABASE IF NOT EXISTS \`${db}\` CHARACTER SET utf8mb4;" 2>/dev/null
+    fi
+
+    # Import — handle both .sql.gz and .sql
+    local _import_ok=false
+    if [[ "$dump_file" == *.gz ]]; then
+      if [[ "$db_method" == "internal" ]]; then
+        gunzip -c "$dump_file" | docker exec -i seafile-db \
+          mysql -u root -p"${root_pass}" "$db" 2>/dev/null && _import_ok=true
+      else
+        gunzip -c "$dump_file" | mysql -h "$_db_host" -P "$_db_port" \
+          -u root -p"${root_pass}" "$db" 2>/dev/null && _import_ok=true
+      fi
+    else
+      if [[ "$db_method" == "internal" ]]; then
+        docker exec -i seafile-db mysql -u root -p"${root_pass}" "$db" \
+          < "$dump_file" 2>/dev/null && _import_ok=true
+      else
+        mysql -h "$_db_host" -P "$_db_port" -u root -p"${root_pass}" "$db" \
+          < "$dump_file" 2>/dev/null && _import_ok=true
+      fi
+    fi
+
+    if [[ "$_import_ok" == "true" ]]; then
+      info "  ✓ ${db} imported successfully."
+    else
+      warn "  ✗ Failed to import ${db} — check dump file and database access."
+    fi
+  done
+}
+
 info()    { echo -e "${GREEN}[INFO]${NC}  $1"; }
 warn()    { echo -e "${YELLOW}[WARN]${NC}  $1"; }
 error()   { echo -e "${RED}[ERROR]${NC} $1"; exit 1; }
@@ -6150,8 +6570,8 @@ heading() { echo -e "\n${BOLD}${CYAN}==> $1${NC}"; }
 # Determine mode
 # ---------------------------------------------------------------------------
 SETUP_MODE="${SETUP_MODE:-install}"
-if [[ "$SETUP_MODE" != "install" && "$SETUP_MODE" != "recover" ]]; then
-  error "Unknown SETUP_MODE '$SETUP_MODE'. Must be 'install' or 'recover'."
+if [[ "$SETUP_MODE" != "install" && "$SETUP_MODE" != "recover" && "$SETUP_MODE" != "migrate" ]]; then
+  error "Unknown SETUP_MODE '$SETUP_MODE'. Must be 'install', 'recover', or 'migrate'."
 fi
 
 ENV_FILE="/opt/seafile/.env"
@@ -6360,7 +6780,7 @@ _PHASES=(
   "Install Portainer Agent"
   "Install services (env-sync, storage-sync, CLI)"
 )
-if [[ "$SETUP_MODE" == "install" ]]; then
+if [[ "$SETUP_MODE" == "install" || "$SETUP_MODE" == "migrate" ]]; then
   _PHASES+=(
     "Write scripts to /opt (config-fixes, update.sh, docker-compose.yml)"
     "Deploy stack natively via Docker Compose (skipped when PORTAINER_MANAGED=true)"
@@ -6470,7 +6890,7 @@ mkdir -p /opt/seafile-caddy/config
 mkdir -p /opt/seadoc-data
 mkdir -p "${THUMBNAIL_PATH:-/opt/seafile-thumbnails}"
 mkdir -p "${METADATA_PATH:-/opt/seafile-metadata}"
-if [[ "$SETUP_MODE" == "install" ]]; then
+if [[ "$SETUP_MODE" == "install" || "$SETUP_MODE" == "migrate" ]]; then
   mkdir -p "$STORAGE_MOUNT"
 fi
 
@@ -6655,7 +7075,7 @@ _mount_storage() {
 
 # Call the mount function
 _is_first="false"
-[[ "$SETUP_MODE" == "install" ]] && _is_first="true"
+[[ "$SETUP_MODE" == "install" || "$SETUP_MODE" == "migrate" ]] && _is_first="true"
 _mount_storage "${SEAFILE_VOLUME:-$STORAGE_MOUNT}" "$_is_first"
 
 fi
@@ -7153,6 +7573,57 @@ CORE_CONTAINERS=(
   seafile-metadata
 )
 
+# --- Simple name mapping (user-facing ↔ Docker container name) ---------------
+# Users type simple names; Docker needs the full container name.
+declare -A _NAME_TO_CONTAINER=(
+  [caddy]=seafile-caddy
+  [redis]=seafile-redis
+  [seafile]=seafile
+  [seadoc]=seadoc
+  [notifications]=notification-server
+  [thumbnails]=thumbnail-server
+  [metadata]=seafile-metadata
+  [collabora]=seafile-collabora
+  [onlyoffice]=seafile-onlyoffice
+  [clamav]=seafile-clamav
+  [db]=seafile-db
+)
+declare -A _CONTAINER_TO_NAME=(
+  [seafile-caddy]=caddy
+  [seafile-redis]=redis
+  [seafile]=seafile
+  [seadoc]=seadoc
+  [notification-server]=notifications
+  [thumbnail-server]=thumbnails
+  [seafile-metadata]=metadata
+  [seafile-collabora]=collabora
+  [seafile-onlyoffice]=onlyoffice
+  [seafile-clamav]=clamav
+  [seafile-db]=db
+)
+
+# Resolve a user-provided name to a Docker container name.
+# Accepts both simple names ("collabora") and full names ("seafile-collabora").
+_resolve_container() {
+  local input="$1"
+  # Try simple name first
+  if [[ -n "${_NAME_TO_CONTAINER[$input]:-}" ]]; then
+    echo "${_NAME_TO_CONTAINER[$input]}"
+    return 0
+  fi
+  # Try as a literal container name
+  for _cn in "${CONTAINERS[@]}"; do
+    [[ "$_cn" == "$input" ]] && echo "$_cn" && return 0
+  done
+  return 1
+}
+
+# Get the simple display name for a container
+_display_name() {
+  local cn="$1"
+  echo "${_CONTAINER_TO_NAME[$cn]:-$cn}"
+}
+
 # --- Safe .env loader --------------------------------------------------------
 _load_env() {
   local env_file="${1:-/opt/seafile/.env}"
@@ -7194,7 +7665,8 @@ pick_container() {
     local colour="$NC"
     [[ "$status" == "running" ]] && colour="$GREEN"
     [[ "$status" == "exited"  ]] && colour="$RED"
-    printf "  ${BOLD}%2d${NC}  %-28s ${colour}%s${NC}\n" "$i" "$c" "$status"
+    local _dname=$(_display_name "$c")
+    printf "  ${BOLD}%2d${NC}  %-28s ${colour}%s${NC}\n" "$i" "$_dname" "$status"
     (( i++ ))
   done
   if [[ "$include_all" == "true" ]]; then
@@ -7235,7 +7707,8 @@ cmd_status() {
     [[ "$status" == "running" ]] && colour="$GREEN"
     [[ "$status" == "exited"  ]] && colour="$RED"
     [[ "$status" == "not found" ]] && colour="$DIM"
-    printf "  %-28s ${colour}%-12s${NC} %-8s %s\n" "$c" "$status" "$uptime" "$image"
+    local _dname=$(_display_name "$c")
+    printf "  %-28s ${colour}%-12s${NC} %-8s %s\n" "$_dname" "$status" "$uptime" "$image"
   done
 
   echo ""
@@ -7295,12 +7768,13 @@ cmd_ping() {
     local response http_code body
     response=$(curl -sk --max-time 8 -H "Host: ${host_hdr}" -w "\n%{http_code}" "$url" 2>/dev/null || true)
     http_code=$(echo "$response" | tail -1)
-    body=$(echo "$response" | head -1 || true)
+    body=$(echo "$response" | sed '$d')
     if echo "$body" | grep -qF "$expect"; then
       ok "${label}  ${DIM}(HTTP ${http_code})${NC}"
     else
+      local preview=$(echo "$body" | head -1)
       err "${label}  ${DIM}(HTTP ${http_code} — expected: ${expect})${NC}"
-      echo -e "    ${DIM}Response: ${body:0:120}${NC}"
+      echo -e "    ${DIM}Response: ${preview:0:120}${NC}"
       all_ok=false
     fi
   }
@@ -7318,7 +7792,7 @@ cmd_ping() {
       echo -e "  ${DIM}  To add document editing later, run: seafile config office${NC}"
       ;;
     *)
-      _ping_check "Collabora (discovery)   " "${base}/hosting/discovery" "proof-key"
+      _ping_check "Collabora (discovery)   " "${base}/hosting/discovery" "</wopi-discovery>"
       ;;
   esac
   echo ""
@@ -7327,12 +7801,12 @@ cmd_ping() {
     echo -e "  ${GREEN}${BOLD}  All endpoints responding.${NC}"
   else
     echo -e "  ${YELLOW}${BOLD}  Some endpoints did not respond — check container logs.${NC}"
-    echo -e "  ${DIM}  seafile logs notification-server${NC}"
-    echo -e "  ${DIM}  seafile logs thumbnail-server${NC}"
+    echo -e "  ${DIM}  seafile logs notifications${NC}"
+    echo -e "  ${DIM}  seafile logs thumbnails${NC}"
     case "${OFFICE_SUITE:-collabora}" in
-      onlyoffice) echo -e "  ${DIM}  seafile logs seafile-onlyoffice${NC}" ;;
+      onlyoffice) echo -e "  ${DIM}  seafile logs onlyoffice${NC}" ;;
       none)       ;;
-      *)          echo -e "  ${DIM}  seafile logs seafile-collabora${NC}"  ;;
+      *)          echo -e "  ${DIM}  seafile logs collabora${NC}"  ;;
     esac
   fi
   echo ""
@@ -7344,8 +7818,11 @@ cmd_logs() {
   if [[ -z "$target" ]]; then
     pick_container "Which container?" || return 0
     target="$PICKED"
+  else
+    target=$(_resolve_container "$target") || { err "Unknown container: $1"; return 1; }
   fi
-  echo -e "\n  ${DIM}Tailing logs for ${BOLD}${target}${NC}${DIM} — Ctrl+C to stop${NC}\n"
+  local _dname=$(_display_name "$target")
+  echo -e "\n  ${DIM}Tailing logs for ${BOLD}${_dname}${NC}${DIM} — Ctrl+C to stop${NC}\n"
   docker logs --tail 50 -f "$target"
 }
 
@@ -7355,6 +7832,8 @@ cmd_restart() {
   if [[ -z "$target" ]]; then
     pick_container "Which container to restart?" "true" || return 0
     target="$PICKED"
+  elif [[ "$target" != "all" ]]; then
+    target=$(_resolve_container "$target") || { err "Unknown container: $1"; return 1; }
   fi
   if [[ "$target" == "all" ]]; then
     echo ""
@@ -7362,10 +7841,12 @@ cmd_restart() {
     [[ ! "$confirm" =~ ^[yY] ]] && { info "Cancelled."; return 0; }
     echo ""
     for c in "${CONTAINERS[@]}"; do
-      docker restart "$c" &>/dev/null && ok "Restarted $c" || warn "Could not restart $c"
+      local _dn=$(_display_name "$c")
+      docker restart "$c" &>/dev/null && ok "Restarted ${_dn}" || warn "Could not restart ${_dn}"
     done
   else
-    docker restart "$target" &>/dev/null && ok "Restarted $target" || err "Failed to restart $target"
+    local _dn=$(_display_name "$target")
+    docker restart "$target" &>/dev/null && ok "Restarted ${_dn}" || err "Failed to restart ${_dn}"
   fi
   echo ""
 }
@@ -7376,8 +7857,11 @@ cmd_shell() {
   if [[ -z "$target" ]]; then
     pick_container "Which container?" || return 0
     target="$PICKED"
+  else
+    target=$(_resolve_container "$target") || { err "Unknown container: $1"; return 1; }
   fi
-  echo -e "\n  ${DIM}Opening shell in ${BOLD}${target}${NC}${DIM} — type 'exit' to return${NC}\n"
+  local _dname=$(_display_name "$target")
+  echo -e "\n  ${DIM}Opening shell in ${BOLD}${_dname}${NC}${DIM} — type 'exit' to return${NC}\n"
   # Try bash first, fall back to sh (Alpine containers use sh)
   docker exec -it "$target" bash 2>/dev/null || docker exec -it "$target" sh
 }
@@ -9630,6 +10114,435 @@ cmd_secrets() {
   echo ""
 }
 
+# --- Command: migrate ---------------------------------------------------------
+# Post-install migration: import data from an existing Seafile instance into
+# a running seafile-deploy stack. Stops the stack, imports, restarts.
+# ---------------------------------------------------------------------------
+
+# DB import helper (same logic as shared-lib _import_db_dumps)
+_cli_import_db_dumps() {
+  local dump_dir="$1" root_pass="$2" db_method="${3:-internal}"
+  local _db_host="${SEAFILE_MYSQL_DB_HOST:-seafile-db}"
+  local _db_port="${SEAFILE_MYSQL_DB_PORT:-3306}"
+
+  for db in \
+      "${SEAFILE_MYSQL_DB_CCNET_DB_NAME:-ccnet_db}" \
+      "${SEAFILE_MYSQL_DB_SEAFILE_DB_NAME:-seafile_db}" \
+      "${SEAFILE_MYSQL_DB_SEAHUB_DB_NAME:-seahub_db}"; do
+
+    local dump_file=""
+    dump_file=$(ls -t "${dump_dir}/${db}_"*.sql.gz 2>/dev/null | head -1 || true)
+    [[ -z "$dump_file" ]] && dump_file=$(ls -t "${dump_dir}/${db}_"*.sql 2>/dev/null | head -1 || true)
+    [[ -z "$dump_file" ]] && dump_file=$(ls "${dump_dir}/${db}.sql.gz" 2>/dev/null || true)
+    [[ -z "$dump_file" ]] && dump_file=$(ls "${dump_dir}/${db}.sql" 2>/dev/null || true)
+
+    if [[ -z "$dump_file" ]]; then
+      warn "No dump found for ${db} — skipping."
+      continue
+    fi
+
+    echo -e "  ${DIM}Importing ${db} from $(basename "$dump_file")...${NC}"
+
+    # Ensure target database exists
+    if [[ "$db_method" == "internal" ]]; then
+      docker exec seafile-db mysql -u root -p"${root_pass}" \
+        -e "CREATE DATABASE IF NOT EXISTS \`${db}\` CHARACTER SET utf8mb4;" 2>/dev/null
+    else
+      mysql -h "$_db_host" -P "$_db_port" -u root -p"${root_pass}" \
+        -e "CREATE DATABASE IF NOT EXISTS \`${db}\` CHARACTER SET utf8mb4;" 2>/dev/null
+    fi
+
+    local _ok=false
+    if [[ "$dump_file" == *.gz ]]; then
+      if [[ "$db_method" == "internal" ]]; then
+        gunzip -c "$dump_file" | docker exec -i seafile-db \
+          mysql -u root -p"${root_pass}" "$db" 2>/dev/null && _ok=true
+      else
+        gunzip -c "$dump_file" | mysql -h "$_db_host" -P "$_db_port" \
+          -u root -p"${root_pass}" "$db" 2>/dev/null && _ok=true
+      fi
+    else
+      if [[ "$db_method" == "internal" ]]; then
+        docker exec -i seafile-db mysql -u root -p"${root_pass}" "$db" \
+          < "$dump_file" 2>/dev/null && _ok=true
+      else
+        mysql -h "$_db_host" -P "$_db_port" -u root -p"${root_pass}" "$db" \
+          < "$dump_file" 2>/dev/null && _ok=true
+      fi
+    fi
+
+    if [[ "$_ok" == "true" ]]; then
+      ok "${db} imported."
+    else
+      err "Failed to import ${db}."
+    fi
+  done
+}
+
+cmd_migrate() {
+  heading "Migrate / Import Data"
+
+  echo -e "  ${YELLOW}This will stop the running Seafile stack, import data from an${NC}"
+  echo -e "  ${YELLOW}existing instance, then restart with the imported data.${NC}"
+  echo ""
+  echo -e "  ${DIM}Your current .env settings (hostname, proxy, features) will be${NC}"
+  echo -e "  ${DIM}preserved. Only file data, databases, and user accounts are imported.${NC}"
+  echo ""
+  rule
+  echo ""
+
+  echo -e "  ${GREEN}${BOLD}  1  ${NC}${BOLD}Adopt in place${NC}"
+  echo -e "     ${DIM}Data and database already exist on the current volume.${NC}"
+  echo -e "     ${DIM}Just restart and let config-fixes take over.${NC}"
+  echo ""
+  echo -e "  ${CYAN}${BOLD}  2  ${NC}${BOLD}Import from prepared backup${NC}"
+  echo -e "     ${DIM}Database dumps (.sql.gz) and data directory on this machine.${NC}"
+  echo ""
+  echo -e "  ${YELLOW}${BOLD}  3  ${NC}${BOLD}Import from remote server (SSH)${NC}"
+  echo -e "     ${DIM}Dump and copy from a running Seafile server over SSH.${NC}"
+  echo ""
+  echo -e "  ${DIM}  0  Cancel${NC}"
+  echo ""
+
+  local _choice
+  while true; do
+    read -r -p "  Select [0-3]: " _choice
+    case "$_choice" in 0|1|2|3) break ;; *) echo -e "  ${DIM}Enter 0, 1, 2, or 3.${NC}" ;; esac
+  done
+  [[ "$_choice" == "0" ]] && return
+
+  # Get root password for DB operations
+  local _root_pass=""
+  local _secrets_file="/opt/seafile/.secrets"
+  if [[ "${DB_INTERNAL:-true}" == "true" ]]; then
+    # Try to find root password from secrets file
+    if [[ -f "$_secrets_file" ]]; then
+      _root_pass=$(grep 'INIT_SEAFILE_MYSQL_ROOT_PASSWORD=' "$_secrets_file" | tail -1 | cut -d= -f2-)
+    fi
+    # Try docker inspect as fallback
+    if [[ -z "$_root_pass" ]]; then
+      _root_pass=$(docker inspect seafile-db --format '{{range .Config.Env}}{{println .}}{{end}}' 2>/dev/null \
+        | grep MYSQL_ROOT_PASSWORD | cut -d= -f2)
+    fi
+    if [[ -z "$_root_pass" ]]; then
+      echo -ne "  ${BOLD}Database root password${NC}: "
+      read -rs _root_pass
+      echo ""
+    fi
+  fi
+
+  local _sf_vol="${SEAFILE_VOLUME:-/opt/seafile-data}"
+
+  case "$_choice" in
+    # ── Adopt in place ────────────────────────────────────────────────────
+    1)
+      heading "Adopt in place"
+
+      # Extract SECRET_KEY before restart
+      local _key=""
+      for _kf in "${_sf_vol}/seafile/conf/seahub_settings.py" "${_sf_vol}/conf/seahub_settings.py"; do
+        if [[ -f "$_kf" ]]; then
+          _key=$(grep "^SECRET_KEY" "$_kf" 2>/dev/null | head -1 | cut -d'"' -f2 | cut -d"'" -f2)
+          [[ -n "$_key" ]] && break
+        fi
+      done
+
+      if [[ -n "$_key" ]]; then
+        ok "SECRET_KEY found — sessions will be preserved."
+      else
+        warn "No SECRET_KEY found — a new one will be generated."
+      fi
+
+      echo ""
+      echo -e "  ${DIM}Restarting stack with config-fixes...${NC}"
+      if [[ -f "/opt/seafile-config-fixes.sh" ]]; then
+        bash /opt/seafile-config-fixes.sh --yes
+        ok "Stack restarted with seafile-deploy configuration."
+      else
+        err "config-fixes not found at /opt/seafile-config-fixes.sh"
+      fi
+      ;;
+
+    # ── Prepared backup ───────────────────────────────────────────────────
+    2)
+      heading "Import from prepared backup"
+
+      # Collect dump directory
+      local _dump_dir=""
+      while true; do
+        echo -ne "  ${BOLD}Database dumps directory${NC}: "
+        read -r _dump_dir
+        _dump_dir="${_dump_dir%/}"
+        if [[ -d "$_dump_dir" ]]; then
+          local _cnt=$(ls "$_dump_dir"/*.sql* 2>/dev/null | wc -l)
+          echo -e "  ${DIM}Found ${_cnt} dump file(s).${NC}"
+          break
+        fi
+        echo -e "  ${RED}Directory not found.${NC}"
+      done
+
+      # Collect data directory
+      local _data_dir=""
+      echo ""
+      echo -ne "  ${BOLD}Seafile data directory${NC} (containing seafile-data/): "
+      read -r _data_dir
+      _data_dir="${_data_dir%/}"
+
+      # Confirm
+      echo ""
+      echo -e "  ${YELLOW}This will stop the stack and replace the database.${NC}"
+      echo -ne "  ${BOLD}Continue? [y/N]:${NC} "
+      read -r _confirm
+      [[ "${_confirm,,}" != "y" ]] && echo -e "  ${DIM}Cancelled.${NC}" && return
+
+      # Stop stack
+      echo ""
+      echo -e "  ${DIM}Stopping stack...${NC}"
+      docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" down 2>/dev/null
+
+      # Start DB only
+      if [[ "${DB_INTERNAL:-true}" == "true" ]]; then
+        echo -e "  ${DIM}Starting database...${NC}"
+        _compute_compose_profiles
+        COMPOSE_PROFILES="$_PROFILES" docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" up -d seafile-db 2>&1
+        sleep 10
+      fi
+
+      # Import DB
+      echo -e "  ${DIM}Importing databases...${NC}"
+      _cli_import_db_dumps "$_dump_dir" "$_root_pass" \
+        "$([[ "${DB_INTERNAL:-true}" == "true" ]] && echo "internal" || echo "external")"
+
+      # Copy data
+      if [[ -n "$_data_dir" && -d "${_data_dir}/seafile-data" ]]; then
+        echo -e "  ${DIM}Copying file data...${NC}"
+        rsync -a --info=progress2 "${_data_dir}/seafile-data/" "${_sf_vol}/seafile-data/"
+        ok "File data copied."
+      fi
+
+      # Copy avatars
+      for _av in "${_data_dir}/seafile/seahub-data/avatars" "${_data_dir}/seahub-data/avatars"; do
+        if [[ -d "$_av" ]]; then
+          mkdir -p "${_sf_vol}/seafile/seahub-data/avatars"
+          rsync -a "$_av/" "${_sf_vol}/seafile/seahub-data/avatars/"
+          ok "Avatars copied."
+          break
+        fi
+      done
+
+      # SECRET_KEY
+      local _conf_dir=""
+      [[ -f "${_data_dir}/seafile/conf/seahub_settings.py" ]] && _conf_dir="${_data_dir}/seafile/conf"
+      [[ -f "${_data_dir}/conf/seahub_settings.py" ]] && _conf_dir="${_data_dir}/conf"
+      if [[ -n "$_conf_dir" ]]; then
+        local _key=$(grep "^SECRET_KEY" "${_conf_dir}/seahub_settings.py" 2>/dev/null | head -1 | cut -d'"' -f2 | cut -d"'" -f2)
+        if [[ -n "$_key" ]]; then
+          mkdir -p "${_sf_vol}/seafile/conf"
+          echo "SECRET_KEY = \"${_key}\"" > "${_sf_vol}/seafile/conf/seahub_settings.py"
+          ok "SECRET_KEY preserved."
+        fi
+      fi
+
+      # Restart with config-fixes
+      echo -e "  ${DIM}Applying configuration and starting stack...${NC}"
+      if [[ -f "/opt/seafile-config-fixes.sh" ]]; then
+        bash /opt/seafile-config-fixes.sh --yes
+      fi
+      _compute_compose_profiles
+      COMPOSE_PROFILES="$_PROFILES" docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" up -d 2>&1
+      ok "Migration complete. Run: seafile ping"
+      ;;
+
+    # ── SSH import ────────────────────────────────────────────────────────
+    3)
+      heading "Import from remote server (SSH)"
+
+      # Collect SSH details
+      local _ssh_host _ssh_user _ssh_port
+      echo -ne "  ${BOLD}SSH host${NC}: "
+      read -r _ssh_host
+      echo -ne "  ${BOLD}SSH user${NC} [root]: "
+      read -r _ssh_user; _ssh_user="${_ssh_user:-root}"
+      echo -ne "  ${BOLD}SSH port${NC} [22]: "
+      read -r _ssh_port; _ssh_port="${_ssh_port:-22}"
+
+      local _ssh_cmd="ssh -o ConnectTimeout=30 -o ServerAliveInterval=60 -p ${_ssh_port} ${_ssh_user}@${_ssh_host}"
+
+      # Test connection
+      echo ""
+      echo -e "  ${DIM}Testing SSH connection...${NC}"
+      if ! $_ssh_cmd "echo ok" &>/dev/null; then
+        err "Cannot connect to ${_ssh_user}@${_ssh_host}:${_ssh_port}"
+        echo -e "  ${DIM}Ensure SSH key auth is configured:${NC}"
+        echo -e "    ${DIM}ssh-copy-id -p ${_ssh_port} ${_ssh_user}@${_ssh_host}${NC}"
+        return 1
+      fi
+      ok "Connected."
+
+      # Auto-detect remote Seafile
+      echo -e "  ${DIM}Detecting remote Seafile installation...${NC}"
+      local _remote_data="" _remote_conf="" _remote_db_type="" _remote_db_user="" _remote_db_pass=""
+
+      # Docker?
+      _remote_data=$($_ssh_cmd "docker inspect seafile --format '{{range .Mounts}}{{if eq .Destination \"/shared\"}}{{.Source}}{{end}}{{end}}'" 2>/dev/null || true)
+      if [[ -n "$_remote_data" ]]; then
+        ok "Docker deployment at ${_remote_data}"
+        _remote_conf="${_remote_data}/seafile/conf"
+        _remote_db_type="docker"
+        _remote_db_user=$($_ssh_cmd "docker exec seafile grep -oP 'user\s*=\s*\K.*' /opt/seafile/conf/seafile.conf 2>/dev/null | head -1" || true)
+        _remote_db_pass=$($_ssh_cmd "docker exec seafile grep -oP 'password\s*=\s*\K.*' /opt/seafile/conf/seafile.conf 2>/dev/null | head -1" || true)
+      else
+        # Manual install
+        for _tp in "/opt/seafile/conf" "/opt/seafile/seafile/conf"; do
+          if $_ssh_cmd "test -f ${_tp}/seahub_settings.py" 2>/dev/null; then
+            _remote_conf="$_tp"
+            break
+          fi
+        done
+        if [[ -n "$_remote_conf" ]]; then
+          local _dd=$($_ssh_cmd "grep -oP 'dir\s*=\s*\K.*' ${_remote_conf}/seafile.conf 2>/dev/null | head -1" || true)
+          _remote_data=$(dirname "${_dd:-/opt/seafile/seafile-data}")
+          ok "Manual install at ${_remote_data}"
+          _remote_db_type="local"
+          _remote_db_user=$($_ssh_cmd "grep -oP 'user\s*=\s*\K.*' ${_remote_conf}/seafile.conf 2>/dev/null | head -1" || true)
+          _remote_db_pass=$($_ssh_cmd "grep -oP 'password\s*=\s*\K.*' ${_remote_conf}/seafile.conf 2>/dev/null | head -1" || true)
+        else
+          err "Could not detect Seafile on remote server."
+          return 1
+        fi
+      fi
+      _remote_db_user="${_remote_db_user:-seafile}"
+
+      if [[ -z "$_remote_db_pass" ]]; then
+        echo -ne "  ${BOLD}Remote database password${NC}: "
+        read -rs _remote_db_pass; echo ""
+      fi
+
+      local _data_size=$($_ssh_cmd "du -sh ${_remote_data}/seafile-data 2>/dev/null | cut -f1" || true)
+      [[ -n "$_data_size" ]] && echo -e "  ${DIM}Remote data size: ${_data_size}${NC}"
+      echo ""
+
+      # Confirm
+      echo -e "  ${YELLOW}This will stop the local stack and replace the database.${NC}"
+      echo -ne "  ${BOLD}Continue? [y/N]:${NC} "
+      read -r _confirm
+      [[ "${_confirm,,}" != "y" ]] && echo -e "  ${DIM}Cancelled.${NC}" && return
+
+      # Stop stack
+      echo ""
+      echo -e "  ${DIM}Stopping stack...${NC}"
+      docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" down 2>/dev/null
+
+      # Start DB only
+      if [[ "${DB_INTERNAL:-true}" == "true" ]]; then
+        echo -e "  ${DIM}Starting database...${NC}"
+        _compute_compose_profiles
+        COMPOSE_PROFILES="$_PROFILES" docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" up -d seafile-db 2>&1
+        sleep 10
+      fi
+
+      # Dump + import databases
+      echo -e "  ${DIM}Dumping remote databases...${NC}"
+      local _tmp_dumps=$(mktemp -d /tmp/seafile-cli-migrate.XXXXXX)
+
+      for _rdb in \
+          "${SEAFILE_MYSQL_DB_CCNET_DB_NAME:-ccnet_db}" \
+          "${SEAFILE_MYSQL_DB_SEAFILE_DB_NAME:-seafile_db}" \
+          "${SEAFILE_MYSQL_DB_SEAHUB_DB_NAME:-seahub_db}"; do
+
+        echo -e "  ${DIM}  Dumping ${_rdb}...${NC}"
+        case "$_remote_db_type" in
+          docker)
+            $_ssh_cmd "docker exec seafile-db mysqldump \
+              -u '${_remote_db_user}' -p'${_remote_db_pass}' \
+              --single-transaction --quick '${_rdb}'" \
+              2>/dev/null | gzip > "${_tmp_dumps}/${_rdb}.sql.gz"
+            ;;
+          *)
+            $_ssh_cmd "mysqldump \
+              -u '${_remote_db_user}' -p'${_remote_db_pass}' \
+              --single-transaction --quick '${_rdb}'" \
+              2>/dev/null | gzip > "${_tmp_dumps}/${_rdb}.sql.gz"
+            ;;
+        esac
+
+        local _sz=$(stat -c%s "${_tmp_dumps}/${_rdb}.sql.gz" 2>/dev/null || echo "0")
+        if [[ "$_sz" -gt 100 ]]; then
+          ok "${_rdb} dumped ($(du -h "${_tmp_dumps}/${_rdb}.sql.gz" | cut -f1))"
+        else
+          warn "${_rdb} dump appears empty."
+        fi
+      done
+
+      echo -e "  ${DIM}Importing into local database...${NC}"
+      _cli_import_db_dumps "$_tmp_dumps" "$_root_pass" \
+        "$([[ "${DB_INTERNAL:-true}" == "true" ]] && echo "internal" || echo "external")"
+      rm -rf "$_tmp_dumps"
+
+      # Rsync file data
+      echo -e "  ${DIM}Copying file data from remote (this may take a while)...${NC}"
+      mkdir -p "${_sf_vol}/seafile-data"
+      if $_ssh_cmd "test -d '${_remote_data}/seafile-data'" 2>/dev/null; then
+        rsync -avz --info=progress2 \
+          -e "ssh -o ConnectTimeout=30 -o ServerAliveInterval=60 -p ${_ssh_port}" \
+          "${_ssh_user}@${_ssh_host}:${_remote_data}/seafile-data/" \
+          "${_sf_vol}/seafile-data/"
+        ok "File data copied."
+      else
+        warn "Remote seafile-data not found."
+      fi
+
+      # Avatars
+      for _av_remote in "${_remote_data}/seafile/seahub-data/avatars" "${_remote_data}/seahub-data/avatars"; do
+        if $_ssh_cmd "test -d '${_av_remote}'" 2>/dev/null; then
+          mkdir -p "${_sf_vol}/seafile/seahub-data/avatars"
+          rsync -avz \
+            -e "ssh -o ConnectTimeout=30 -o ServerAliveInterval=60 -p ${_ssh_port}" \
+            "${_ssh_user}@${_ssh_host}:${_av_remote}/" \
+            "${_sf_vol}/seafile/seahub-data/avatars/"
+          ok "Avatars copied."
+          break
+        fi
+      done
+
+      # SECRET_KEY
+      if [[ -n "$_remote_conf" ]]; then
+        local _key=$($_ssh_cmd "grep '^SECRET_KEY' '${_remote_conf}/seahub_settings.py' 2>/dev/null | head -1" 2>/dev/null || true)
+        _key=$(echo "$_key" | sed "s/.*['\"]//;s/['\"].*//" | tr -d '[:space:]')
+        if [[ -n "$_key" ]]; then
+          mkdir -p "${_sf_vol}/seafile/conf"
+          echo "SECRET_KEY = \"${_key}\"" > "${_sf_vol}/seafile/conf/seahub_settings.py"
+          ok "SECRET_KEY preserved."
+        fi
+      fi
+
+      # Restart with config-fixes
+      echo -e "  ${DIM}Applying configuration and starting stack...${NC}"
+      if [[ -f "/opt/seafile-config-fixes.sh" ]]; then
+        bash /opt/seafile-config-fixes.sh --yes
+      fi
+      _compute_compose_profiles
+      COMPOSE_PROFILES="$_PROFILES" docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" up -d 2>&1
+      ok "SSH migration complete. Run: seafile ping"
+      ;;
+  esac
+
+  echo ""
+}
+
+# Helper to compute compose profiles in CLI context
+_compute_compose_profiles() {
+  local _p=()
+  case "${OFFICE_SUITE:-collabora}" in
+    onlyoffice) _p+=(onlyoffice) ;;
+    none)       ;;
+    *)          _p+=(collabora)  ;;
+  esac
+  [[ "${CLAMAV_ENABLED:-false}" == "true" ]] && _p+=(clamav)
+  [[ "${DB_INTERNAL:-true}" == "true" ]] && _p+=(internal-db)
+  _PROFILES=$(IFS=','; echo "${_p[*]}")
+}
+
 cmd_version() {
   heading "Image Versions"
 
@@ -9665,7 +10578,7 @@ cmd_version() {
       colour="$YELLOW"  # running but tag differs from .env
     fi
 
-    printf "  %-28s ${colour}%-36s${NC} %s\n" "$c" "$running" "$env_val"
+    printf "  %-28s ${colour}%-36s${NC} %s\n" "$(_display_name "$c")" "$running" "$env_val"
   done
   echo ""
   echo -e "  ${DIM}Yellow = container running a different tag than .env — run ${BOLD}seafile update${NC}${DIM} to reconcile.${NC}\n"
@@ -9798,6 +10711,7 @@ cmd_help() {
   printf "  ${BOLD}%-24s${NC} %s\n" "metadata --enable-all" "Enable Extended Properties on all libraries"
   printf "  ${BOLD}%-24s${NC} %s\n" "secrets"             "View generated secrets reference (masked)"
   printf "  ${BOLD}%-24s${NC} %s\n" "secrets --show"      "View generated secrets in plaintext"
+  printf "  ${BOLD}%-24s${NC} %s\n" "migrate"             "Import data from an existing Seafile instance"
   printf "  ${BOLD}%-24s${NC} %s\n" "version"             "Show running image tags vs .env values"
   printf "  ${BOLD}%-24s${NC} %s\n" "gc"                  "Run garbage collection"
   printf "  ${BOLD}%-24s${NC} %s\n" "gc --status"         "Show GC schedule, last run, and log tail"
@@ -9830,6 +10744,7 @@ case "$CMD" in
   metadata) cmd_metadata "$@" ;;
   version) cmd_version ;;
   secrets) cmd_secrets "$@" ;;
+  migrate) cmd_migrate ;;
   gitops)  cmd_gitops ;;
   gc)      cmd_gc "$@" ;;
   help|--help|-h) cmd_help ;;
@@ -9948,7 +10863,7 @@ fi
 # MODE-SPECIFIC FINALE
 # =============================================================================
 
-if [[ "$SETUP_MODE" == "install" ]]; then
+if [[ "$SETUP_MODE" == "install" || "$SETUP_MODE" == "migrate" ]]; then
 # ─────────────────────────────────────────────────────────────────────────────
 # INSTALL FINALE
 # ─────────────────────────────────────────────────────────────────────────────
@@ -10038,7 +10953,7 @@ _show_splash() {
   echo "  ╚══════╝╚══════╝╚═╝  ╚═╝╚═╝     ╚═╝╚══════╝╚══════╝"
   echo -e "${NC}"
   echo -e "  ${DIM}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-  echo -e "  ${BOLD}nicogits92 / seafile-deploy${NC}   ${DIM}Seafile ${_SEAFILE_VERSION} CE  ·  v4.1-alpha  ·  config-fixes${NC}"
+  echo -e "  ${BOLD}nicogits92 / seafile-deploy${NC}   ${DIM}Seafile ${_SEAFILE_VERSION} CE  ·  v4.3-alpha  ·  config-fixes${NC}"
   echo -e "  ${DIM}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
   echo ""
   echo -e "  ${DIM}Community deployment · not affiliated with Seafile Ltd.${NC}"
@@ -11133,7 +12048,7 @@ heading() { echo -e "\n${BOLD}${CYAN}==> $1${NC}"; }
 # ---------------------------------------------------------------------------
 # Deployment version
 # ---------------------------------------------------------------------------
-DEPLOY_VERSION="v4.1-alpha"
+DEPLOY_VERSION="v4.3-alpha"
 
 # ---------------------------------------------------------------------------
 # Colours (safe to re-source — just variable assignments)
@@ -12353,6 +13268,77 @@ SECHDR
   echo "$(date '+%Y-%m-%d %H:%M:%S')  ${key}=${value}" >> "$secrets_file"
 }
 
+# ---------------------------------------------------------------------------
+# Import database dumps — shared by recovery-finalize and migration.
+# Looks for .sql.gz or .sql files in the given directory matching each
+# Seafile database name. Supports both exact names (ccnet_db.sql.gz)
+# and timestamped names (ccnet_db_20260313_010000.sql.gz).
+# ---------------------------------------------------------------------------
+_import_db_dumps() {
+  local dump_dir="$1"
+  local root_pass="$2"
+  local db_method="${3:-internal}"  # "internal" = docker exec, "external" = mysql client
+
+  local _db_user="${SEAFILE_MYSQL_DB_USER:-seafile}"
+  local _db_host="${SEAFILE_MYSQL_DB_HOST:-seafile-db}"
+  local _db_port="${SEAFILE_MYSQL_DB_PORT:-3306}"
+
+  for db in \
+      "${SEAFILE_MYSQL_DB_CCNET_DB_NAME:-ccnet_db}" \
+      "${SEAFILE_MYSQL_DB_SEAFILE_DB_NAME:-seafile_db}" \
+      "${SEAFILE_MYSQL_DB_SEAHUB_DB_NAME:-seahub_db}"; do
+
+    # Find the dump file — try timestamped first (newest), then exact name
+    local dump_file=""
+    dump_file=$(ls -t "${dump_dir}/${db}_"*.sql.gz 2>/dev/null | head -1 || true)
+    [[ -z "$dump_file" ]] && dump_file=$(ls -t "${dump_dir}/${db}_"*.sql 2>/dev/null | head -1 || true)
+    [[ -z "$dump_file" ]] && dump_file=$(ls "${dump_dir}/${db}.sql.gz" 2>/dev/null || true)
+    [[ -z "$dump_file" ]] && dump_file=$(ls "${dump_dir}/${db}.sql" 2>/dev/null || true)
+
+    if [[ -z "$dump_file" ]]; then
+      warn "  No dump found for ${db} in ${dump_dir} — skipping."
+      continue
+    fi
+
+    info "  Importing ${db} from $(basename "$dump_file")..."
+
+    # Ensure target database exists
+    if [[ "$db_method" == "internal" ]]; then
+      docker exec seafile-db mysql -u root -p"${root_pass}" \
+        -e "CREATE DATABASE IF NOT EXISTS \`${db}\` CHARACTER SET utf8mb4;" 2>/dev/null
+    else
+      mysql -h "$_db_host" -P "$_db_port" -u root -p"${root_pass}" \
+        -e "CREATE DATABASE IF NOT EXISTS \`${db}\` CHARACTER SET utf8mb4;" 2>/dev/null
+    fi
+
+    # Import — handle both .sql.gz and .sql
+    local _import_ok=false
+    if [[ "$dump_file" == *.gz ]]; then
+      if [[ "$db_method" == "internal" ]]; then
+        gunzip -c "$dump_file" | docker exec -i seafile-db \
+          mysql -u root -p"${root_pass}" "$db" 2>/dev/null && _import_ok=true
+      else
+        gunzip -c "$dump_file" | mysql -h "$_db_host" -P "$_db_port" \
+          -u root -p"${root_pass}" "$db" 2>/dev/null && _import_ok=true
+      fi
+    else
+      if [[ "$db_method" == "internal" ]]; then
+        docker exec -i seafile-db mysql -u root -p"${root_pass}" "$db" \
+          < "$dump_file" 2>/dev/null && _import_ok=true
+      else
+        mysql -h "$_db_host" -P "$_db_port" -u root -p"${root_pass}" "$db" \
+          < "$dump_file" 2>/dev/null && _import_ok=true
+      fi
+    fi
+
+    if [[ "$_import_ok" == "true" ]]; then
+      info "  ✓ ${db} imported successfully."
+    else
+      warn "  ✗ Failed to import ${db} — check dump file and database access."
+    fi
+  done
+}
+
 ok()      { echo -e "${GREEN}  ✓${NC}  $1"; }
 fail()    { echo -e "${RED}  ✗${NC}  $1"; }
 changed() { echo -e "${YELLOW}  ~${NC}  $1"; }
@@ -13549,8 +14535,10 @@ COMPOSEEOF
   # If a previous install attempt left data behind, clear everything so
   # Seafile's first-boot init (setup-seafile-mysql.py) runs cleanly.
   # NEVER do this in recovery mode — that data belongs to the user.
+  # In migrate mode: skip for "adopt" (data exists and we want it),
+  # clean for "prepared"/"ssh" (we're importing fresh data).
   # ────────────────────────────────────────────────────────────────────────
-  if [[ "$SETUP_MODE" == "install" ]]; then
+  if [[ "$SETUP_MODE" == "install" || ( "$SETUP_MODE" == "migrate" && "${MIGRATE_TYPE:-}" != "adopt" ) ]]; then
     _SF_VOL="${SEAFILE_VOLUME:-/opt/seafile-data}"
     _stale=false
     for _dir in "${_SF_VOL}/seafile-data" "${_SF_VOL}/seafile" "${_SF_VOL}/seahub-data"; do
@@ -13572,6 +14560,13 @@ COMPOSEEOF
       info "Cleaned stale state — Seafile will run first-boot initialization."
     fi
   fi
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # DEPLOY BRANCH: Fresh Install vs Migration
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  if [[ "$SETUP_MODE" == "install" ]]; then
+  # ── FRESH INSTALL: Staged startup ────────────────────────────────────────
 
   # ── Stage 1: Start database first ───────────────────────────────────────
   # Seafile's init script (setup-seafile-mysql.py) needs the database to be
@@ -13618,11 +14613,6 @@ COMPOSEEOF
   fi
 
   # ── Stage 2: Start Seafile container and wait for init ──────────────────
-  # Start only the seafile container. Its entrypoint script runs
-  # setup-seafile-mysql.py which creates databases, tables, config files,
-  # and the admin user. We wait for this to complete before starting
-  # any sidecar containers that depend on a working database.
-  # ────────────────────────────────────────────────────────────────────────
   info "Stage 2: Starting Seafile container for first-boot initialization..."
   COMPOSE_PROFILES="$COMPOSE_PROFILES" docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" up -d seafile 2>&1
 
@@ -13650,7 +14640,6 @@ COMPOSEEOF
         _tables_ready=true
         break
       fi
-      # Show progress every 30 seconds
       if (( _t_attempt % 6 == 0 )); then
         info "  Still waiting... (${_tcount} tables so far, need 10+)"
       fi
@@ -13661,7 +14650,6 @@ COMPOSEEOF
       warn "Check: docker logs seafile"
     fi
   else
-    # No DB access for checking — wait generously
     info "Waiting 90s for Seafile first-boot initialization..."
     sleep 90
   fi
@@ -13673,9 +14661,305 @@ COMPOSEEOF
   else
     warn "docker compose up reported an issue — check: docker ps && docker logs seafile"
   fi
-
-  # Brief pause for sidecars to connect to DB
   sleep 10
+
+  elif [[ "$SETUP_MODE" == "migrate" ]]; then
+  # ── MIGRATION DEPLOY ─────────────────────────────────────────────────────
+
+  _SF_VOL="${SEAFILE_VOLUME:-/opt/seafile-data}"
+
+  case "${MIGRATE_TYPE}" in
+    # ── Adopt in place ──────────────────────────────────────────────────────
+    # Existing data is already on the volume. Extract SECRET_KEY from the
+    # existing config, start the stack, and let config-fixes take over.
+    # ──────────────────────────────────────────────────────────────────────
+    adopt)
+      heading "Migration: Adopt in place"
+
+      # Extract SECRET_KEY from existing config
+      _EXISTING_KEY=""
+      for _conf_search in \
+          "${_SF_VOL}/seafile/conf/seahub_settings.py" \
+          "${_SF_VOL}/conf/seahub_settings.py" \
+          "${MIGRATE_CONF_DIR:-/dev/null}/seahub_settings.py"; do
+        if [[ -f "$_conf_search" ]]; then
+          _EXISTING_KEY=$(grep "^SECRET_KEY" "$_conf_search" 2>/dev/null | head -1 | cut -d'"' -f2 | cut -d"'" -f2)
+          [[ -n "$_EXISTING_KEY" ]] && info "Extracted SECRET_KEY from ${_conf_search}" && break
+        fi
+      done
+      if [[ -z "$_EXISTING_KEY" ]]; then
+        warn "Could not find SECRET_KEY in existing config."
+        warn "A new key will be generated — existing sessions will be invalidated."
+      else
+        # Write minimal seahub_settings.py so config-fixes preserves the key
+        mkdir -p "${_SF_VOL}/seafile/conf"
+        echo "SECRET_KEY = \"${_EXISTING_KEY}\"" > "${_SF_VOL}/seafile/conf/seahub_settings.py"
+        info "SECRET_KEY written to config for preservation."
+      fi
+
+      # Verify existing data
+      if [[ -d "${_SF_VOL}/seafile-data" ]]; then
+        local _data_size=$(du -sh "${_SF_VOL}/seafile-data" 2>/dev/null | cut -f1)
+        info "Existing seafile-data found (${_data_size})."
+      else
+        warn "No seafile-data directory found at ${_SF_VOL}/seafile-data."
+        warn "File storage will be empty. If this is unexpected, check your volume mount."
+      fi
+
+      # Start DB (if internal)
+      if [[ "${DB_INTERNAL:-true}" == "true" ]]; then
+        info "Starting database container..."
+        COMPOSE_PROFILES="$COMPOSE_PROFILES" docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" up -d seafile-db 2>&1
+        info "Waiting for database..."
+        for _attempt in {1..30}; do
+          docker exec seafile-db mysqladmin ping -u root \
+            -p"${INIT_SEAFILE_MYSQL_ROOT_PASSWORD:-}" --silent 2>/dev/null && break
+          sleep 3
+        done
+      fi
+
+      # Start full stack — Seafile sees existing data and skips init
+      info "Starting Seafile stack..."
+      COMPOSE_PROFILES="$COMPOSE_PROFILES" docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" up -d 2>&1
+      info "Stack started. Waiting for containers to stabilize..."
+      sleep 15
+      ;;
+
+    # ── Prepared backup ─────────────────────────────────────────────────────
+    # User has database dumps and a data directory ready on this machine.
+    # Same pattern as recovery-finalize: start DB, import, copy data, start.
+    # ──────────────────────────────────────────────────────────────────────
+    prepared)
+      heading "Migration: Import from prepared backup"
+
+      # Stage 1: Start DB
+      if [[ "${DB_INTERNAL:-true}" == "true" ]]; then
+        info "Stage 1: Starting database container..."
+        COMPOSE_PROFILES="$COMPOSE_PROFILES" docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" up -d seafile-db 2>&1
+        info "Waiting for database to accept connections..."
+        _db_ready=false
+        for _attempt in {1..30}; do
+          if docker exec seafile-db mysqladmin ping -u root \
+              -p"${INIT_SEAFILE_MYSQL_ROOT_PASSWORD:-}" --silent 2>/dev/null; then
+            _db_ready=true; break
+          fi
+          sleep 3
+        done
+        [[ "$_db_ready" != "true" ]] && warn "Database did not become ready in 90s."
+      fi
+
+      # Stage 2: Import database dumps
+      if [[ -n "${MIGRATE_DUMP_DIR:-}" && -d "${MIGRATE_DUMP_DIR}" ]]; then
+        info "Stage 2: Importing database dumps from ${MIGRATE_DUMP_DIR}..."
+        _import_db_dumps "${MIGRATE_DUMP_DIR}" "${INIT_SEAFILE_MYSQL_ROOT_PASSWORD:-}" "internal"
+      else
+        warn "No dump directory specified — database will be empty."
+        warn "Seafile's first-boot init will create tables on startup."
+      fi
+
+      # Stage 3: Copy file data
+      info "Stage 3: Copying file data..."
+      if [[ -n "${MIGRATE_DATA_DIR:-}" && -d "${MIGRATE_DATA_DIR}" ]]; then
+        # Detect source layout and copy appropriately
+        if [[ -d "${MIGRATE_DATA_DIR}/seafile-data" ]]; then
+          info "Copying seafile-data (this may take a while for large libraries)..."
+          rsync -a --info=progress2 "${MIGRATE_DATA_DIR}/seafile-data/" "${_SF_VOL}/seafile-data/"
+          info "File data copied."
+        fi
+
+        # Copy avatars
+        for _avatar_src in \
+            "${MIGRATE_DATA_DIR}/seafile/seahub-data/avatars" \
+            "${MIGRATE_DATA_DIR}/seahub-data/avatars"; do
+          if [[ -d "$_avatar_src" ]]; then
+            mkdir -p "${_SF_VOL}/seafile/seahub-data/avatars"
+            rsync -a "$_avatar_src/" "${_SF_VOL}/seafile/seahub-data/avatars/"
+            info "Avatars copied."
+            break
+          fi
+        done
+      else
+        warn "No data directory specified — file storage will be empty."
+      fi
+
+      # Stage 4: Extract SECRET_KEY
+      _EXISTING_KEY=""
+      if [[ -n "${MIGRATE_CONF_DIR:-}" && -f "${MIGRATE_CONF_DIR}/seahub_settings.py" ]]; then
+        _EXISTING_KEY=$(grep "^SECRET_KEY" "${MIGRATE_CONF_DIR}/seahub_settings.py" 2>/dev/null | head -1 | cut -d'"' -f2 | cut -d"'" -f2)
+      fi
+      if [[ -n "$_EXISTING_KEY" ]]; then
+        mkdir -p "${_SF_VOL}/seafile/conf"
+        echo "SECRET_KEY = \"${_EXISTING_KEY}\"" > "${_SF_VOL}/seafile/conf/seahub_settings.py"
+        info "SECRET_KEY preserved from source configuration."
+      else
+        warn "No SECRET_KEY found — a new key will be generated."
+        warn "Existing user sessions will be invalidated (users will need to log in again)."
+      fi
+
+      # Stage 5: Start Seafile (sees imported data, skips setup-seafile-mysql.py)
+      info "Stage 5: Starting Seafile..."
+      COMPOSE_PROFILES="$COMPOSE_PROFILES" docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" up -d seafile 2>&1
+      sleep 10
+
+      # Stage 6: Start remaining containers
+      info "Stage 6: Starting remaining containers..."
+      COMPOSE_PROFILES="$COMPOSE_PROFILES" docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" up -d 2>&1
+      sleep 10
+      ;;
+
+    # ── SSH migration ───────────────────────────────────────────────────────
+    # Dump databases and rsync files from a remote Seafile server over SSH.
+    # Uses the same _import_db_dumps helper as recovery and prepared migration.
+    # ──────────────────────────────────────────────────────────────────────
+    ssh)
+      heading "Migration: Import from remote server via SSH"
+
+      _SSH_CMD="ssh -o ConnectTimeout=30 -o ServerAliveInterval=60 -p ${MIGRATE_SSH_PORT:-22} ${MIGRATE_SSH_USER:-root}@${MIGRATE_SSH_HOST}"
+      _REMOTE_DATA="${MIGRATE_REMOTE_DATA_DIR}"
+      _REMOTE_CONF="${MIGRATE_REMOTE_CONF_DIR}"
+      _REMOTE_DB_TYPE="${MIGRATE_REMOTE_DB:-docker}"
+      _REMOTE_DB_USER="${MIGRATE_REMOTE_DB_USER:-seafile}"
+      _REMOTE_DB_PASS="${MIGRATE_REMOTE_DB_PASS:-}"
+      _REMOTE_DB_HOST="${MIGRATE_REMOTE_DB_HOST:-}"
+
+      # Stage 1: Start local DB
+      if [[ "${DB_INTERNAL:-true}" == "true" ]]; then
+        info "Stage 1: Starting local database container..."
+        COMPOSE_PROFILES="$COMPOSE_PROFILES" docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" up -d seafile-db 2>&1
+        info "Waiting for local database to accept connections..."
+        _db_ready=false
+        for _attempt in {1..30}; do
+          if docker exec seafile-db mysqladmin ping -u root \
+              -p"${INIT_SEAFILE_MYSQL_ROOT_PASSWORD:-}" --silent 2>/dev/null; then
+            _db_ready=true; break
+          fi
+          sleep 3
+        done
+        [[ "$_db_ready" != "true" ]] && warn "Local database did not become ready in 90s."
+      fi
+
+      # Stage 2: Dump remote databases and import locally
+      info "Stage 2: Dumping databases from remote server..."
+
+      # Create temporary dump directory
+      _LOCAL_DUMP_DIR=$(mktemp -d /tmp/seafile-migrate-dumps.XXXXXX)
+
+      for _rdb in \
+          "${SEAFILE_MYSQL_DB_CCNET_DB_NAME:-ccnet_db}" \
+          "${SEAFILE_MYSQL_DB_SEAFILE_DB_NAME:-seafile_db}" \
+          "${SEAFILE_MYSQL_DB_SEAHUB_DB_NAME:-seahub_db}"; do
+
+        info "  Dumping ${_rdb}..."
+
+        case "$_REMOTE_DB_TYPE" in
+          docker)
+            # Source is Docker — mysqldump via docker exec on remote
+            $_SSH_CMD "docker exec seafile-db mysqldump \
+              -u '${_REMOTE_DB_USER}' -p'${_REMOTE_DB_PASS}' \
+              --single-transaction --quick '${_rdb}'" \
+              2>/dev/null | gzip > "${_LOCAL_DUMP_DIR}/${_rdb}.sql.gz"
+            ;;
+          local)
+            # Source is manual install — mysqldump directly on remote
+            $_SSH_CMD "mysqldump \
+              -u '${_REMOTE_DB_USER}' -p'${_REMOTE_DB_PASS}' \
+              --single-transaction --quick '${_rdb}'" \
+              2>/dev/null | gzip > "${_LOCAL_DUMP_DIR}/${_rdb}.sql.gz"
+            ;;
+          external)
+            # Source uses an external DB — mysqldump with -h flag on remote
+            $_SSH_CMD "mysqldump \
+              -h '${_REMOTE_DB_HOST}' \
+              -u '${_REMOTE_DB_USER}' -p'${_REMOTE_DB_PASS}' \
+              --single-transaction --quick '${_rdb}'" \
+              2>/dev/null | gzip > "${_LOCAL_DUMP_DIR}/${_rdb}.sql.gz"
+            ;;
+        esac
+
+        # Verify dump is not empty
+        local _dump_size=$(stat -c%s "${_LOCAL_DUMP_DIR}/${_rdb}.sql.gz" 2>/dev/null || echo "0")
+        if [[ "$_dump_size" -gt 100 ]]; then
+          info "  ✓ ${_rdb} dumped ($(du -h "${_LOCAL_DUMP_DIR}/${_rdb}.sql.gz" | cut -f1))"
+        else
+          warn "  ✗ ${_rdb} dump appears empty or failed — check remote DB access."
+        fi
+      done
+
+      info "Importing database dumps into local database..."
+      _import_db_dumps "${_LOCAL_DUMP_DIR}" "${INIT_SEAFILE_MYSQL_ROOT_PASSWORD:-}" "internal"
+      rm -rf "${_LOCAL_DUMP_DIR}"
+
+      # Stage 3: Rsync file data from remote
+      info "Stage 3: Copying file data from remote server (this may take a while)..."
+      mkdir -p "${_SF_VOL}/seafile-data"
+
+      # Determine remote seafile-data path
+      local _remote_data_path="${_REMOTE_DATA}/seafile-data/"
+      if $_SSH_CMD "test -d '${_remote_data_path}'" 2>/dev/null; then
+        rsync -avz --info=progress2 \
+          -e "ssh -o ConnectTimeout=30 -o ServerAliveInterval=60 -p ${MIGRATE_SSH_PORT:-22}" \
+          "${MIGRATE_SSH_USER:-root}@${MIGRATE_SSH_HOST}:${_remote_data_path}" \
+          "${_SF_VOL}/seafile-data/"
+        info "File data transfer complete."
+      else
+        warn "Remote seafile-data directory not found at ${_remote_data_path}."
+        warn "File storage will be empty."
+      fi
+
+      # Stage 4: Copy avatars from remote
+      info "Stage 4: Copying avatars..."
+      local _remote_avatar_path=""
+      for _try_avatar in \
+          "${_REMOTE_DATA}/seafile/seahub-data/avatars" \
+          "${_REMOTE_DATA}/seahub-data/avatars"; do
+        if $_SSH_CMD "test -d '${_try_avatar}'" 2>/dev/null; then
+          _remote_avatar_path="$_try_avatar"
+          break
+        fi
+      done
+      if [[ -n "$_remote_avatar_path" ]]; then
+        mkdir -p "${_SF_VOL}/seafile/seahub-data/avatars"
+        rsync -avz \
+          -e "ssh -o ConnectTimeout=30 -o ServerAliveInterval=60 -p ${MIGRATE_SSH_PORT:-22}" \
+          "${MIGRATE_SSH_USER:-root}@${MIGRATE_SSH_HOST}:${_remote_avatar_path}/" \
+          "${_SF_VOL}/seafile/seahub-data/avatars/"
+        info "Avatars copied."
+      else
+        info "No avatar directory found on remote — skipping."
+      fi
+
+      # Stage 5: Extract SECRET_KEY from remote config
+      info "Stage 5: Extracting SECRET_KEY from remote configuration..."
+      _EXISTING_KEY=""
+      if [[ -n "$_REMOTE_CONF" ]]; then
+        _EXISTING_KEY=$($_SSH_CMD "grep '^SECRET_KEY' '${_REMOTE_CONF}/seahub_settings.py' 2>/dev/null | head -1" 2>/dev/null || true)
+        # Parse: SECRET_KEY = "..." or SECRET_KEY = '...'
+        _EXISTING_KEY=$(echo "$_EXISTING_KEY" | sed "s/.*['\"]//;s/['\"].*//" | tr -d '[:space:]')
+      fi
+      if [[ -n "$_EXISTING_KEY" ]]; then
+        mkdir -p "${_SF_VOL}/seafile/conf"
+        echo "SECRET_KEY = \"${_EXISTING_KEY}\"" > "${_SF_VOL}/seafile/conf/seahub_settings.py"
+        info "SECRET_KEY preserved from remote configuration."
+      else
+        warn "Could not extract SECRET_KEY — a new key will be generated."
+        warn "Existing user sessions will be invalidated."
+      fi
+
+      # Stage 6: Start Seafile (sees imported data, skips setup-seafile-mysql.py)
+      info "Stage 6: Starting Seafile..."
+      COMPOSE_PROFILES="$COMPOSE_PROFILES" docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" up -d seafile 2>&1
+      sleep 10
+
+      # Stage 7: Start remaining containers
+      info "Stage 7: Starting remaining containers..."
+      COMPOSE_PROFILES="$COMPOSE_PROFILES" docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" up -d 2>&1
+      sleep 10
+
+      info "SSH migration complete."
+      ;;
+  esac
+
+  fi  # end install/migrate branch
 
   # Run config-fixes
   if [[ -f "/opt/seafile-config-fixes.sh" ]]; then
@@ -15795,14 +17079,92 @@ while true; do
       break
       ;;
     3)
+      echo -e "\n  ${CYAN}Starting Migration...${NC}\n"
+      sleep 0.5
+      if prompt_migration_type; then
+        # Migration type selected — run guided setup for target config
+        # The wizard configures storage, proxy, features etc. for the new deployment
+        check_env_and_configure
+
+        # Normalize .env
+        if [[ -f "$ENV_FILE" ]] && [[ -s "$ENV_FILE" ]]; then
+          _normalize_env "$ENV_FILE"
+        fi
+
+        # Secret generation + preflight
+        if [[ -f "$ENV_FILE" ]]; then
+          echo -e "  ${DIM}Configuration loaded from ${ENV_FILE}.${NC}"
+          echo ""
+          prompt_secret_generation "$ENV_FILE"
+          _load_env "$ENV_FILE"
+          preflight_env_check "$ENV_FILE"
+        else
+          echo -e "  ${YELLOW}No .env found at ${ENV_FILE}.${NC}"
+          echo -e "  ${DIM}This should not happen after guided setup. Please report this bug.${NC}"
+          echo ""
+          continue
+        fi
+
+        # Export migration variables for setup.sh
+        export SETUP_MODE=migrate
+        export MIGRATE_TYPE="${MIGRATE_TYPE}"
+        export MIGRATE_DUMP_DIR="${MIGRATE_DUMP_DIR:-}"
+        export MIGRATE_DATA_DIR="${MIGRATE_DATA_DIR:-}"
+        export MIGRATE_CONF_DIR="${MIGRATE_CONF_DIR:-}"
+        export MIGRATE_SSH_HOST="${MIGRATE_SSH_HOST:-}"
+        export MIGRATE_SSH_USER="${MIGRATE_SSH_USER:-}"
+        export MIGRATE_SSH_PORT="${MIGRATE_SSH_PORT:-22}"
+        export MIGRATE_SOURCE_TYPE="${MIGRATE_SOURCE_TYPE:-}"
+        export MIGRATE_REMOTE_DATA_DIR="${MIGRATE_REMOTE_DATA_DIR:-}"
+        export MIGRATE_REMOTE_CONF_DIR="${MIGRATE_REMOTE_CONF_DIR:-}"
+        export MIGRATE_REMOTE_DB="${MIGRATE_REMOTE_DB:-}"
+        export MIGRATE_REMOTE_DB_USER="${MIGRATE_REMOTE_DB_USER:-}"
+        export MIGRATE_REMOTE_DB_PASS="${MIGRATE_REMOTE_DB_PASS:-}"
+        export MIGRATE_REMOTE_DB_HOST="${MIGRATE_REMOTE_DB_HOST:-}"
+
+        run_embedded "setup.sh" extract_setup
+
+        # ── Post-migration health check ──────────────────────────────────
+        echo ""
+        echo -e "  ${DIM}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+        echo ""
+        echo -e "  ${GREEN}${BOLD}  ✓ Migration complete!${NC}"
+        echo ""
+        echo -e "  ${BOLD}  1  ${NC}Run health checks"
+        echo -e "     ${DIM}seafile status · seafile ping · seafile version${NC}"
+        echo ""
+        echo -e "  ${DIM}  2  Exit to terminal${NC}"
+        echo ""
+        echo -e "  ${DIM}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+        echo ""
+        echo -ne "  ${BOLD}Select [1/2] (default: 1):${NC} "
+        read -r _mig_health
+        _mig_health="${_mig_health:-1}"
+        echo ""
+        case "$_mig_health" in
+          1)
+            seafile status
+            seafile ping
+            seafile version
+            ;;
+          *)
+            echo -e "  ${DIM}Run 'seafile status' any time to check on your deployment.${NC}"
+            echo ""
+            ;;
+        esac
+        break
+      fi
+      # prompt_migration_type returned 1 (user chose Back) — loop to splash
+      ;;
+    4)
       play_snake
       ;;
-    q|Q)
+    0)
       echo -e "\n  ${DIM}Goodbye.${NC}\n"
       exit 0
       ;;
     *)
-      echo -e "  ${DIM}Invalid selection — try 1, 2, 3, or q.${NC}"
+      echo -e "  ${DIM}Invalid selection — try 0, 1, 2, 3, or 4.${NC}"
       sleep 1
       ;;
   esac

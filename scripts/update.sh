@@ -67,7 +67,7 @@ heading() { echo -e "\n${BOLD}${CYAN}==> $1${NC}"; }
 # ---------------------------------------------------------------------------
 # Deployment version
 # ---------------------------------------------------------------------------
-DEPLOY_VERSION="v4.1-alpha"
+DEPLOY_VERSION="v4.3-alpha"
 
 # ---------------------------------------------------------------------------
 # Colours (safe to re-source — just variable assignments)
@@ -1285,6 +1285,77 @@ SECHDR
   fi
 
   echo "$(date '+%Y-%m-%d %H:%M:%S')  ${key}=${value}" >> "$secrets_file"
+}
+
+# ---------------------------------------------------------------------------
+# Import database dumps — shared by recovery-finalize and migration.
+# Looks for .sql.gz or .sql files in the given directory matching each
+# Seafile database name. Supports both exact names (ccnet_db.sql.gz)
+# and timestamped names (ccnet_db_20260313_010000.sql.gz).
+# ---------------------------------------------------------------------------
+_import_db_dumps() {
+  local dump_dir="$1"
+  local root_pass="$2"
+  local db_method="${3:-internal}"  # "internal" = docker exec, "external" = mysql client
+
+  local _db_user="${SEAFILE_MYSQL_DB_USER:-seafile}"
+  local _db_host="${SEAFILE_MYSQL_DB_HOST:-seafile-db}"
+  local _db_port="${SEAFILE_MYSQL_DB_PORT:-3306}"
+
+  for db in \
+      "${SEAFILE_MYSQL_DB_CCNET_DB_NAME:-ccnet_db}" \
+      "${SEAFILE_MYSQL_DB_SEAFILE_DB_NAME:-seafile_db}" \
+      "${SEAFILE_MYSQL_DB_SEAHUB_DB_NAME:-seahub_db}"; do
+
+    # Find the dump file — try timestamped first (newest), then exact name
+    local dump_file=""
+    dump_file=$(ls -t "${dump_dir}/${db}_"*.sql.gz 2>/dev/null | head -1 || true)
+    [[ -z "$dump_file" ]] && dump_file=$(ls -t "${dump_dir}/${db}_"*.sql 2>/dev/null | head -1 || true)
+    [[ -z "$dump_file" ]] && dump_file=$(ls "${dump_dir}/${db}.sql.gz" 2>/dev/null || true)
+    [[ -z "$dump_file" ]] && dump_file=$(ls "${dump_dir}/${db}.sql" 2>/dev/null || true)
+
+    if [[ -z "$dump_file" ]]; then
+      warn "  No dump found for ${db} in ${dump_dir} — skipping."
+      continue
+    fi
+
+    info "  Importing ${db} from $(basename "$dump_file")..."
+
+    # Ensure target database exists
+    if [[ "$db_method" == "internal" ]]; then
+      docker exec seafile-db mysql -u root -p"${root_pass}" \
+        -e "CREATE DATABASE IF NOT EXISTS \`${db}\` CHARACTER SET utf8mb4;" 2>/dev/null
+    else
+      mysql -h "$_db_host" -P "$_db_port" -u root -p"${root_pass}" \
+        -e "CREATE DATABASE IF NOT EXISTS \`${db}\` CHARACTER SET utf8mb4;" 2>/dev/null
+    fi
+
+    # Import — handle both .sql.gz and .sql
+    local _import_ok=false
+    if [[ "$dump_file" == *.gz ]]; then
+      if [[ "$db_method" == "internal" ]]; then
+        gunzip -c "$dump_file" | docker exec -i seafile-db \
+          mysql -u root -p"${root_pass}" "$db" 2>/dev/null && _import_ok=true
+      else
+        gunzip -c "$dump_file" | mysql -h "$_db_host" -P "$_db_port" \
+          -u root -p"${root_pass}" "$db" 2>/dev/null && _import_ok=true
+      fi
+    else
+      if [[ "$db_method" == "internal" ]]; then
+        docker exec -i seafile-db mysql -u root -p"${root_pass}" "$db" \
+          < "$dump_file" 2>/dev/null && _import_ok=true
+      else
+        mysql -h "$_db_host" -P "$_db_port" -u root -p"${root_pass}" "$db" \
+          < "$dump_file" 2>/dev/null && _import_ok=true
+      fi
+    fi
+
+    if [[ "$_import_ok" == "true" ]]; then
+      info "  ✓ ${db} imported successfully."
+    else
+      warn "  ✗ Failed to import ${db} — check dump file and database access."
+    fi
+  done
 }
 
 ok()      { echo -e "${GREEN}  ✓${NC}  $1"; }

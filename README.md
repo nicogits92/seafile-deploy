@@ -1,4 +1,4 @@
-# nicogits92/seafile-deploy 13 v4.1-alpha
+# nicogits92/seafile-deploy 13 v4.3-alpha
 
 <details>
 <summary>📋 Quick Navigation — click to expand</summary>
@@ -34,8 +34,9 @@
 [Config History](#config-history) ·
 [Image Version Management](#image-version-management)
 
-**Disaster recovery & alternate setups**
+**Disaster recovery, migration & alternate setups**
 [Disaster Recovery](#disaster-recovery) ·
+[Migrating an Existing Seafile Instance](#migrating-an-existing-seafile-instance) ·
 [Portainer Integration](#portainer-integration) ·
 [Running on an Existing Docker Host](#running-on-an-existing-docker-host) ·
 [Reverse Proxy — Traefik, Caddy, or Others](#reverse-proxy---traefik-caddy-or-others) ·
@@ -149,10 +150,11 @@ Once deployed, a `seafile` command is available system-wide for all day-to-day m
 | `seafile metadata --enable-all` | Enable Extended Properties on all libraries |
 | `seafile secrets` | View generated secrets reference (masked by default) |
 | `seafile secrets --show` | View generated secrets in plaintext |
+| `seafile migrate` | Import data from an existing Seafile instance into the running stack |
 | `seafile update` | Apply `.env` changes, pull updated images, restart containers |
 | `seafile update --check` | Preview what changed in `.env` without applying anything |
-| `seafile logs` | Tail container logs (interactive picker) |
-| `seafile restart` | Restart a container or all (interactive picker) |
+| `seafile logs` | Tail container logs (interactive picker or `seafile logs collabora`) |
+| `seafile restart` | Restart a container or all (interactive picker or `seafile restart notifications`) |
 | `seafile fix` | Re-apply all Seafile config files from `.env` |
 | `seafile gc` | Run garbage collection interactively |
 | `seafile gc --status` | Show GC schedule, cron status, and last log tail |
@@ -686,7 +688,7 @@ wget -qO /root/seafile-deploy.sh https://raw.githubusercontent.com/nicogits92/se
   && chmod +x /root/seafile-deploy.sh && bash /root/seafile-deploy.sh
 ```
 
-The splash screen appears. Select **1 - Fresh Install**.
+The splash screen appears. Select **1 - Fresh Install** for a new deployment, **2 - Recovery Mode** to restore a lost VM, or **3 - Migrate / Adopt** to import data from an existing Seafile instance.
 
 ### Deployment mode
 
@@ -729,6 +731,8 @@ Once configuration is complete, the installer:
   2. Starts the Seafile container and waits for first-boot initialization to complete (database creation, table migrations, config file generation)
   3. Starts all remaining containers (Caddy, Redis, notification server, office suite, etc.)
 - Runs `seafile-config-fixes.sh` to apply your `.env` settings on top of Seafile's generated config
+
+When run in **migration mode** (option 3 on the splash screen), the deploy phase replaces the staged startup with a data import flow: database dumps are imported, file data is rsynced, and the SECRET_KEY is preserved from the source instance. See [Migrating an Existing Seafile Instance](#migrating-an-existing-seafile-instance) for details.
 
 A pre-run checklist appears before any changes are made. Press Enter to run with all steps selected.
 
@@ -879,17 +883,19 @@ All core containers should show `running`. The exact list depends on your config
 
 | Container | Role | Active when |
 |---|---|---|
-| `seafile-caddy` | Internal reverse proxy | Always |
-| `seafile-redis` | Cache | Always |
-| `seafile` | Core Seafile server | Always |
-| `seadoc` | SeaDoc collaborative editor | Always |
-| `notification-server` | Real-time notifications | Always |
-| `thumbnail-server` | Image/document previews | Always |
-| `seafile-metadata` | Extended file properties | Always |
-| `seafile-db` | Bundled MariaDB database | `DB_INTERNAL=true` |
-| `seafile-collabora` | Collabora Online | `OFFICE_SUITE=collabora` (default) |
-| `seafile-onlyoffice` | OnlyOffice | `OFFICE_SUITE=onlyoffice` |
-| `seafile-clamav` | ClamAV antivirus | `CLAMAV_ENABLED=true` |
+| Container | CLI name | Role | When active |
+|-----------|----------|------|-------------|
+| `seafile-caddy` | `caddy` | Internal reverse proxy | Always |
+| `seafile-redis` | `redis` | Cache | Always |
+| `seafile` | `seafile` | Core Seafile server | Always |
+| `seadoc` | `seadoc` | SeaDoc collaborative editor | Always |
+| `notification-server` | `notifications` | Real-time notifications | Always |
+| `thumbnail-server` | `thumbnails` | Image/document previews | Always |
+| `seafile-metadata` | `metadata` | Extended file properties | Always |
+| `seafile-db` | `db` | Bundled MariaDB database | `DB_INTERNAL=true` |
+| `seafile-collabora` | `collabora` | Collabora Online | `OFFICE_SUITE=collabora` (default) |
+| `seafile-onlyoffice` | `onlyoffice` | OnlyOffice | `OFFICE_SUITE=onlyoffice` |
+| `seafile-clamav` | `clamav` | ClamAV antivirus | `CLAMAV_ENABLED=true` |
 
 **Extended Properties:**
 
@@ -980,9 +986,9 @@ seafile <command> [args]
 |---|---|
 | `seafile status` | Container health table, storage mount status, and disk usage -- all in one view |
 | `seafile ping` | HTTP endpoint health check -- hits notification server, thumbnail server, and office suite. Reports response status for each |
-| `seafile logs [name]` | Tail container logs. Omit the name for an interactive picker |
-| `seafile restart [name]` | Restart one container, or all (with confirmation). Interactive picker if name omitted |
-| `seafile shell [name]` | Open a shell inside a container (bash, or sh for Alpine). Interactive picker if omitted |
+| `seafile logs [name]` | Tail container logs. Use simple names like `collabora`, `notifications`, `db`. Interactive picker if omitted |
+| `seafile restart [name]` | Restart one container, or all (with confirmation). Use simple names. Interactive picker if omitted |
+| `seafile shell [name]` | Open a shell inside a container (bash, or sh for Alpine). Use simple names. Interactive picker if omitted |
 | `seafile update` | Run `update.sh` -- apply `.env` changes and restart affected containers |
 | `seafile update --check` | Preview what has changed in `.env` since the last update, without applying anything |
 | `seafile config` | Interactive configuration editor -- menu-driven wizard with section navigation |
@@ -1000,6 +1006,7 @@ seafile <command> [args]
 | `seafile metadata --enable-all` | Enable Extended Properties on all existing libraries via API |
 | `seafile secrets` | View generated secrets reference — timestamps and key names (values masked) |
 | `seafile secrets --show` | View generated secrets in plaintext — for troubleshooting database access, credential recovery, etc. |
+| `seafile migrate` | Interactive wizard to import data from an existing Seafile instance — supports adopt-in-place, prepared backups, and SSH import from a remote server |
 | `seafile gc` | Run garbage collection now (respects `GC_DRY_RUN` from `.env`) |
 | `seafile gc --status` | Show GC schedule, cron status, and last log tail |
 | `seafile gc --dry-run` | Show what GC would collect without removing anything |
@@ -1029,7 +1036,7 @@ seafile update
 seafile logs
 
 # Restart a single container
-seafile restart notification-server
+seafile restart notifications
 
 # Check if any containers are running stale images
 seafile version
@@ -1304,6 +1311,141 @@ Beyond what this guide provides:
 - **Offsite `.env` copy:** Store your filled-in `.env` in a password manager or encrypted offsite location as a last resort if both VM and network share are lost -- in that scenario recovery mode cannot restore it automatically
 
 </details>
+
+---
+
+## Migrating an Existing Seafile Instance
+
+seafile-deploy can import data from an existing Seafile deployment — whether it was set up using this project, the official Seafile Docker documentation, or a manual package installation. Migration preserves all user accounts, libraries, file data, sharing links, and permissions.
+
+### When to use migration
+
+Use option 3 ("Migrate / Adopt Existing Seafile") on the splash screen when you want to:
+
+- Move from another server to a new VM managed by seafile-deploy
+- Move from a manual/package Seafile install to Docker
+- Adopt an existing Seafile instance already running on this machine — install seafile-deploy as the management layer without moving any data
+- Consolidate from an older Seafile version (Django migrations run automatically on startup)
+
+For post-install migration (data import into an already-running seafile-deploy stack), use `seafile migrate` from the CLI instead.
+
+### What gets migrated
+
+| Migrated | Regenerated by seafile-deploy |
+|----------|-------------------------------|
+| All libraries and file data (seafile-data/) | Config files (rebuilt from .env by config-fixes) |
+| All user accounts, groups, and permissions | Redis cache (rebuilds automatically) |
+| Sharing links and library settings | Search index (rebuilds automatically) |
+| SECRET_KEY (preserves sessions and encrypted data) | Caddyfile and docker-compose.yml |
+| User avatars and profile pictures | Cron jobs (GC, backups, DB snapshots) |
+
+### Prerequisites
+
+| Migration type | Requirements |
+|---------------|--------------|
+| **Adopt in place** | Seafile data and database already accessible on the target VM's storage volume |
+| **Prepared backup** | Database dump files (.sql.gz or .sql) and the Seafile data directory available on the target VM or a mount |
+| **SSH import** | SSH key-based access to the source server, the source Seafile instance can be running during migration |
+
+For SSH migration, set up key-based auth before starting:
+
+```bash
+ssh-copy-id -p 22 root@SOURCE_SERVER_IP
+```
+
+### Migration modes
+
+<details>
+<summary><strong>Adopt in place</strong></summary>
+
+Use this when Seafile is already running on this machine (or its data is already on the storage volume) and you want seafile-deploy to manage it going forward.
+
+The installer extracts the SECRET_KEY from the existing `seahub_settings.py`, installs all seafile-deploy infrastructure (Docker, CLI, background services, config-fixes), then starts the stack pointing at the existing data. No data is copied or moved.
+
+This works with both Docker and manual/package Seafile installations. For manual installs, ensure the data is at the path that will become `SEAFILE_VOLUME` (the installer's guided setup will ask for this).
+
+</details>
+
+<details>
+<summary><strong>Prepared backup</strong></summary>
+
+Use this when you have database dumps and a copy of the Seafile data directory available on the target VM.
+
+**Prepare the source (on the old server):**
+
+```bash
+# Dump databases
+mysqldump --single-transaction ccnet_db   | gzip > ccnet_db.sql.gz
+mysqldump --single-transaction seafile_db | gzip > seafile_db.sql.gz
+mysqldump --single-transaction seahub_db  | gzip > seahub_db.sql.gz
+
+# For Docker deployments, use docker exec:
+docker exec seafile-db mysqldump -u seafile -p'PASSWORD' --single-transaction ccnet_db | gzip > ccnet_db.sql.gz
+# (repeat for seafile_db and seahub_db)
+
+# Copy the data directory (the parent of seafile-data/)
+rsync -avz /path/to/seafile-volume/ TARGET_VM:/mnt/migration-source/
+# Copy dumps
+scp *.sql.gz TARGET_VM:/mnt/migration-source/dumps/
+```
+
+**On the target VM, run seafile-deploy.sh** and select option 3 → "Migrate from prepared backup". Point it at the dump directory and data directory. The installer handles the rest: imports databases, copies file data and avatars, preserves the SECRET_KEY, and applies your new .env configuration.
+
+</details>
+
+<details>
+<summary><strong>SSH import</strong></summary>
+
+Use this to pull everything directly from a running source server. The installer connects over SSH, auto-detects the Seafile installation (Docker or manual), dumps databases remotely, and rsyncs file data.
+
+**What the installer does:**
+
+1. Connects to the source via SSH and detects the installation type
+2. Reads database credentials from the source's `seafile.conf`
+3. Runs `mysqldump --single-transaction` for each database, piped through gzip over SSH
+4. Rsyncs `seafile-data/` from the source to the target volume
+5. Rsyncs avatars
+6. Extracts the SECRET_KEY from the source's `seahub_settings.py`
+7. Starts the local stack and applies config-fixes
+
+The source Seafile instance can remain running during migration. The database dump uses `--single-transaction` for a consistent snapshot without locking. After migration completes and you verify the new instance works, update DNS to point to the new server and shut down the old one.
+
+**Supported source types:**
+
+| Source | Detection method |
+|--------|-----------------|
+| Docker (seafile-deploy or official docs) | `docker inspect seafile` for volume path, `docker exec` for DB credentials |
+| Manual/package install | Searches `/opt/seafile/conf/` and `/opt/seafile/seafile/conf/` for `seahub_settings.py` |
+
+</details>
+
+### Post-install migration with `seafile migrate`
+
+If you already ran a fresh install and later decide to import data from an existing instance, use the CLI:
+
+```bash
+seafile migrate
+```
+
+This presents the same three options (adopt, prepared, SSH) but operates on the running stack — it stops the containers, imports the data, then restarts with config-fixes. Your existing .env settings are preserved.
+
+### Post-migration checklist
+
+After migration completes:
+
+1. Run `seafile ping` — all endpoints should be green
+2. Log in with an existing user account from the source instance
+3. Verify libraries and files are accessible
+4. Update DNS to point your domain at the new server
+5. Stop the old Seafile instance
+6. Run `seafile metadata --enable-all` to enable Extended Properties on migrated libraries
+
+### Limitations
+
+- **S3/Swift storage backends:** Only file-based block storage is supported. If the source uses S3 or Swift for `seafile-data`, you'll need to sync that storage separately and configure the backend in `.env`.
+- **SeaDoc documents:** May need reindexing after migration. Check SeaDoc logs if collaborative documents don't load.
+- **Custom themes and branding:** Visual customizations are not migrated. Reconfigure them via `.env` and config-fixes.
+- **Seafile version upgrades:** If migrating from an older Seafile version (e.g. 11.x → 13.x), Django migrations run automatically on first startup. This is generally safe but test with a copy first for production data.
 
 ---
 
@@ -1992,6 +2134,17 @@ seafile-deploy.sh → setup.sh
           └── Restarts containers
 ```
 
+**Migration (adopt / prepared / SSH):**
+```
+seafile-deploy.sh → setup.sh (SETUP_MODE=migrate)
+    ├── Phases 1-8: Same as fresh install (packages, Docker, storage, CLI)
+    ├── Deploy phase (varies by migration type):
+    │     ├── adopt:    Extract SECRET_KEY → start stack → config-fixes
+    │     ├── prepared: Start DB → import dumps → rsync data → start stack
+    │     └── ssh:      Start DB → SSH dump → SSH rsync → start stack
+    └── Run seafile-config-fixes.sh --yes (preserves SECRET_KEY)
+```
+
 **Day-to-day updates:**
 ```
 seafile update (user command)
@@ -2086,24 +2239,6 @@ The current Portainer integration lets Portainer manage the stack lifecycle (dep
 A bridge container approach was investigated: a sidecar that detects when Portainer injects new env vars, writes them back to `.env` on the host, and triggers config-fixes. This is technically possible but produces a degraded experience — every change triggers two full stack restarts (once by Portainer, once by config-fixes) with a confusing intermediate state where env vars and config files are mismatched.
 
 The cleaner solution is the Web Configuration Interface described above, which is purpose-built for this project's architecture. It understands the config generation layer, writes to `.env` correctly, and can trigger config-fixes directly for a single-restart experience. If implemented, it would replace the need for Portainer-based configuration entirely while still allowing Portainer to handle monitoring and stack lifecycle.
-
-#### Migrate Existing Seafile Instance
-
-A new option on the splash screen ("Migrate Existing Seafile") that imports an existing Seafile deployment — whether created using this project or the official Seafile documentation — into a fresh seafile-deploy installation.
-
-A Seafile instance consists of four components: file data (the seafile-data block storage directory), database (ccnet_db, seafile_db, seahub_db with all users, libraries, shares, and permissions), configuration (seahub_settings.py containing the critical SECRET_KEY), and user assets (avatars, custom logos). The migration flow would:
-
-1. Ask the user where the source Seafile is (local Docker, remote SSH, or pre-prepared dump + data directory)
-2. Run the normal fresh install wizard so the user configures their new deployment
-3. After the stack is up, import: `SECRET_KEY` from the source (preserves user sessions and API tokens), database via mysqldump/import, file data via rsync, and avatars
-4. Run config-fixes to apply the new `.env` settings on top of the imported data
-5. Verify: table count, file count, user count
-
-The `SECRET_KEY` preservation is critical — if it changes, all users get logged out and some encrypted fields become unreadable. Config-fixes already preserves existing SECRET_KEY if found, so this integrates naturally.
-
-For non-seafile-deploy sources (official Seafile installs), the main differences are config file paths (usually `/opt/seafile/conf/` vs our `${SEAFILE_VOLUME}/seafile/conf/`) and database access (local MySQL server vs Docker container). The migration wizard would detect the source type and adjust accordingly.
-
-Estimated effort: 400-600 lines across setup.template.sh (migration phase), shared-lib.sh (source detection, DB dump/import, rsync helpers), and guided-setup.sh (migration wizard). Recommend a dedicated implementation cycle with access to a test instance running an official Seafile deployment for validation.
 
 ---
 
@@ -2547,7 +2682,7 @@ All 8 container names are hardcoded in `docker-compose.yml`:
 | `seafile-onlyoffice` | OnlyOffice | `OFFICE_SUITE=onlyoffice` |
 | `seafile-clamav` | ClamAV antivirus | `CLAMAV_ENABLED=true` |
 
-**Why hardcoded:** The `seafile` CLI (`seafile-cli.sh`) references these names directly when running `seafile status`, `seafile ping`, `seafile logs`, `seafile restart`, `seafile shell`, and health checks. `update.sh` also references them for restart logic. If you rename a container here, you must update those scripts as well -- they will not pick up the change from `.env` automatically.
+**Why hardcoded:** The `seafile` CLI uses a name-mapping layer that translates simple names (like `collabora`, `notifications`, `db`) to Docker container names (like `seafile-collabora`, `notification-server`, `seafile-db`). You can use either the simple name or the full Docker name with any CLI command. If you rename a container in `docker-compose.yml`, update both the container name and the mapping in `seafile-cli.sh`.
 
 ### Internal service URLs
 

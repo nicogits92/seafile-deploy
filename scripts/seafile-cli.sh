@@ -59,6 +59,57 @@ CORE_CONTAINERS=(
   seafile-metadata
 )
 
+# --- Simple name mapping (user-facing ↔ Docker container name) ---------------
+# Users type simple names; Docker needs the full container name.
+declare -A _NAME_TO_CONTAINER=(
+  [caddy]=seafile-caddy
+  [redis]=seafile-redis
+  [seafile]=seafile
+  [seadoc]=seadoc
+  [notifications]=notification-server
+  [thumbnails]=thumbnail-server
+  [metadata]=seafile-metadata
+  [collabora]=seafile-collabora
+  [onlyoffice]=seafile-onlyoffice
+  [clamav]=seafile-clamav
+  [db]=seafile-db
+)
+declare -A _CONTAINER_TO_NAME=(
+  [seafile-caddy]=caddy
+  [seafile-redis]=redis
+  [seafile]=seafile
+  [seadoc]=seadoc
+  [notification-server]=notifications
+  [thumbnail-server]=thumbnails
+  [seafile-metadata]=metadata
+  [seafile-collabora]=collabora
+  [seafile-onlyoffice]=onlyoffice
+  [seafile-clamav]=clamav
+  [seafile-db]=db
+)
+
+# Resolve a user-provided name to a Docker container name.
+# Accepts both simple names ("collabora") and full names ("seafile-collabora").
+_resolve_container() {
+  local input="$1"
+  # Try simple name first
+  if [[ -n "${_NAME_TO_CONTAINER[$input]:-}" ]]; then
+    echo "${_NAME_TO_CONTAINER[$input]}"
+    return 0
+  fi
+  # Try as a literal container name
+  for _cn in "${CONTAINERS[@]}"; do
+    [[ "$_cn" == "$input" ]] && echo "$_cn" && return 0
+  done
+  return 1
+}
+
+# Get the simple display name for a container
+_display_name() {
+  local cn="$1"
+  echo "${_CONTAINER_TO_NAME[$cn]:-$cn}"
+}
+
 # --- Safe .env loader --------------------------------------------------------
 _load_env() {
   local env_file="${1:-/opt/seafile/.env}"
@@ -100,7 +151,8 @@ pick_container() {
     local colour="$NC"
     [[ "$status" == "running" ]] && colour="$GREEN"
     [[ "$status" == "exited"  ]] && colour="$RED"
-    printf "  ${BOLD}%2d${NC}  %-28s ${colour}%s${NC}\n" "$i" "$c" "$status"
+    local _dname=$(_display_name "$c")
+    printf "  ${BOLD}%2d${NC}  %-28s ${colour}%s${NC}\n" "$i" "$_dname" "$status"
     (( i++ ))
   done
   if [[ "$include_all" == "true" ]]; then
@@ -141,7 +193,8 @@ cmd_status() {
     [[ "$status" == "running" ]] && colour="$GREEN"
     [[ "$status" == "exited"  ]] && colour="$RED"
     [[ "$status" == "not found" ]] && colour="$DIM"
-    printf "  %-28s ${colour}%-12s${NC} %-8s %s\n" "$c" "$status" "$uptime" "$image"
+    local _dname=$(_display_name "$c")
+    printf "  %-28s ${colour}%-12s${NC} %-8s %s\n" "$_dname" "$status" "$uptime" "$image"
   done
 
   echo ""
@@ -201,12 +254,13 @@ cmd_ping() {
     local response http_code body
     response=$(curl -sk --max-time 8 -H "Host: ${host_hdr}" -w "\n%{http_code}" "$url" 2>/dev/null || true)
     http_code=$(echo "$response" | tail -1)
-    body=$(echo "$response" | head -1 || true)
+    body=$(echo "$response" | sed '$d')
     if echo "$body" | grep -qF "$expect"; then
       ok "${label}  ${DIM}(HTTP ${http_code})${NC}"
     else
+      local preview=$(echo "$body" | head -1)
       err "${label}  ${DIM}(HTTP ${http_code} — expected: ${expect})${NC}"
-      echo -e "    ${DIM}Response: ${body:0:120}${NC}"
+      echo -e "    ${DIM}Response: ${preview:0:120}${NC}"
       all_ok=false
     fi
   }
@@ -224,7 +278,7 @@ cmd_ping() {
       echo -e "  ${DIM}  To add document editing later, run: seafile config office${NC}"
       ;;
     *)
-      _ping_check "Collabora (discovery)   " "${base}/hosting/discovery" "proof-key"
+      _ping_check "Collabora (discovery)   " "${base}/hosting/discovery" "</wopi-discovery>"
       ;;
   esac
   echo ""
@@ -233,12 +287,12 @@ cmd_ping() {
     echo -e "  ${GREEN}${BOLD}  All endpoints responding.${NC}"
   else
     echo -e "  ${YELLOW}${BOLD}  Some endpoints did not respond — check container logs.${NC}"
-    echo -e "  ${DIM}  seafile logs notification-server${NC}"
-    echo -e "  ${DIM}  seafile logs thumbnail-server${NC}"
+    echo -e "  ${DIM}  seafile logs notifications${NC}"
+    echo -e "  ${DIM}  seafile logs thumbnails${NC}"
     case "${OFFICE_SUITE:-collabora}" in
-      onlyoffice) echo -e "  ${DIM}  seafile logs seafile-onlyoffice${NC}" ;;
+      onlyoffice) echo -e "  ${DIM}  seafile logs onlyoffice${NC}" ;;
       none)       ;;
-      *)          echo -e "  ${DIM}  seafile logs seafile-collabora${NC}"  ;;
+      *)          echo -e "  ${DIM}  seafile logs collabora${NC}"  ;;
     esac
   fi
   echo ""
@@ -250,8 +304,11 @@ cmd_logs() {
   if [[ -z "$target" ]]; then
     pick_container "Which container?" || return 0
     target="$PICKED"
+  else
+    target=$(_resolve_container "$target") || { err "Unknown container: $1"; return 1; }
   fi
-  echo -e "\n  ${DIM}Tailing logs for ${BOLD}${target}${NC}${DIM} — Ctrl+C to stop${NC}\n"
+  local _dname=$(_display_name "$target")
+  echo -e "\n  ${DIM}Tailing logs for ${BOLD}${_dname}${NC}${DIM} — Ctrl+C to stop${NC}\n"
   docker logs --tail 50 -f "$target"
 }
 
@@ -261,6 +318,8 @@ cmd_restart() {
   if [[ -z "$target" ]]; then
     pick_container "Which container to restart?" "true" || return 0
     target="$PICKED"
+  elif [[ "$target" != "all" ]]; then
+    target=$(_resolve_container "$target") || { err "Unknown container: $1"; return 1; }
   fi
   if [[ "$target" == "all" ]]; then
     echo ""
@@ -268,10 +327,12 @@ cmd_restart() {
     [[ ! "$confirm" =~ ^[yY] ]] && { info "Cancelled."; return 0; }
     echo ""
     for c in "${CONTAINERS[@]}"; do
-      docker restart "$c" &>/dev/null && ok "Restarted $c" || warn "Could not restart $c"
+      local _dn=$(_display_name "$c")
+      docker restart "$c" &>/dev/null && ok "Restarted ${_dn}" || warn "Could not restart ${_dn}"
     done
   else
-    docker restart "$target" &>/dev/null && ok "Restarted $target" || err "Failed to restart $target"
+    local _dn=$(_display_name "$target")
+    docker restart "$target" &>/dev/null && ok "Restarted ${_dn}" || err "Failed to restart ${_dn}"
   fi
   echo ""
 }
@@ -282,8 +343,11 @@ cmd_shell() {
   if [[ -z "$target" ]]; then
     pick_container "Which container?" || return 0
     target="$PICKED"
+  else
+    target=$(_resolve_container "$target") || { err "Unknown container: $1"; return 1; }
   fi
-  echo -e "\n  ${DIM}Opening shell in ${BOLD}${target}${NC}${DIM} — type 'exit' to return${NC}\n"
+  local _dname=$(_display_name "$target")
+  echo -e "\n  ${DIM}Opening shell in ${BOLD}${_dname}${NC}${DIM} — type 'exit' to return${NC}\n"
   # Try bash first, fall back to sh (Alpine containers use sh)
   docker exec -it "$target" bash 2>/dev/null || docker exec -it "$target" sh
 }
@@ -2536,6 +2600,435 @@ cmd_secrets() {
   echo ""
 }
 
+# --- Command: migrate ---------------------------------------------------------
+# Post-install migration: import data from an existing Seafile instance into
+# a running seafile-deploy stack. Stops the stack, imports, restarts.
+# ---------------------------------------------------------------------------
+
+# DB import helper (same logic as shared-lib _import_db_dumps)
+_cli_import_db_dumps() {
+  local dump_dir="$1" root_pass="$2" db_method="${3:-internal}"
+  local _db_host="${SEAFILE_MYSQL_DB_HOST:-seafile-db}"
+  local _db_port="${SEAFILE_MYSQL_DB_PORT:-3306}"
+
+  for db in \
+      "${SEAFILE_MYSQL_DB_CCNET_DB_NAME:-ccnet_db}" \
+      "${SEAFILE_MYSQL_DB_SEAFILE_DB_NAME:-seafile_db}" \
+      "${SEAFILE_MYSQL_DB_SEAHUB_DB_NAME:-seahub_db}"; do
+
+    local dump_file=""
+    dump_file=$(ls -t "${dump_dir}/${db}_"*.sql.gz 2>/dev/null | head -1 || true)
+    [[ -z "$dump_file" ]] && dump_file=$(ls -t "${dump_dir}/${db}_"*.sql 2>/dev/null | head -1 || true)
+    [[ -z "$dump_file" ]] && dump_file=$(ls "${dump_dir}/${db}.sql.gz" 2>/dev/null || true)
+    [[ -z "$dump_file" ]] && dump_file=$(ls "${dump_dir}/${db}.sql" 2>/dev/null || true)
+
+    if [[ -z "$dump_file" ]]; then
+      warn "No dump found for ${db} — skipping."
+      continue
+    fi
+
+    echo -e "  ${DIM}Importing ${db} from $(basename "$dump_file")...${NC}"
+
+    # Ensure target database exists
+    if [[ "$db_method" == "internal" ]]; then
+      docker exec seafile-db mysql -u root -p"${root_pass}" \
+        -e "CREATE DATABASE IF NOT EXISTS \`${db}\` CHARACTER SET utf8mb4;" 2>/dev/null
+    else
+      mysql -h "$_db_host" -P "$_db_port" -u root -p"${root_pass}" \
+        -e "CREATE DATABASE IF NOT EXISTS \`${db}\` CHARACTER SET utf8mb4;" 2>/dev/null
+    fi
+
+    local _ok=false
+    if [[ "$dump_file" == *.gz ]]; then
+      if [[ "$db_method" == "internal" ]]; then
+        gunzip -c "$dump_file" | docker exec -i seafile-db \
+          mysql -u root -p"${root_pass}" "$db" 2>/dev/null && _ok=true
+      else
+        gunzip -c "$dump_file" | mysql -h "$_db_host" -P "$_db_port" \
+          -u root -p"${root_pass}" "$db" 2>/dev/null && _ok=true
+      fi
+    else
+      if [[ "$db_method" == "internal" ]]; then
+        docker exec -i seafile-db mysql -u root -p"${root_pass}" "$db" \
+          < "$dump_file" 2>/dev/null && _ok=true
+      else
+        mysql -h "$_db_host" -P "$_db_port" -u root -p"${root_pass}" "$db" \
+          < "$dump_file" 2>/dev/null && _ok=true
+      fi
+    fi
+
+    if [[ "$_ok" == "true" ]]; then
+      ok "${db} imported."
+    else
+      err "Failed to import ${db}."
+    fi
+  done
+}
+
+cmd_migrate() {
+  heading "Migrate / Import Data"
+
+  echo -e "  ${YELLOW}This will stop the running Seafile stack, import data from an${NC}"
+  echo -e "  ${YELLOW}existing instance, then restart with the imported data.${NC}"
+  echo ""
+  echo -e "  ${DIM}Your current .env settings (hostname, proxy, features) will be${NC}"
+  echo -e "  ${DIM}preserved. Only file data, databases, and user accounts are imported.${NC}"
+  echo ""
+  rule
+  echo ""
+
+  echo -e "  ${GREEN}${BOLD}  1  ${NC}${BOLD}Adopt in place${NC}"
+  echo -e "     ${DIM}Data and database already exist on the current volume.${NC}"
+  echo -e "     ${DIM}Just restart and let config-fixes take over.${NC}"
+  echo ""
+  echo -e "  ${CYAN}${BOLD}  2  ${NC}${BOLD}Import from prepared backup${NC}"
+  echo -e "     ${DIM}Database dumps (.sql.gz) and data directory on this machine.${NC}"
+  echo ""
+  echo -e "  ${YELLOW}${BOLD}  3  ${NC}${BOLD}Import from remote server (SSH)${NC}"
+  echo -e "     ${DIM}Dump and copy from a running Seafile server over SSH.${NC}"
+  echo ""
+  echo -e "  ${DIM}  0  Cancel${NC}"
+  echo ""
+
+  local _choice
+  while true; do
+    read -r -p "  Select [0-3]: " _choice
+    case "$_choice" in 0|1|2|3) break ;; *) echo -e "  ${DIM}Enter 0, 1, 2, or 3.${NC}" ;; esac
+  done
+  [[ "$_choice" == "0" ]] && return
+
+  # Get root password for DB operations
+  local _root_pass=""
+  local _secrets_file="/opt/seafile/.secrets"
+  if [[ "${DB_INTERNAL:-true}" == "true" ]]; then
+    # Try to find root password from secrets file
+    if [[ -f "$_secrets_file" ]]; then
+      _root_pass=$(grep 'INIT_SEAFILE_MYSQL_ROOT_PASSWORD=' "$_secrets_file" | tail -1 | cut -d= -f2-)
+    fi
+    # Try docker inspect as fallback
+    if [[ -z "$_root_pass" ]]; then
+      _root_pass=$(docker inspect seafile-db --format '{{range .Config.Env}}{{println .}}{{end}}' 2>/dev/null \
+        | grep MYSQL_ROOT_PASSWORD | cut -d= -f2)
+    fi
+    if [[ -z "$_root_pass" ]]; then
+      echo -ne "  ${BOLD}Database root password${NC}: "
+      read -rs _root_pass
+      echo ""
+    fi
+  fi
+
+  local _sf_vol="${SEAFILE_VOLUME:-/opt/seafile-data}"
+
+  case "$_choice" in
+    # ── Adopt in place ────────────────────────────────────────────────────
+    1)
+      heading "Adopt in place"
+
+      # Extract SECRET_KEY before restart
+      local _key=""
+      for _kf in "${_sf_vol}/seafile/conf/seahub_settings.py" "${_sf_vol}/conf/seahub_settings.py"; do
+        if [[ -f "$_kf" ]]; then
+          _key=$(grep "^SECRET_KEY" "$_kf" 2>/dev/null | head -1 | cut -d'"' -f2 | cut -d"'" -f2)
+          [[ -n "$_key" ]] && break
+        fi
+      done
+
+      if [[ -n "$_key" ]]; then
+        ok "SECRET_KEY found — sessions will be preserved."
+      else
+        warn "No SECRET_KEY found — a new one will be generated."
+      fi
+
+      echo ""
+      echo -e "  ${DIM}Restarting stack with config-fixes...${NC}"
+      if [[ -f "/opt/seafile-config-fixes.sh" ]]; then
+        bash /opt/seafile-config-fixes.sh --yes
+        ok "Stack restarted with seafile-deploy configuration."
+      else
+        err "config-fixes not found at /opt/seafile-config-fixes.sh"
+      fi
+      ;;
+
+    # ── Prepared backup ───────────────────────────────────────────────────
+    2)
+      heading "Import from prepared backup"
+
+      # Collect dump directory
+      local _dump_dir=""
+      while true; do
+        echo -ne "  ${BOLD}Database dumps directory${NC}: "
+        read -r _dump_dir
+        _dump_dir="${_dump_dir%/}"
+        if [[ -d "$_dump_dir" ]]; then
+          local _cnt=$(ls "$_dump_dir"/*.sql* 2>/dev/null | wc -l)
+          echo -e "  ${DIM}Found ${_cnt} dump file(s).${NC}"
+          break
+        fi
+        echo -e "  ${RED}Directory not found.${NC}"
+      done
+
+      # Collect data directory
+      local _data_dir=""
+      echo ""
+      echo -ne "  ${BOLD}Seafile data directory${NC} (containing seafile-data/): "
+      read -r _data_dir
+      _data_dir="${_data_dir%/}"
+
+      # Confirm
+      echo ""
+      echo -e "  ${YELLOW}This will stop the stack and replace the database.${NC}"
+      echo -ne "  ${BOLD}Continue? [y/N]:${NC} "
+      read -r _confirm
+      [[ "${_confirm,,}" != "y" ]] && echo -e "  ${DIM}Cancelled.${NC}" && return
+
+      # Stop stack
+      echo ""
+      echo -e "  ${DIM}Stopping stack...${NC}"
+      docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" down 2>/dev/null
+
+      # Start DB only
+      if [[ "${DB_INTERNAL:-true}" == "true" ]]; then
+        echo -e "  ${DIM}Starting database...${NC}"
+        _compute_compose_profiles
+        COMPOSE_PROFILES="$_PROFILES" docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" up -d seafile-db 2>&1
+        sleep 10
+      fi
+
+      # Import DB
+      echo -e "  ${DIM}Importing databases...${NC}"
+      _cli_import_db_dumps "$_dump_dir" "$_root_pass" \
+        "$([[ "${DB_INTERNAL:-true}" == "true" ]] && echo "internal" || echo "external")"
+
+      # Copy data
+      if [[ -n "$_data_dir" && -d "${_data_dir}/seafile-data" ]]; then
+        echo -e "  ${DIM}Copying file data...${NC}"
+        rsync -a --info=progress2 "${_data_dir}/seafile-data/" "${_sf_vol}/seafile-data/"
+        ok "File data copied."
+      fi
+
+      # Copy avatars
+      for _av in "${_data_dir}/seafile/seahub-data/avatars" "${_data_dir}/seahub-data/avatars"; do
+        if [[ -d "$_av" ]]; then
+          mkdir -p "${_sf_vol}/seafile/seahub-data/avatars"
+          rsync -a "$_av/" "${_sf_vol}/seafile/seahub-data/avatars/"
+          ok "Avatars copied."
+          break
+        fi
+      done
+
+      # SECRET_KEY
+      local _conf_dir=""
+      [[ -f "${_data_dir}/seafile/conf/seahub_settings.py" ]] && _conf_dir="${_data_dir}/seafile/conf"
+      [[ -f "${_data_dir}/conf/seahub_settings.py" ]] && _conf_dir="${_data_dir}/conf"
+      if [[ -n "$_conf_dir" ]]; then
+        local _key=$(grep "^SECRET_KEY" "${_conf_dir}/seahub_settings.py" 2>/dev/null | head -1 | cut -d'"' -f2 | cut -d"'" -f2)
+        if [[ -n "$_key" ]]; then
+          mkdir -p "${_sf_vol}/seafile/conf"
+          echo "SECRET_KEY = \"${_key}\"" > "${_sf_vol}/seafile/conf/seahub_settings.py"
+          ok "SECRET_KEY preserved."
+        fi
+      fi
+
+      # Restart with config-fixes
+      echo -e "  ${DIM}Applying configuration and starting stack...${NC}"
+      if [[ -f "/opt/seafile-config-fixes.sh" ]]; then
+        bash /opt/seafile-config-fixes.sh --yes
+      fi
+      _compute_compose_profiles
+      COMPOSE_PROFILES="$_PROFILES" docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" up -d 2>&1
+      ok "Migration complete. Run: seafile ping"
+      ;;
+
+    # ── SSH import ────────────────────────────────────────────────────────
+    3)
+      heading "Import from remote server (SSH)"
+
+      # Collect SSH details
+      local _ssh_host _ssh_user _ssh_port
+      echo -ne "  ${BOLD}SSH host${NC}: "
+      read -r _ssh_host
+      echo -ne "  ${BOLD}SSH user${NC} [root]: "
+      read -r _ssh_user; _ssh_user="${_ssh_user:-root}"
+      echo -ne "  ${BOLD}SSH port${NC} [22]: "
+      read -r _ssh_port; _ssh_port="${_ssh_port:-22}"
+
+      local _ssh_cmd="ssh -o ConnectTimeout=30 -o ServerAliveInterval=60 -p ${_ssh_port} ${_ssh_user}@${_ssh_host}"
+
+      # Test connection
+      echo ""
+      echo -e "  ${DIM}Testing SSH connection...${NC}"
+      if ! $_ssh_cmd "echo ok" &>/dev/null; then
+        err "Cannot connect to ${_ssh_user}@${_ssh_host}:${_ssh_port}"
+        echo -e "  ${DIM}Ensure SSH key auth is configured:${NC}"
+        echo -e "    ${DIM}ssh-copy-id -p ${_ssh_port} ${_ssh_user}@${_ssh_host}${NC}"
+        return 1
+      fi
+      ok "Connected."
+
+      # Auto-detect remote Seafile
+      echo -e "  ${DIM}Detecting remote Seafile installation...${NC}"
+      local _remote_data="" _remote_conf="" _remote_db_type="" _remote_db_user="" _remote_db_pass=""
+
+      # Docker?
+      _remote_data=$($_ssh_cmd "docker inspect seafile --format '{{range .Mounts}}{{if eq .Destination \"/shared\"}}{{.Source}}{{end}}{{end}}'" 2>/dev/null || true)
+      if [[ -n "$_remote_data" ]]; then
+        ok "Docker deployment at ${_remote_data}"
+        _remote_conf="${_remote_data}/seafile/conf"
+        _remote_db_type="docker"
+        _remote_db_user=$($_ssh_cmd "docker exec seafile grep -oP 'user\s*=\s*\K.*' /opt/seafile/conf/seafile.conf 2>/dev/null | head -1" || true)
+        _remote_db_pass=$($_ssh_cmd "docker exec seafile grep -oP 'password\s*=\s*\K.*' /opt/seafile/conf/seafile.conf 2>/dev/null | head -1" || true)
+      else
+        # Manual install
+        for _tp in "/opt/seafile/conf" "/opt/seafile/seafile/conf"; do
+          if $_ssh_cmd "test -f ${_tp}/seahub_settings.py" 2>/dev/null; then
+            _remote_conf="$_tp"
+            break
+          fi
+        done
+        if [[ -n "$_remote_conf" ]]; then
+          local _dd=$($_ssh_cmd "grep -oP 'dir\s*=\s*\K.*' ${_remote_conf}/seafile.conf 2>/dev/null | head -1" || true)
+          _remote_data=$(dirname "${_dd:-/opt/seafile/seafile-data}")
+          ok "Manual install at ${_remote_data}"
+          _remote_db_type="local"
+          _remote_db_user=$($_ssh_cmd "grep -oP 'user\s*=\s*\K.*' ${_remote_conf}/seafile.conf 2>/dev/null | head -1" || true)
+          _remote_db_pass=$($_ssh_cmd "grep -oP 'password\s*=\s*\K.*' ${_remote_conf}/seafile.conf 2>/dev/null | head -1" || true)
+        else
+          err "Could not detect Seafile on remote server."
+          return 1
+        fi
+      fi
+      _remote_db_user="${_remote_db_user:-seafile}"
+
+      if [[ -z "$_remote_db_pass" ]]; then
+        echo -ne "  ${BOLD}Remote database password${NC}: "
+        read -rs _remote_db_pass; echo ""
+      fi
+
+      local _data_size=$($_ssh_cmd "du -sh ${_remote_data}/seafile-data 2>/dev/null | cut -f1" || true)
+      [[ -n "$_data_size" ]] && echo -e "  ${DIM}Remote data size: ${_data_size}${NC}"
+      echo ""
+
+      # Confirm
+      echo -e "  ${YELLOW}This will stop the local stack and replace the database.${NC}"
+      echo -ne "  ${BOLD}Continue? [y/N]:${NC} "
+      read -r _confirm
+      [[ "${_confirm,,}" != "y" ]] && echo -e "  ${DIM}Cancelled.${NC}" && return
+
+      # Stop stack
+      echo ""
+      echo -e "  ${DIM}Stopping stack...${NC}"
+      docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" down 2>/dev/null
+
+      # Start DB only
+      if [[ "${DB_INTERNAL:-true}" == "true" ]]; then
+        echo -e "  ${DIM}Starting database...${NC}"
+        _compute_compose_profiles
+        COMPOSE_PROFILES="$_PROFILES" docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" up -d seafile-db 2>&1
+        sleep 10
+      fi
+
+      # Dump + import databases
+      echo -e "  ${DIM}Dumping remote databases...${NC}"
+      local _tmp_dumps=$(mktemp -d /tmp/seafile-cli-migrate.XXXXXX)
+
+      for _rdb in \
+          "${SEAFILE_MYSQL_DB_CCNET_DB_NAME:-ccnet_db}" \
+          "${SEAFILE_MYSQL_DB_SEAFILE_DB_NAME:-seafile_db}" \
+          "${SEAFILE_MYSQL_DB_SEAHUB_DB_NAME:-seahub_db}"; do
+
+        echo -e "  ${DIM}  Dumping ${_rdb}...${NC}"
+        case "$_remote_db_type" in
+          docker)
+            $_ssh_cmd "docker exec seafile-db mysqldump \
+              -u '${_remote_db_user}' -p'${_remote_db_pass}' \
+              --single-transaction --quick '${_rdb}'" \
+              2>/dev/null | gzip > "${_tmp_dumps}/${_rdb}.sql.gz"
+            ;;
+          *)
+            $_ssh_cmd "mysqldump \
+              -u '${_remote_db_user}' -p'${_remote_db_pass}' \
+              --single-transaction --quick '${_rdb}'" \
+              2>/dev/null | gzip > "${_tmp_dumps}/${_rdb}.sql.gz"
+            ;;
+        esac
+
+        local _sz=$(stat -c%s "${_tmp_dumps}/${_rdb}.sql.gz" 2>/dev/null || echo "0")
+        if [[ "$_sz" -gt 100 ]]; then
+          ok "${_rdb} dumped ($(du -h "${_tmp_dumps}/${_rdb}.sql.gz" | cut -f1))"
+        else
+          warn "${_rdb} dump appears empty."
+        fi
+      done
+
+      echo -e "  ${DIM}Importing into local database...${NC}"
+      _cli_import_db_dumps "$_tmp_dumps" "$_root_pass" \
+        "$([[ "${DB_INTERNAL:-true}" == "true" ]] && echo "internal" || echo "external")"
+      rm -rf "$_tmp_dumps"
+
+      # Rsync file data
+      echo -e "  ${DIM}Copying file data from remote (this may take a while)...${NC}"
+      mkdir -p "${_sf_vol}/seafile-data"
+      if $_ssh_cmd "test -d '${_remote_data}/seafile-data'" 2>/dev/null; then
+        rsync -avz --info=progress2 \
+          -e "ssh -o ConnectTimeout=30 -o ServerAliveInterval=60 -p ${_ssh_port}" \
+          "${_ssh_user}@${_ssh_host}:${_remote_data}/seafile-data/" \
+          "${_sf_vol}/seafile-data/"
+        ok "File data copied."
+      else
+        warn "Remote seafile-data not found."
+      fi
+
+      # Avatars
+      for _av_remote in "${_remote_data}/seafile/seahub-data/avatars" "${_remote_data}/seahub-data/avatars"; do
+        if $_ssh_cmd "test -d '${_av_remote}'" 2>/dev/null; then
+          mkdir -p "${_sf_vol}/seafile/seahub-data/avatars"
+          rsync -avz \
+            -e "ssh -o ConnectTimeout=30 -o ServerAliveInterval=60 -p ${_ssh_port}" \
+            "${_ssh_user}@${_ssh_host}:${_av_remote}/" \
+            "${_sf_vol}/seafile/seahub-data/avatars/"
+          ok "Avatars copied."
+          break
+        fi
+      done
+
+      # SECRET_KEY
+      if [[ -n "$_remote_conf" ]]; then
+        local _key=$($_ssh_cmd "grep '^SECRET_KEY' '${_remote_conf}/seahub_settings.py' 2>/dev/null | head -1" 2>/dev/null || true)
+        _key=$(echo "$_key" | sed "s/.*['\"]//;s/['\"].*//" | tr -d '[:space:]')
+        if [[ -n "$_key" ]]; then
+          mkdir -p "${_sf_vol}/seafile/conf"
+          echo "SECRET_KEY = \"${_key}\"" > "${_sf_vol}/seafile/conf/seahub_settings.py"
+          ok "SECRET_KEY preserved."
+        fi
+      fi
+
+      # Restart with config-fixes
+      echo -e "  ${DIM}Applying configuration and starting stack...${NC}"
+      if [[ -f "/opt/seafile-config-fixes.sh" ]]; then
+        bash /opt/seafile-config-fixes.sh --yes
+      fi
+      _compute_compose_profiles
+      COMPOSE_PROFILES="$_PROFILES" docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" up -d 2>&1
+      ok "SSH migration complete. Run: seafile ping"
+      ;;
+  esac
+
+  echo ""
+}
+
+# Helper to compute compose profiles in CLI context
+_compute_compose_profiles() {
+  local _p=()
+  case "${OFFICE_SUITE:-collabora}" in
+    onlyoffice) _p+=(onlyoffice) ;;
+    none)       ;;
+    *)          _p+=(collabora)  ;;
+  esac
+  [[ "${CLAMAV_ENABLED:-false}" == "true" ]] && _p+=(clamav)
+  [[ "${DB_INTERNAL:-true}" == "true" ]] && _p+=(internal-db)
+  _PROFILES=$(IFS=','; echo "${_p[*]}")
+}
+
 cmd_version() {
   heading "Image Versions"
 
@@ -2571,7 +3064,7 @@ cmd_version() {
       colour="$YELLOW"  # running but tag differs from .env
     fi
 
-    printf "  %-28s ${colour}%-36s${NC} %s\n" "$c" "$running" "$env_val"
+    printf "  %-28s ${colour}%-36s${NC} %s\n" "$(_display_name "$c")" "$running" "$env_val"
   done
   echo ""
   echo -e "  ${DIM}Yellow = container running a different tag than .env — run ${BOLD}seafile update${NC}${DIM} to reconcile.${NC}\n"
@@ -2704,6 +3197,7 @@ cmd_help() {
   printf "  ${BOLD}%-24s${NC} %s\n" "metadata --enable-all" "Enable Extended Properties on all libraries"
   printf "  ${BOLD}%-24s${NC} %s\n" "secrets"             "View generated secrets reference (masked)"
   printf "  ${BOLD}%-24s${NC} %s\n" "secrets --show"      "View generated secrets in plaintext"
+  printf "  ${BOLD}%-24s${NC} %s\n" "migrate"             "Import data from an existing Seafile instance"
   printf "  ${BOLD}%-24s${NC} %s\n" "version"             "Show running image tags vs .env values"
   printf "  ${BOLD}%-24s${NC} %s\n" "gc"                  "Run garbage collection"
   printf "  ${BOLD}%-24s${NC} %s\n" "gc --status"         "Show GC schedule, last run, and log tail"
@@ -2736,6 +3230,7 @@ case "$CMD" in
   metadata) cmd_metadata "$@" ;;
   version) cmd_version ;;
   secrets) cmd_secrets "$@" ;;
+  migrate) cmd_migrate ;;
   gitops)  cmd_gitops ;;
   gc)      cmd_gc "$@" ;;
   help|--help|-h) cmd_help ;;

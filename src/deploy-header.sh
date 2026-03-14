@@ -23,8 +23,9 @@
 # What it does:
 #   1  Fresh Install   — runs install-dependencies.sh
 #   2  Recovery Mode   — runs recover.sh
-#   3  Have Fun        — Snake
-#   q  Quit
+#   3  Migrate / Adopt — runs migrate flow
+#   4  Have Fun        — Snake
+#   0  Quit
 # =============================================================================
 
 set -euo pipefail
@@ -83,14 +84,17 @@ show_splash() {
   echo -e "  ${YELLOW}${BOLD}  2  ${NC}${BOLD}Recovery Mode${NC}"
   echo -e "     ${DIM}Restore a lost VM from an existing NFS share${NC}"
   echo ""
-  echo -e "  ${PURPLE}${BOLD}  3  ${NC}${BOLD}Have Fun${NC}"
+  echo -e "  ${CYAN}${BOLD}  3  ${NC}${BOLD}Migrate / Adopt Existing Seafile${NC}"
+  echo -e "     ${DIM}Import data from another server or adopt an existing instance${NC}"
+  echo ""
+  echo -e "  ${PURPLE}${BOLD}  4  ${NC}${BOLD}Have Fun${NC}"
   echo -e "     ${DIM}Take a break · while you still can${NC}"
   echo ""
-  echo -e "  ${DIM}  q  Quit${NC}"
+  echo -e "  ${DIM}  0  Quit${NC}"
   echo ""
   echo -e "  ${DIM}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
   echo ""
-  echo -ne "  ${BOLD}Select [1/2/3/q]:${NC} "
+  echo -ne "  ${BOLD}Select [0-4]:${NC} "
 }
 
 # ---------------------------------------------------------------------------
@@ -465,3 +469,275 @@ prompt_storage_config() {
   echo ""
 }
 
+
+# ---------------------------------------------------------------------------
+# Migration sub-menu — called when user selects option 3 from splash screen
+# Sets MIGRATE_TYPE to: adopt | prepared | ssh
+# For SSH: also collects MIGRATE_SSH_HOST, MIGRATE_SSH_USER, MIGRATE_SSH_PORT
+# For Prepared: collects MIGRATE_DUMP_DIR, MIGRATE_DATA_DIR, MIGRATE_CONF_DIR
+# ---------------------------------------------------------------------------
+prompt_migration_type() {
+  echo ""
+  echo -e "  ${DIM}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+  echo ""
+  echo -e "  ${BOLD}What describes your situation?${NC}"
+  echo ""
+  echo -e "  ${GREEN}${BOLD}  1  ${NC}${BOLD}Adopt in place${NC}"
+  echo -e "     ${DIM}Seafile is already running with its storage and/or database.${NC}"
+  echo -e "     ${DIM}Install seafile-deploy as the management layer on top.${NC}"
+  echo ""
+  echo -e "  ${CYAN}${BOLD}  2  ${NC}${BOLD}Migrate from prepared backup${NC}"
+  echo -e "     ${DIM}I have database dumps (.sql.gz) and a data directory${NC}"
+  echo -e "     ${DIM}ready on this machine or on a mount.${NC}"
+  echo ""
+  echo -e "  ${YELLOW}${BOLD}  3  ${NC}${BOLD}Migrate from another server (SSH)${NC}"
+  echo -e "     ${DIM}Copy databases and files from a remote Seafile instance.${NC}"
+  echo -e "     ${DIM}Requires SSH access to the source server.${NC}"
+  echo ""
+  echo -e "  ${DIM}  0  Back${NC}"
+  echo ""
+  echo -e "  ${DIM}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+  echo ""
+
+  local _mig_choice
+  while true; do
+    echo -ne "  ${BOLD}Select [0-3]:${NC} "
+    read -r _mig_choice
+    case "$_mig_choice" in 0|1|2|3) break ;; *) echo -e "  ${DIM}Enter 0, 1, 2, or 3.${NC}" ;; esac
+  done
+
+  case "$_mig_choice" in
+    0) return 1 ;;  # Go back to splash
+    1) export MIGRATE_TYPE="adopt" ;;
+    2) _collect_prepared_source || return 1 ;;
+    3) _collect_ssh_source || return 1 ;;
+  esac
+  return 0
+}
+
+# ---------------------------------------------------------------------------
+# Collect prepared backup source paths
+# ---------------------------------------------------------------------------
+_collect_prepared_source() {
+  export MIGRATE_TYPE="prepared"
+  echo ""
+  echo -e "  ${BOLD}Prepared Backup — Source Paths${NC}"
+  echo ""
+  echo -e "  ${DIM}Point to the directory containing your database dumps and${NC}"
+  echo -e "  ${DIM}Seafile data. The dumps can be .sql.gz or .sql files named${NC}"
+  echo -e "  ${DIM}with the database name (e.g. ccnet_db.sql.gz, seahub_db.sql.gz).${NC}"
+  echo ""
+
+  # Database dumps directory
+  while true; do
+    echo -ne "  ${BOLD}Database dumps directory${NC}: "
+    read -r MIGRATE_DUMP_DIR
+    MIGRATE_DUMP_DIR="${MIGRATE_DUMP_DIR%/}"
+    if [[ -z "$MIGRATE_DUMP_DIR" ]]; then
+      echo -e "  ${DIM}Required — path to directory containing .sql.gz or .sql files.${NC}"
+    elif [[ ! -d "$MIGRATE_DUMP_DIR" ]]; then
+      echo -e "  ${RED}Directory not found: ${MIGRATE_DUMP_DIR}${NC}"
+    else
+      local _dump_count=$(ls "$MIGRATE_DUMP_DIR"/*.sql* 2>/dev/null | wc -l)
+      if [[ "$_dump_count" -eq 0 ]]; then
+        echo -e "  ${YELLOW}No .sql or .sql.gz files found in ${MIGRATE_DUMP_DIR}${NC}"
+        echo -ne "  ${DIM}Continue anyway? [y/N]:${NC} "
+        read -r _cont
+        [[ "${_cont,,}" == "y" ]] && break
+      else
+        echo -e "  ${DIM}Found ${_dump_count} dump file(s).${NC}"
+        break
+      fi
+    fi
+  done
+  export MIGRATE_DUMP_DIR
+
+  # Seafile data directory
+  echo ""
+  echo -e "  ${DIM}This is the directory containing seafile-data/ (block storage),${NC}"
+  echo -e "  ${DIM}the conf/ directory (with seahub_settings.py), and seahub-data/.${NC}"
+  echo -e "  ${DIM}For Docker installs this is the volume mapped to /shared.${NC}"
+  echo -e "  ${DIM}For manual installs it is usually /opt/seafile.${NC}"
+  echo ""
+  while true; do
+    echo -ne "  ${BOLD}Seafile data directory${NC}: "
+    read -r MIGRATE_DATA_DIR
+    MIGRATE_DATA_DIR="${MIGRATE_DATA_DIR%/}"
+    if [[ -z "$MIGRATE_DATA_DIR" ]]; then
+      echo -e "  ${DIM}Required.${NC}"
+    elif [[ ! -d "$MIGRATE_DATA_DIR" ]]; then
+      echo -e "  ${RED}Directory not found: ${MIGRATE_DATA_DIR}${NC}"
+    else
+      # Auto-detect layout
+      if [[ -d "${MIGRATE_DATA_DIR}/seafile-data" ]]; then
+        echo -e "  ${GREEN}✓${NC} Found seafile-data/"
+      elif [[ -d "${MIGRATE_DATA_DIR}/storage" ]]; then
+        echo -e "  ${YELLOW}Found storage/ directly — this looks like the seafile-data dir itself.${NC}"
+        echo -e "  ${DIM}Point to the parent directory instead.${NC}"
+        continue
+      else
+        echo -e "  ${YELLOW}No seafile-data/ found — files may be in a different layout.${NC}"
+      fi
+      # Look for config
+      if [[ -f "${MIGRATE_DATA_DIR}/seafile/conf/seahub_settings.py" ]]; then
+        echo -e "  ${GREEN}✓${NC} Found config at seafile/conf/ (Docker layout)"
+        export MIGRATE_CONF_DIR="${MIGRATE_DATA_DIR}/seafile/conf"
+      elif [[ -f "${MIGRATE_DATA_DIR}/conf/seahub_settings.py" ]]; then
+        echo -e "  ${GREEN}✓${NC} Found config at conf/ (manual layout)"
+        export MIGRATE_CONF_DIR="${MIGRATE_DATA_DIR}/conf"
+      else
+        echo -e "  ${DIM}No config directory detected — SECRET_KEY will be generated fresh.${NC}"
+        export MIGRATE_CONF_DIR=""
+      fi
+      # Look for avatars
+      if [[ -d "${MIGRATE_DATA_DIR}/seafile/seahub-data/avatars" ]]; then
+        echo -e "  ${GREEN}✓${NC} Found avatars"
+      elif [[ -d "${MIGRATE_DATA_DIR}/seahub-data/avatars" ]]; then
+        echo -e "  ${GREEN}✓${NC} Found avatars (manual layout)"
+      fi
+      break
+    fi
+  done
+  export MIGRATE_DATA_DIR
+  return 0
+}
+
+# ---------------------------------------------------------------------------
+# Collect SSH source details
+# ---------------------------------------------------------------------------
+_collect_ssh_source() {
+  export MIGRATE_TYPE="ssh"
+  echo ""
+  echo -e "  ${BOLD}SSH Migration — Source Server${NC}"
+  echo ""
+
+  while true; do
+    echo -ne "  ${BOLD}SSH host${NC} (IP or hostname): "
+    read -r MIGRATE_SSH_HOST
+    [[ -n "$MIGRATE_SSH_HOST" ]] && break
+    echo -e "  ${DIM}Required.${NC}"
+  done
+  echo -ne "  ${BOLD}SSH user${NC} [root]: "
+  read -r MIGRATE_SSH_USER
+  MIGRATE_SSH_USER="${MIGRATE_SSH_USER:-root}"
+  echo -ne "  ${BOLD}SSH port${NC} [22]: "
+  read -r MIGRATE_SSH_PORT
+  MIGRATE_SSH_PORT="${MIGRATE_SSH_PORT:-22}"
+
+  export MIGRATE_SSH_HOST MIGRATE_SSH_USER MIGRATE_SSH_PORT
+
+  # Test connection
+  echo ""
+  echo -e "  ${DIM}Testing SSH connection...${NC}"
+  if ssh -o ConnectTimeout=10 -o BatchMode=yes -p "$MIGRATE_SSH_PORT" \
+      "${MIGRATE_SSH_USER}@${MIGRATE_SSH_HOST}" "echo ok" &>/dev/null; then
+    echo -e "  ${GREEN}✓${NC} Connected to ${MIGRATE_SSH_USER}@${MIGRATE_SSH_HOST}"
+  else
+    echo -e "  ${RED}✗${NC} Cannot connect. Ensure SSH key auth is configured:"
+    echo -e "    ${DIM}ssh-copy-id -p ${MIGRATE_SSH_PORT} ${MIGRATE_SSH_USER}@${MIGRATE_SSH_HOST}${NC}"
+    echo ""
+    echo -ne "  ${DIM}Try again? [Y/n]:${NC} "
+    read -r _retry
+    if [[ "${_retry,,}" != "n" ]]; then
+      _collect_ssh_source
+      return $?
+    fi
+    return 1
+  fi
+
+  # Auto-detect source Seafile
+  echo -e "  ${DIM}Detecting Seafile installation...${NC}"
+  _detect_remote_seafile
+  return 0
+}
+
+# ---------------------------------------------------------------------------
+# Auto-detect Seafile on a remote server via SSH
+# ---------------------------------------------------------------------------
+_detect_remote_seafile() {
+  local _ssh="ssh -o ConnectTimeout=10 -p ${MIGRATE_SSH_PORT} ${MIGRATE_SSH_USER}@${MIGRATE_SSH_HOST}"
+
+  # Try Docker first
+  local _docker_volume=""
+  _docker_volume=$($_ssh "docker inspect seafile --format '{{range .Mounts}}{{if eq .Destination \"/shared\"}}{{.Source}}{{end}}{{end}}'" 2>/dev/null || true)
+
+  if [[ -n "$_docker_volume" ]]; then
+    echo -e "  ${GREEN}✓${NC} Docker deployment detected"
+    echo -e "    ${DIM}Data volume: ${_docker_volume}${NC}"
+    export MIGRATE_SOURCE_TYPE="docker"
+    export MIGRATE_REMOTE_DATA_DIR="$_docker_volume"
+    export MIGRATE_REMOTE_CONF_DIR="${_docker_volume}/seafile/conf"
+
+    # Get database info
+    local _db_host=$($_ssh "docker exec seafile grep -oP 'host\s*=\s*\K.*' /opt/seafile/conf/seafile.conf 2>/dev/null" || true)
+    if [[ "$_db_host" == "seafile-db" || "$_db_host" == "127.0.0.1" || -z "$_db_host" ]]; then
+      export MIGRATE_REMOTE_DB="docker"
+      echo -e "  ${GREEN}✓${NC} Internal database (Docker container)"
+    else
+      export MIGRATE_REMOTE_DB="external"
+      export MIGRATE_REMOTE_DB_HOST="$_db_host"
+      echo -e "  ${GREEN}✓${NC} External database at ${_db_host}"
+    fi
+  else
+    # Try manual install paths
+    local _conf_path=""
+    for _try_path in "/opt/seafile/conf" "/opt/seafile/seafile/conf"; do
+      if $_ssh "test -f ${_try_path}/seahub_settings.py" 2>/dev/null; then
+        _conf_path="$_try_path"
+        break
+      fi
+    done
+
+    if [[ -n "$_conf_path" ]]; then
+      echo -e "  ${GREEN}✓${NC} Manual/package installation detected"
+      echo -e "    ${DIM}Config: ${_conf_path}${NC}"
+      export MIGRATE_SOURCE_TYPE="manual"
+      export MIGRATE_REMOTE_CONF_DIR="$_conf_path"
+
+      # Derive data dir from seafile.conf
+      local _data_dir=$($_ssh "grep -oP 'dir\s*=\s*\K.*' ${_conf_path}/seafile.conf 2>/dev/null | head -1" || true)
+      _data_dir="${_data_dir:-/opt/seafile/seafile-data}"
+      export MIGRATE_REMOTE_DATA_DIR=$(dirname "$_data_dir")
+      echo -e "    ${DIM}Data: ${MIGRATE_REMOTE_DATA_DIR}${NC}"
+      export MIGRATE_REMOTE_DB="local"
+    else
+      echo -e "  ${YELLOW}Could not auto-detect Seafile installation.${NC}"
+      echo -e "  ${DIM}You may need to use 'Migrate from prepared backup' instead.${NC}"
+      return 1
+    fi
+  fi
+
+  # Get quick stats
+  local _version=$($_ssh "ls -d ${MIGRATE_REMOTE_DATA_DIR}/seafile/seafile-server-* 2>/dev/null | tail -1 | grep -oP '[0-9]+\.[0-9]+\.[0-9]+'" 2>/dev/null || true)
+  local _data_size=$($_ssh "du -sh ${MIGRATE_REMOTE_DATA_DIR}/seafile-data 2>/dev/null | cut -f1" 2>/dev/null || true)
+
+  # Extract remote DB credentials for dump
+  local _remote_db_user="" _remote_db_pass=""
+  if [[ "$MIGRATE_SOURCE_TYPE" == "docker" ]]; then
+    _remote_db_user=$($_ssh "docker exec seafile grep -oP 'user\s*=\s*\K.*' /opt/seafile/conf/seafile.conf 2>/dev/null | head -1" || true)
+    _remote_db_pass=$($_ssh "docker exec seafile grep -oP 'password\s*=\s*\K.*' /opt/seafile/conf/seafile.conf 2>/dev/null | head -1" || true)
+  else
+    _remote_db_user=$($_ssh "grep -oP 'user\s*=\s*\K.*' ${MIGRATE_REMOTE_CONF_DIR}/seafile.conf 2>/dev/null | head -1" || true)
+    _remote_db_pass=$($_ssh "grep -oP 'password\s*=\s*\K.*' ${MIGRATE_REMOTE_CONF_DIR}/seafile.conf 2>/dev/null | head -1" || true)
+  fi
+  _remote_db_user="${_remote_db_user:-seafile}"
+
+  if [[ -n "$_remote_db_pass" ]]; then
+    echo -e "  ${GREEN}✓${NC} Database credentials extracted"
+    export MIGRATE_REMOTE_DB_USER="$_remote_db_user"
+    export MIGRATE_REMOTE_DB_PASS="$_remote_db_pass"
+  else
+    echo -e "  ${YELLOW}Could not extract DB password from remote config.${NC}"
+    echo -ne "  ${BOLD}Remote database password${NC}: "
+    read -rs _remote_db_pass
+    echo ""
+    export MIGRATE_REMOTE_DB_USER="$_remote_db_user"
+    export MIGRATE_REMOTE_DB_PASS="$_remote_db_pass"
+  fi
+
+  echo ""
+  echo -e "  ${BOLD}Source summary:${NC}"
+  [[ -n "$_version" ]] && echo -e "    Seafile version:  ${BOLD}${_version}${NC}"
+  [[ -n "$_data_size" ]] && echo -e "    Data size:        ${BOLD}${_data_size}${NC}"
+  echo ""
+}
