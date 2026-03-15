@@ -1542,7 +1542,7 @@ _db_migrate_to_external() {
     }
   fi
   
-  if ! mysql -h "$NEW_DB_HOST" -P "$NEW_DB_PORT" -u root -p"$NEW_DB_ROOT_PASSWORD" -e "SELECT 1" &>/dev/null; then
+  if ! MYSQL_PWD="$NEW_DB_ROOT_PASSWORD" mysql -h "$NEW_DB_HOST" -P "$NEW_DB_PORT" -u root -e "SELECT 1" &>/dev/null; then
     err "Cannot connect to external database"
     echo -e "  ${DIM}Check host, port, and root credentials.${NC}"
     return 1
@@ -1552,7 +1552,7 @@ _db_migrate_to_external() {
   # Check databases exist
   echo -e "  ${DIM}Checking databases exist...${NC}"
   for db in ccnet_db seafile_db seahub_db; do
-    if ! mysql -h "$NEW_DB_HOST" -P "$NEW_DB_PORT" -u root -p"$NEW_DB_ROOT_PASSWORD" -e "USE $db" &>/dev/null; then
+    if ! MYSQL_PWD="$NEW_DB_ROOT_PASSWORD" mysql -h "$NEW_DB_HOST" -P "$NEW_DB_PORT" -u root -e "USE $db" &>/dev/null; then
       err "Database $db does not exist on external server"
       return 1
     fi
@@ -1564,6 +1564,7 @@ _db_migrate_to_external() {
   echo ""
   
   local DUMP_FILE="/tmp/seafile_db_migration_$(date +%Y%m%d_%H%M%S).sql"
+  touch "$DUMP_FILE"; chmod 600 "$DUMP_FILE"
   
   echo -e "  ${DIM}Stopping Seafile services...${NC}"
   docker compose -f /opt/seafile/docker-compose.yml stop seafile seadoc notification-server thumbnail-server seafile-metadata 2>/dev/null || true
@@ -1572,7 +1573,7 @@ _db_migrate_to_external() {
   echo -e "  ${DIM}Exporting databases...${NC}"
   local ROOT_PASS="${INIT_SEAFILE_MYSQL_ROOT_PASSWORD:-}"
   
-  if ! docker exec seafile-db mysqldump -u root -p"$ROOT_PASS" --single-transaction \
+  if ! docker exec -e MYSQL_PWD="$ROOT_PASS" seafile-db mysqldump -u root --single-transaction \
        --databases ccnet_db seafile_db seahub_db > "$DUMP_FILE" 2>/dev/null; then
     err "Failed to export databases"
     echo -e "  ${DIM}Starting services again...${NC}"
@@ -1588,7 +1589,7 @@ _db_migrate_to_external() {
   echo ""
   echo -e "  ${DIM}Importing to ${NEW_DB_HOST}...${NC}"
   
-  if ! mysql -h "$NEW_DB_HOST" -P "$NEW_DB_PORT" -u root -p"$NEW_DB_ROOT_PASSWORD" < "$DUMP_FILE" 2>/dev/null; then
+  if ! MYSQL_PWD="$NEW_DB_ROOT_PASSWORD" mysql -h "$NEW_DB_HOST" -P "$NEW_DB_PORT" -u root < "$DUMP_FILE" 2>/dev/null; then
     err "Failed to import databases"
     echo -e "  ${DIM}Manual import: mysql -h $NEW_DB_HOST -u root -p < $DUMP_FILE${NC}"
     echo -e "  ${DIM}Starting services again...${NC}"
@@ -1602,8 +1603,8 @@ _db_migrate_to_external() {
   echo ""
   
   local orig_count new_count
-  orig_count=$(docker exec seafile-db mysql -u root -p"$ROOT_PASS" -N -e "SELECT COUNT(*) FROM seahub_db.auth_user" 2>/dev/null || echo "0")
-  new_count=$(mysql -h "$NEW_DB_HOST" -P "$NEW_DB_PORT" -u root -p"$NEW_DB_ROOT_PASSWORD" -N -e "SELECT COUNT(*) FROM seahub_db.auth_user" 2>/dev/null || echo "0")
+  orig_count=$(docker exec -e MYSQL_PWD="$ROOT_PASS" seafile-db mysql -u root -N -e "SELECT COUNT(*) FROM seahub_db.auth_user" 2>/dev/null || echo "0")
+  new_count=$(MYSQL_PWD="$NEW_DB_ROOT_PASSWORD" mysql -h "$NEW_DB_HOST" -P "$NEW_DB_PORT" -u root -N -e "SELECT COUNT(*) FROM seahub_db.auth_user" 2>/dev/null || echo "0")
   
   echo -e "  ${DIM}User count - Original: $orig_count, External: $new_count${NC}"
   
@@ -1677,6 +1678,7 @@ _db_migrate_to_bundled() {
   echo ""
   
   local DUMP_FILE="/tmp/seafile_db_migration_$(date +%Y%m%d_%H%M%S).sql"
+  touch "$DUMP_FILE"; chmod 600 "$DUMP_FILE"
   
   echo -e "  ${DIM}Stopping Seafile services...${NC}"
   docker compose -f /opt/seafile/docker-compose.yml stop seafile seadoc notification-server thumbnail-server seafile-metadata 2>/dev/null || true
@@ -1692,8 +1694,8 @@ _db_migrate_to_bundled() {
     }
   fi
   
-  if ! mysqldump -h "$SEAFILE_MYSQL_DB_HOST" -P "${SEAFILE_MYSQL_DB_PORT:-3306}" \
-       -u "${SEAFILE_MYSQL_DB_USER:-seafile}" -p"${SEAFILE_MYSQL_DB_PASSWORD}" \
+  if ! MYSQL_PWD="${SEAFILE_MYSQL_DB_PASSWORD}" mysqldump -h "$SEAFILE_MYSQL_DB_HOST" -P "${SEAFILE_MYSQL_DB_PORT:-3306}" \
+       -u "${SEAFILE_MYSQL_DB_USER:-seafile}" \
        --single-transaction --databases ccnet_db seafile_db seahub_db > "$DUMP_FILE" 2>/dev/null; then
     err "Failed to export databases"
     echo -e "  ${DIM}Starting services again...${NC}"
@@ -1729,7 +1731,7 @@ _db_migrate_to_bundled() {
   # Wait for DB to be ready
   echo -e "  ${DIM}Waiting for database to initialize...${NC}"
   local waited=0
-  while ! docker exec seafile-db mysqladmin ping -u root -p"$NEW_ROOT_PASS" &>/dev/null; do
+  while ! docker exec -e MYSQL_PWD="$NEW_ROOT_PASS" seafile-db mysqladmin ping -u root &>/dev/null; do
     sleep 2
     ((waited+=2))
     if [[ $waited -ge 60 ]]; then
@@ -1744,7 +1746,7 @@ _db_migrate_to_bundled() {
   echo ""
   
   echo -e "  ${DIM}Importing data...${NC}"
-  if ! docker exec -i seafile-db mysql -u root -p"$NEW_ROOT_PASS" < "$DUMP_FILE" 2>/dev/null; then
+  if ! docker exec -i -e MYSQL_PWD="$NEW_ROOT_PASS" seafile-db mysql -u root < "$DUMP_FILE" 2>/dev/null; then
     err "Failed to import databases"
     return 1
   fi
@@ -1930,9 +1932,9 @@ _cfg_section_show() {
   if [[ "$show_secrets" == "true" ]]; then
     echo -e "  ${BOLD}Secrets${NC}"
     echo -e "    JWT_PRIVATE_KEY:            ${JWT_PRIVATE_KEY:-[not set]}"
-    echo -e "    REDIS_PASSWORD:             ${REDIS_PASSWORD:-[not set]}"
-    echo -e "    SMTP_PASSWORD:              ${SMTP_PASSWORD:-[not set]}"
-    [[ -n "${LDAP_BIND_PASSWORD:-}" ]] && echo -e "    LDAP_BIND_PASSWORD:         ${LDAP_BIND_PASSWORD}"
+    echo -e "    REDIS_PASSWORD:             ${DIM}$([ -n "${REDIS_PASSWORD:-}" ] && echo "[set]" || echo "[not set]")${NC}"
+    echo -e "    SMTP_PASSWORD:              ${DIM}$([ -n "${SMTP_PASSWORD:-}" ] && echo "[set]" || echo "[not set]")${NC}"
+    [[ -n "${LDAP_BIND_PASSWORD:-}" ]] && echo -e "    LDAP_BIND_PASSWORD:         ${DIM}[set]${NC}"
     echo ""
   fi
 }
@@ -2636,28 +2638,28 @@ _cli_import_db_dumps() {
 
     # Ensure target database exists
     if [[ "$db_method" == "internal" ]]; then
-      docker exec seafile-db mysql -u root -p"${root_pass}" \
+      docker exec -e MYSQL_PWD="${root_pass}" seafile-db mysql -u root \
         -e "CREATE DATABASE IF NOT EXISTS \`${db}\` CHARACTER SET utf8mb4;" 2>/dev/null
     else
-      mysql -h "$_db_host" -P "$_db_port" -u root -p"${root_pass}" \
+      MYSQL_PWD="${root_pass}" mysql -h "$_db_host" -P "$_db_port" -u root \
         -e "CREATE DATABASE IF NOT EXISTS \`${db}\` CHARACTER SET utf8mb4;" 2>/dev/null
     fi
 
     local _ok=false
     if [[ "$dump_file" == *.gz ]]; then
       if [[ "$db_method" == "internal" ]]; then
-        gunzip -c "$dump_file" | docker exec -i seafile-db \
-          mysql -u root -p"${root_pass}" "$db" 2>/dev/null && _ok=true
+        gunzip -c "$dump_file" | docker exec -i -e MYSQL_PWD="${root_pass}" seafile-db \
+          mysql -u root "$db" 2>/dev/null && _ok=true
       else
-        gunzip -c "$dump_file" | mysql -h "$_db_host" -P "$_db_port" \
-          -u root -p"${root_pass}" "$db" 2>/dev/null && _ok=true
+        gunzip -c "$dump_file" | MYSQL_PWD="${root_pass}" mysql -h "$_db_host" -P "$_db_port" \
+          -u root "$db" 2>/dev/null && _ok=true
       fi
     else
       if [[ "$db_method" == "internal" ]]; then
-        docker exec -i seafile-db mysql -u root -p"${root_pass}" "$db" \
+        docker exec -i -e MYSQL_PWD="${root_pass}" seafile-db mysql -u root "$db" \
           < "$dump_file" 2>/dev/null && _ok=true
       else
-        mysql -h "$_db_host" -P "$_db_port" -u root -p"${root_pass}" "$db" \
+        MYSQL_PWD="${root_pass}" mysql -h "$_db_host" -P "$_db_port" -u root "$db" \
           < "$dump_file" 2>/dev/null && _ok=true
       fi
     fi
@@ -2935,6 +2937,7 @@ cmd_migrate() {
       # Dump + import databases
       echo -e "  ${DIM}Dumping remote databases...${NC}"
       local _tmp_dumps=$(mktemp -d /tmp/seafile-cli-migrate.XXXXXX)
+      chmod 700 "$_tmp_dumps"
 
       for _rdb in \
           "${SEAFILE_MYSQL_DB_CCNET_DB_NAME:-ccnet_db}" \
@@ -2944,14 +2947,14 @@ cmd_migrate() {
         echo -e "  ${DIM}  Dumping ${_rdb}...${NC}"
         case "$_remote_db_type" in
           docker)
-            $_ssh_cmd "docker exec seafile-db mysqldump \
-              -u '${_remote_db_user}' -p'${_remote_db_pass}' \
+            $_ssh_cmd "docker exec -e MYSQL_PWD='${_remote_db_pass}' seafile-db mysqldump \
+              -u '${_remote_db_user}' \
               --single-transaction --quick '${_rdb}'" \
               2>/dev/null | gzip > "${_tmp_dumps}/${_rdb}.sql.gz"
             ;;
           *)
-            $_ssh_cmd "mysqldump \
-              -u '${_remote_db_user}' -p'${_remote_db_pass}' \
+            $_ssh_cmd "MYSQL_PWD='${_remote_db_pass}' mysqldump \
+              -u '${_remote_db_user}' \
               --single-transaction --quick '${_rdb}'" \
               2>/dev/null | gzip > "${_tmp_dumps}/${_rdb}.sql.gz"
             ;;

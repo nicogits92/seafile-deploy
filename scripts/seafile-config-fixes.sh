@@ -67,7 +67,7 @@ _show_splash() {
   echo "  ╚══════╝╚══════╝╚═╝  ╚═╝╚═╝     ╚═╝╚══════╝╚══════╝"
   echo -e "${NC}"
   echo -e "  ${DIM}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-  echo -e "  ${BOLD}nicogits92 / seafile-deploy${NC}   ${DIM}Seafile ${_SEAFILE_VERSION} CE  ·  v4.5-alpha  ·  config-fixes${NC}"
+  echo -e "  ${BOLD}nicogits92 / seafile-deploy${NC}   ${DIM}Seafile ${_SEAFILE_VERSION} CE  ·  v4.6-alpha  ·  config-fixes${NC}"
   echo -e "  ${DIM}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
   echo ""
   echo -e "  ${DIM}Community deployment · not affiliated with Seafile Ltd.${NC}"
@@ -381,6 +381,7 @@ STORCLASSEOF
 fi
 
 } > "${CONF_DIR}/seahub_settings.py"
+chmod 600 "${CONF_DIR}/seahub_settings.py"
 
 fi
 
@@ -418,6 +419,7 @@ port = 6379
 SEAFEVENTSEOF
 # Append password only when set — sending AUTH "" to no-auth Redis 7+ returns an error.
 [ -n "$REDIS_PASSWORD" ] && echo "password = ${REDIS_PASSWORD}" >> "${CONF_DIR}/seafevents.conf"
+chmod 600 "${CONF_DIR}/seafevents.conf"
 
 # Enable virus scan section if ClamAV is active
 if [[ "${CLAMAV_ENABLED:-false}" == "true" ]]; then
@@ -589,6 +591,7 @@ else
 fi
 
 } > "${CONF_DIR}/seafile.conf"
+chmod 600 "${CONF_DIR}/seafile.conf"
 fi
 
 # =============================================================================
@@ -597,11 +600,13 @@ fi
 if [[ "${_SELECTED[4]}" == "true" ]]; then
 info "Writing seafdav.conf (SEAFDAV_ENABLED=${SEAFDAV_ENABLED:-false})..."
 cat > "${CONF_DIR}/seafdav.conf" << SEAFDAVEOF
+chmod 600 "${CONF_DIR}/seafdav.conf"
 [WEBDAV]
 enabled = ${SEAFDAV_ENABLED:-false}
 port = 8080
 share_name = /seafdav
 SEAFDAVEOF
+chmod 600 "${CONF_DIR}/seafdav.conf"
 fi
 
 # =============================================================================
@@ -616,6 +621,7 @@ if [[ "${MAX_UPLOAD_SIZE_MB:-0}" != "0" ]]; then
   (( _timeout > 3600 )) && _timeout=3600
 fi
 cat > "${CONF_DIR}/gunicorn.conf.py" << GUNICORNEOF
+chmod 600 "${CONF_DIR}/gunicorn.conf.py"
 import os
 
 daemon = True
@@ -632,6 +638,7 @@ limit_request_line = 8190
 
 forwarder_headers = 'SCRIPT_NAME,PATH_INFO,REMOTE_USER'
 GUNICORNEOF
+chmod 600 "${CONF_DIR}/gunicorn.conf.py"
 fi
 
 # =============================================================================
@@ -750,10 +757,9 @@ for db in \
     "${SEAFILE_MYSQL_DB_CCNET_DB_NAME:-ccnet_db}" \
     "${SEAFILE_MYSQL_DB_SEAFILE_DB_NAME:-seafile_db}" \
     "${SEAFILE_MYSQL_DB_SEAHUB_DB_NAME:-seahub_db}"; do
-  docker exec seafile-db \
+  docker exec -e MYSQL_PWD="${SEAFILE_MYSQL_DB_PASSWORD}" seafile-db \
     mysqldump \
       -u "${SEAFILE_MYSQL_DB_USER:-seafile}" \
-      -p"${SEAFILE_MYSQL_DB_PASSWORD}" \
       --single-transaction \
       --quick \
       "${db}" \
@@ -803,6 +809,38 @@ fi
 # ---------------------------------------------------------------------------
 if [[ "${BACKUP_ENABLED:-false}" == "true" ]]; then
   _BK_DEST="${BACKUP_MOUNT:-/mnt/seafile_backup}"
+  _BK_STYPE="${BACKUP_STORAGE_TYPE:-nfs}"
+
+  # Ensure backup destination is mounted (handles post-install enable)
+  if [[ -n "$_BK_DEST" && "$_BK_STYPE" != "local" ]] && ! mountpoint -q "$_BK_DEST" 2>/dev/null; then
+    mkdir -p "$_BK_DEST"
+    if ! grep -qF "$_BK_DEST" /etc/fstab 2>/dev/null; then
+      case "$_BK_STYPE" in
+        nfs)
+          if [[ -n "${BACKUP_NFS_SERVER:-}" && -n "${BACKUP_NFS_EXPORT:-}" ]]; then
+            echo "${BACKUP_NFS_SERVER}:${BACKUP_NFS_EXPORT} ${_BK_DEST} nfs auto,x-systemd.automount,_netdev,nfsvers=4,rsize=1048576,wsize=1048576,hard,timeo=600,retrans=2,nofail 0 0" >> /etc/fstab
+            info "Added backup NFS entry to /etc/fstab."
+          fi
+          ;;
+        smb)
+          if [[ -n "${BACKUP_SMB_SERVER:-}" && -n "${BACKUP_SMB_SHARE:-}" ]]; then
+            local _bk_creds="/etc/seafile-backup-smb-credentials"
+            if [[ ! -f "$_bk_creds" ]]; then
+              printf 'username=%s\npassword=%s\n' "${BACKUP_SMB_USERNAME}" "${BACKUP_SMB_PASSWORD}" > "$_bk_creds"
+              [[ -n "${BACKUP_SMB_DOMAIN:-}" ]] && echo "domain=${BACKUP_SMB_DOMAIN}" >> "$_bk_creds"
+              chmod 600 "$_bk_creds"
+            fi
+            echo "//${BACKUP_SMB_SERVER}/${BACKUP_SMB_SHARE} ${_BK_DEST} cifs credentials=${_bk_creds},auto,x-systemd.automount,_netdev,nofail,uid=0,gid=0,file_mode=0700,dir_mode=0700 0 0" >> /etc/fstab
+            info "Added backup SMB entry to /etc/fstab."
+          fi
+          ;;
+      esac
+      systemctl daemon-reload 2>/dev/null
+    fi
+    mount "$_BK_DEST" 2>/dev/null && info "Backup destination mounted at $_BK_DEST." \
+      || warn "Could not mount backup destination at $_BK_DEST — check .env settings."
+  fi
+
   if [[ -z "$_BK_DEST" ]]; then
     warn "BACKUP_ENABLED=true but BACKUP_MOUNT is blank — skipping backup setup."
     warn "  Set BACKUP_MOUNT in .env and re-run: seafile fix"
@@ -824,10 +862,9 @@ for db in \
     "${SEAFILE_MYSQL_DB_CCNET_DB_NAME:-ccnet_db}" \
     "${SEAFILE_MYSQL_DB_SEAFILE_DB_NAME:-seafile_db}" \
     "${SEAFILE_MYSQL_DB_SEAHUB_DB_NAME:-seahub_db}"; do
-  docker exec seafile-db \
+  docker exec -e MYSQL_PWD="${SEAFILE_MYSQL_DB_PASSWORD}" seafile-db \
     mysqldump \
       -u "${SEAFILE_MYSQL_DB_USER:-seafile}" \
-      -p"${SEAFILE_MYSQL_DB_PASSWORD}" \
       --single-transaction \
       --quick \
       "${db}" \
@@ -845,9 +882,12 @@ for db in \
     "${SEAFILE_MYSQL_DB_CCNET_DB_NAME:-ccnet_db}" \
     "${SEAFILE_MYSQL_DB_SEAFILE_DB_NAME:-seafile_db}" \
     "${SEAFILE_MYSQL_DB_SEAHUB_DB_NAME:-seahub_db}"; do
+  _auth=$(mktemp /tmp/.seafile-backup-auth.XXXXXX)
+  chmod 600 "$_auth"
+  printf '[client]\nuser=%s\npassword=%s\n' "${DB_USER}" "${DB_PASS}" > "$_auth"
   mysqldump \
+    --defaults-extra-file="$_auth" \
     -h "${DB_HOST}" -P "${DB_PORT}" \
-    -u "${DB_USER}" -p"${DB_PASS}" \
     --single-transaction \
     --quick \
     "${db}" \
@@ -855,6 +895,7 @@ for db in \
     && log "  Dumped ${db}" \
     || err "  Failed to dump ${db}"
 done
+  rm -f "$_auth" 2>/dev/null || true
 SNIPPETEOF
 )
     fi
@@ -873,7 +914,15 @@ err()  { logger -t "\${LOG_TAG}" "ERROR: \$1"; echo "\$(date '+%Y-%m-%d %H:%M:%S
 
 # Source .env for current values
 ENV_FILE="/opt/seafile/.env"
-[[ -f "\$ENV_FILE" ]] && set -a && source "\$ENV_FILE" && set +a
+# Safe .env parser (avoids command injection from unquoted values)
+while IFS= read -r line || [[ -n "\$line" ]]; do
+  [[ "\$line" =~ ^[[:space:]]*# ]] && continue
+  [[ -z "\${line// }" ]] && continue
+  [[ "\$line" != *=* ]] && continue
+  key="\${line%%=*}"; value="\${line#*=}"
+  if [[ "\$value" == \\"*\\" ]]; then value="\${value#\\"}"; value="\${value%\\"}"; fi
+  export "\$key=\$value"
+done < "\$ENV_FILE"
 
 SEAFILE_VOLUME="${SEAFILE_VOLUME}"
 BACKUP_MOUNT="${_BK_DEST}"
@@ -985,6 +1034,21 @@ ${_CADDY_SITE_ADDR} {
         reverse_proxy thumbnail-server:80
     }
 
+CADDYEOF
+
+# --- Office suite proxy blocks (conditional) ---
+if [[ "${OFFICE_SUITE:-collabora}" == "onlyoffice" ]]; then
+cat >> "$CADDYFILE_PATH" << 'OOBLOCK'
+
+    # --- OnlyOffice ---
+    handle /onlyoffice/* {
+        reverse_proxy onlyoffice:80
+    }
+
+OOBLOCK
+elif [[ "${OFFICE_SUITE:-collabora}" != "none" ]]; then
+cat >> "$CADDYFILE_PATH" << 'COLLABBLOCK'
+
     # --- Collabora Online ---
     handle /browser/* {
         reverse_proxy collabora:9980
@@ -1012,6 +1076,12 @@ ${_CADDY_SITE_ADDR} {
         }
     }
 
+COLLABBLOCK
+fi
+
+# --- Catch-all and close ---
+cat >> "$CADDYFILE_PATH" << CADDYTAILEOF
+
     # --- Seafile Core (catch-all) ---
     handle {
         reverse_proxy seafile:80 {
@@ -1021,7 +1091,7 @@ ${_CADDY_SITE_ADDR} {
         }
     }
 }
-CADDYEOF
+CADDYTAILEOF
 
 chmod 644 "$CADDYFILE_PATH"
 info "Caddyfile written to $CADDYFILE_PATH (site: ${_CADDY_SITE_ADDR})"

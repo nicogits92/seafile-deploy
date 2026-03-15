@@ -828,8 +828,7 @@ COMPOSEEOF
     info "Waiting for database to accept connections..."
     _db_ready=false
     for _attempt in {1..30}; do
-      if docker exec seafile-db mysqladmin ping -u root \
-          -p"${INIT_SEAFILE_MYSQL_ROOT_PASSWORD:-}" --silent 2>/dev/null; then
+      if docker exec -e MYSQL_PWD="${INIT_SEAFILE_MYSQL_ROOT_PASSWORD:-}" seafile-db mysqladmin ping -u root --silent 2>/dev/null; then
         _db_ready=true
         break
       fi
@@ -843,10 +842,11 @@ COMPOSEEOF
     fi
   else
     info "Stage 1: External database — verifying connectivity..."
+    _ext_auth=$(_mysql_auth_file "root" "${INIT_SEAFILE_MYSQL_ROOT_PASSWORD:-}")
     _db_ready=false
     for _attempt in {1..18}; do
-      if mysql -h "${SEAFILE_MYSQL_DB_HOST}" -P "${SEAFILE_MYSQL_DB_PORT:-3306}" \
-          -u root -p"${INIT_SEAFILE_MYSQL_ROOT_PASSWORD:-}" -e "SELECT 1" &>/dev/null; then
+      if mysql --defaults-extra-file="$_ext_auth" -h "${SEAFILE_MYSQL_DB_HOST}" \
+          -P "${SEAFILE_MYSQL_DB_PORT:-3306}" -e "SELECT 1" &>/dev/null; then
         _db_ready=true
         break
       fi
@@ -868,12 +868,12 @@ COMPOSEEOF
   # Build mysql command for table checking
   if [[ "${DB_INTERNAL:-true}" == "true" ]]; then
     _mysql_cmd() {
-      docker exec seafile-db mysql -u root -p"${INIT_SEAFILE_MYSQL_ROOT_PASSWORD:-}" "$@" 2>/dev/null
+      docker exec -e MYSQL_PWD="${INIT_SEAFILE_MYSQL_ROOT_PASSWORD:-}" seafile-db mysql -u root "$@" 2>/dev/null
     }
   else
     _mysql_cmd() {
-      mysql -h "${SEAFILE_MYSQL_DB_HOST}" -P "${SEAFILE_MYSQL_DB_PORT:-3306}" \
-        -u root -p"${INIT_SEAFILE_MYSQL_ROOT_PASSWORD:-}" "$@" 2>/dev/null
+      mysql --defaults-extra-file="${_ext_auth}" -h "${SEAFILE_MYSQL_DB_HOST}" \
+        -P "${SEAFILE_MYSQL_DB_PORT:-3306}" "$@" 2>/dev/null
     }
   fi
 
@@ -959,8 +959,7 @@ COMPOSEEOF
         COMPOSE_PROFILES="$COMPOSE_PROFILES" docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" up -d seafile-db 2>&1
         info "Waiting for database..."
         for _attempt in {1..30}; do
-          docker exec seafile-db mysqladmin ping -u root \
-            -p"${INIT_SEAFILE_MYSQL_ROOT_PASSWORD:-}" --silent 2>/dev/null && break
+          docker exec -e MYSQL_PWD="${INIT_SEAFILE_MYSQL_ROOT_PASSWORD:-}" seafile-db mysqladmin ping -u root --silent 2>/dev/null && break
           sleep 3
         done
       fi
@@ -986,8 +985,7 @@ COMPOSEEOF
         info "Waiting for database to accept connections..."
         _db_ready=false
         for _attempt in {1..30}; do
-          if docker exec seafile-db mysqladmin ping -u root \
-              -p"${INIT_SEAFILE_MYSQL_ROOT_PASSWORD:-}" --silent 2>/dev/null; then
+          if docker exec -e MYSQL_PWD="${INIT_SEAFILE_MYSQL_ROOT_PASSWORD:-}" seafile-db mysqladmin ping -u root --silent 2>/dev/null; then
             _db_ready=true; break
           fi
           sleep 3
@@ -1076,8 +1074,7 @@ COMPOSEEOF
         info "Waiting for local database to accept connections..."
         _db_ready=false
         for _attempt in {1..30}; do
-          if docker exec seafile-db mysqladmin ping -u root \
-              -p"${INIT_SEAFILE_MYSQL_ROOT_PASSWORD:-}" --silent 2>/dev/null; then
+          if docker exec -e MYSQL_PWD="${INIT_SEAFILE_MYSQL_ROOT_PASSWORD:-}" seafile-db mysqladmin ping -u root --silent 2>/dev/null; then
             _db_ready=true; break
           fi
           sleep 3
@@ -1088,8 +1085,10 @@ COMPOSEEOF
       # Stage 2: Dump remote databases and import locally
       info "Stage 2: Dumping databases from remote server..."
 
-      # Create temporary dump directory
+      # Create temporary dump directory (secured, cleaned up on exit)
       _LOCAL_DUMP_DIR=$(mktemp -d /tmp/seafile-migrate-dumps.XXXXXX)
+      chmod 700 "$_LOCAL_DUMP_DIR"
+      trap 'rm -rf "$_LOCAL_DUMP_DIR" 2>/dev/null' EXIT
 
       for _rdb in \
           "${SEAFILE_MYSQL_DB_CCNET_DB_NAME:-ccnet_db}" \
@@ -1101,23 +1100,23 @@ COMPOSEEOF
         case "$_REMOTE_DB_TYPE" in
           docker)
             # Source is Docker — mysqldump via docker exec on remote
-            $_SSH_CMD "docker exec seafile-db mysqldump \
-              -u '${_REMOTE_DB_USER}' -p'${_REMOTE_DB_PASS}' \
+            $_SSH_CMD "docker exec -e MYSQL_PWD='${_REMOTE_DB_PASS}' seafile-db mysqldump \
+              -u '${_REMOTE_DB_USER}' \
               --single-transaction --quick '${_rdb}'" \
               2>/dev/null | gzip > "${_LOCAL_DUMP_DIR}/${_rdb}.sql.gz"
             ;;
           local)
             # Source is manual install — mysqldump directly on remote
-            $_SSH_CMD "mysqldump \
-              -u '${_REMOTE_DB_USER}' -p'${_REMOTE_DB_PASS}' \
+            $_SSH_CMD "MYSQL_PWD='${_REMOTE_DB_PASS}' mysqldump \
+              -u '${_REMOTE_DB_USER}' \
               --single-transaction --quick '${_rdb}'" \
               2>/dev/null | gzip > "${_LOCAL_DUMP_DIR}/${_rdb}.sql.gz"
             ;;
           external)
             # Source uses an external DB — mysqldump with -h flag on remote
-            $_SSH_CMD "mysqldump \
+            $_SSH_CMD "MYSQL_PWD='${_REMOTE_DB_PASS}' mysqldump \
               -h '${_REMOTE_DB_HOST}' \
-              -u '${_REMOTE_DB_USER}' -p'${_REMOTE_DB_PASS}' \
+              -u '${_REMOTE_DB_USER}' \
               --single-transaction --quick '${_rdb}'" \
               2>/dev/null | gzip > "${_LOCAL_DUMP_DIR}/${_rdb}.sql.gz"
             ;;
@@ -1258,6 +1257,10 @@ else
         mkdir -p "$GITOPS_CLONE"
         git clone -b "${GITOPS_BRANCH:-main}" "$AUTHED_URL" "$GITOPS_CLONE" \
           || { warn "git clone failed — GitOps setup skipped."; }
+        # Lock down clone directory — .git/config contains the auth token
+        if [ -d "$GITOPS_CLONE/.git" ]; then
+          chmod 700 "$GITOPS_CLONE"
+        fi
       fi
 
       # Push current .env and docker-compose.yml as initial commit

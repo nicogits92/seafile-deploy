@@ -38,7 +38,7 @@ export DEBIAN_FRONTEND=noninteractive
 # ---------------------------------------------------------------------------
 # Deployment version
 # ---------------------------------------------------------------------------
-DEPLOY_VERSION="v4.5-alpha"
+DEPLOY_VERSION="v4.6-alpha"
 
 # ---------------------------------------------------------------------------
 # Colours (safe to re-source — just variable assignments)
@@ -1313,6 +1313,29 @@ SECHDR
 }
 
 # ---------------------------------------------------------------------------
+# Secure MySQL authentication — uses a temp defaults file instead of passing
+# passwords on the command line (which would be visible in `ps aux`).
+# Usage:
+#   _mysql_auth_file <user> <password>   → creates file, prints path
+#   _mysql_auth_cleanup                  → removes the file
+# The caller must clean up after use.
+# ---------------------------------------------------------------------------
+_MYSQL_AUTH_FILE=""
+
+_mysql_auth_file() {
+  local user="$1" pass="$2"
+  _MYSQL_AUTH_FILE=$(mktemp /tmp/.seafile-my.cnf.XXXXXX)
+  chmod 600 "$_MYSQL_AUTH_FILE"
+  printf '[client]\nuser=%s\npassword=%s\n' "$user" "$pass" > "$_MYSQL_AUTH_FILE"
+  echo "$_MYSQL_AUTH_FILE"
+}
+
+_mysql_auth_cleanup() {
+  [[ -n "${_MYSQL_AUTH_FILE:-}" && -f "$_MYSQL_AUTH_FILE" ]] && rm -f "$_MYSQL_AUTH_FILE"
+  _MYSQL_AUTH_FILE=""
+}
+
+# ---------------------------------------------------------------------------
 # Import database dumps — shared by recovery-finalize and migration.
 # Looks for .sql.gz or .sql files in the given directory matching each
 # Seafile database name. Supports both exact names (ccnet_db.sql.gz)
@@ -1323,9 +1346,14 @@ _import_db_dumps() {
   local root_pass="$2"
   local db_method="${3:-internal}"  # "internal" = docker exec, "external" = mysql client
 
-  local _db_user="${SEAFILE_MYSQL_DB_USER:-seafile}"
   local _db_host="${SEAFILE_MYSQL_DB_HOST:-seafile-db}"
   local _db_port="${SEAFILE_MYSQL_DB_PORT:-3306}"
+
+  # Create auth file for external DB access
+  local _auth_file=""
+  if [[ "$db_method" != "internal" ]]; then
+    _auth_file=$(_mysql_auth_file "root" "$root_pass")
+  fi
 
   for db in \
       "${SEAFILE_MYSQL_DB_CCNET_DB_NAME:-ccnet_db}" \
@@ -1348,10 +1376,10 @@ _import_db_dumps() {
 
     # Ensure target database exists
     if [[ "$db_method" == "internal" ]]; then
-      docker exec seafile-db mysql -u root -p"${root_pass}" \
+      docker exec -e MYSQL_PWD="${root_pass}" seafile-db mysql -u root \
         -e "CREATE DATABASE IF NOT EXISTS \`${db}\` CHARACTER SET utf8mb4;" 2>/dev/null
     else
-      mysql -h "$_db_host" -P "$_db_port" -u root -p"${root_pass}" \
+      mysql --defaults-extra-file="$_auth_file" -h "$_db_host" -P "$_db_port" \
         -e "CREATE DATABASE IF NOT EXISTS \`${db}\` CHARACTER SET utf8mb4;" 2>/dev/null
     fi
 
@@ -1359,18 +1387,18 @@ _import_db_dumps() {
     local _import_ok=false
     if [[ "$dump_file" == *.gz ]]; then
       if [[ "$db_method" == "internal" ]]; then
-        gunzip -c "$dump_file" | docker exec -i seafile-db \
-          mysql -u root -p"${root_pass}" "$db" 2>/dev/null && _import_ok=true
+        gunzip -c "$dump_file" | docker exec -i -e MYSQL_PWD="${root_pass}" seafile-db \
+          mysql -u root "$db" 2>/dev/null && _import_ok=true
       else
-        gunzip -c "$dump_file" | mysql -h "$_db_host" -P "$_db_port" \
-          -u root -p"${root_pass}" "$db" 2>/dev/null && _import_ok=true
+        gunzip -c "$dump_file" | mysql --defaults-extra-file="$_auth_file" \
+          -h "$_db_host" -P "$_db_port" "$db" 2>/dev/null && _import_ok=true
       fi
     else
       if [[ "$db_method" == "internal" ]]; then
-        docker exec -i seafile-db mysql -u root -p"${root_pass}" "$db" \
+        docker exec -i -e MYSQL_PWD="${root_pass}" seafile-db mysql -u root "$db" \
           < "$dump_file" 2>/dev/null && _import_ok=true
       else
-        mysql -h "$_db_host" -P "$_db_port" -u root -p"${root_pass}" "$db" \
+        mysql --defaults-extra-file="$_auth_file" -h "$_db_host" -P "$_db_port" "$db" \
           < "$dump_file" 2>/dev/null && _import_ok=true
       fi
     fi
@@ -1381,6 +1409,9 @@ _import_db_dumps() {
       warn "  ✗ Failed to import ${db} — check dump file and database access."
     fi
   done
+
+  # Clean up auth file
+  [[ -n "$_auth_file" ]] && rm -f "$_auth_file"
 }
 
 info()    { echo -e "${GREEN}[INFO]${NC}  $1"; }
@@ -2023,8 +2054,8 @@ if [ -f "$LOCAL_ENV" ]; then
   PORTAINER_MANAGED_VAL="${PORTAINER_MANAGED_VAL:-false}"
 fi
 STORAGE_ENV="${STORAGE_DIR}/.env"
-LOCAL_SECRETS="/opt/seafile/.secrets"
-STORAGE_SECRETS="${STORAGE_DIR}/.secrets"
+# Note: .secrets is NOT synced to the network share for security.
+# Use "seafile secrets --show" on the host to view generated credentials.
 
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -2093,11 +2124,7 @@ else
   cp "$LOCAL_ENV" "$STORAGE_ENV"
   chmod 600 "$STORAGE_ENV"
   log "Synced $LOCAL_ENV → $STORAGE_ENV"
-  # Sync secrets reference file if it exists
-  if [[ -f "$LOCAL_SECRETS" ]]; then
-    cp "$LOCAL_SECRETS" "$STORAGE_SECRETS"
-    chmod 600 "$STORAGE_SECRETS"
-  fi
+
 fi
 
 # Initial history commit on startup
@@ -2112,11 +2139,7 @@ while true; do
     cp "$LOCAL_ENV" "$STORAGE_ENV"
     chmod 600 "$STORAGE_ENV"
     log "Change detected — synced $LOCAL_ENV → $STORAGE_ENV"
-    # Also sync secrets reference file
-    if [[ -f "$LOCAL_SECRETS" ]]; then
-      cp "$LOCAL_SECRETS" "$STORAGE_SECRETS"
-      chmod 600 "$STORAGE_SECRETS"
-    fi
+
 
     # 2. Commit to config history (versioning)
     _commit_history
@@ -3927,7 +3950,7 @@ _db_migrate_to_external() {
     }
   fi
   
-  if ! mysql -h "$NEW_DB_HOST" -P "$NEW_DB_PORT" -u root -p"$NEW_DB_ROOT_PASSWORD" -e "SELECT 1" &>/dev/null; then
+  if ! MYSQL_PWD="$NEW_DB_ROOT_PASSWORD" mysql -h "$NEW_DB_HOST" -P "$NEW_DB_PORT" -u root -e "SELECT 1" &>/dev/null; then
     err "Cannot connect to external database"
     echo -e "  ${DIM}Check host, port, and root credentials.${NC}"
     return 1
@@ -3937,7 +3960,7 @@ _db_migrate_to_external() {
   # Check databases exist
   echo -e "  ${DIM}Checking databases exist...${NC}"
   for db in ccnet_db seafile_db seahub_db; do
-    if ! mysql -h "$NEW_DB_HOST" -P "$NEW_DB_PORT" -u root -p"$NEW_DB_ROOT_PASSWORD" -e "USE $db" &>/dev/null; then
+    if ! MYSQL_PWD="$NEW_DB_ROOT_PASSWORD" mysql -h "$NEW_DB_HOST" -P "$NEW_DB_PORT" -u root -e "USE $db" &>/dev/null; then
       err "Database $db does not exist on external server"
       return 1
     fi
@@ -3949,6 +3972,7 @@ _db_migrate_to_external() {
   echo ""
   
   local DUMP_FILE="/tmp/seafile_db_migration_$(date +%Y%m%d_%H%M%S).sql"
+  touch "$DUMP_FILE"; chmod 600 "$DUMP_FILE"
   
   echo -e "  ${DIM}Stopping Seafile services...${NC}"
   docker compose -f /opt/seafile/docker-compose.yml stop seafile seadoc notification-server thumbnail-server seafile-metadata 2>/dev/null || true
@@ -3957,7 +3981,7 @@ _db_migrate_to_external() {
   echo -e "  ${DIM}Exporting databases...${NC}"
   local ROOT_PASS="${INIT_SEAFILE_MYSQL_ROOT_PASSWORD:-}"
   
-  if ! docker exec seafile-db mysqldump -u root -p"$ROOT_PASS" --single-transaction \
+  if ! docker exec -e MYSQL_PWD="$ROOT_PASS" seafile-db mysqldump -u root --single-transaction \
        --databases ccnet_db seafile_db seahub_db > "$DUMP_FILE" 2>/dev/null; then
     err "Failed to export databases"
     echo -e "  ${DIM}Starting services again...${NC}"
@@ -3973,7 +3997,7 @@ _db_migrate_to_external() {
   echo ""
   echo -e "  ${DIM}Importing to ${NEW_DB_HOST}...${NC}"
   
-  if ! mysql -h "$NEW_DB_HOST" -P "$NEW_DB_PORT" -u root -p"$NEW_DB_ROOT_PASSWORD" < "$DUMP_FILE" 2>/dev/null; then
+  if ! MYSQL_PWD="$NEW_DB_ROOT_PASSWORD" mysql -h "$NEW_DB_HOST" -P "$NEW_DB_PORT" -u root < "$DUMP_FILE" 2>/dev/null; then
     err "Failed to import databases"
     echo -e "  ${DIM}Manual import: mysql -h $NEW_DB_HOST -u root -p < $DUMP_FILE${NC}"
     echo -e "  ${DIM}Starting services again...${NC}"
@@ -3987,8 +4011,8 @@ _db_migrate_to_external() {
   echo ""
   
   local orig_count new_count
-  orig_count=$(docker exec seafile-db mysql -u root -p"$ROOT_PASS" -N -e "SELECT COUNT(*) FROM seahub_db.auth_user" 2>/dev/null || echo "0")
-  new_count=$(mysql -h "$NEW_DB_HOST" -P "$NEW_DB_PORT" -u root -p"$NEW_DB_ROOT_PASSWORD" -N -e "SELECT COUNT(*) FROM seahub_db.auth_user" 2>/dev/null || echo "0")
+  orig_count=$(docker exec -e MYSQL_PWD="$ROOT_PASS" seafile-db mysql -u root -N -e "SELECT COUNT(*) FROM seahub_db.auth_user" 2>/dev/null || echo "0")
+  new_count=$(MYSQL_PWD="$NEW_DB_ROOT_PASSWORD" mysql -h "$NEW_DB_HOST" -P "$NEW_DB_PORT" -u root -N -e "SELECT COUNT(*) FROM seahub_db.auth_user" 2>/dev/null || echo "0")
   
   echo -e "  ${DIM}User count - Original: $orig_count, External: $new_count${NC}"
   
@@ -4062,6 +4086,7 @@ _db_migrate_to_bundled() {
   echo ""
   
   local DUMP_FILE="/tmp/seafile_db_migration_$(date +%Y%m%d_%H%M%S).sql"
+  touch "$DUMP_FILE"; chmod 600 "$DUMP_FILE"
   
   echo -e "  ${DIM}Stopping Seafile services...${NC}"
   docker compose -f /opt/seafile/docker-compose.yml stop seafile seadoc notification-server thumbnail-server seafile-metadata 2>/dev/null || true
@@ -4077,8 +4102,8 @@ _db_migrate_to_bundled() {
     }
   fi
   
-  if ! mysqldump -h "$SEAFILE_MYSQL_DB_HOST" -P "${SEAFILE_MYSQL_DB_PORT:-3306}" \
-       -u "${SEAFILE_MYSQL_DB_USER:-seafile}" -p"${SEAFILE_MYSQL_DB_PASSWORD}" \
+  if ! MYSQL_PWD="${SEAFILE_MYSQL_DB_PASSWORD}" mysqldump -h "$SEAFILE_MYSQL_DB_HOST" -P "${SEAFILE_MYSQL_DB_PORT:-3306}" \
+       -u "${SEAFILE_MYSQL_DB_USER:-seafile}" \
        --single-transaction --databases ccnet_db seafile_db seahub_db > "$DUMP_FILE" 2>/dev/null; then
     err "Failed to export databases"
     echo -e "  ${DIM}Starting services again...${NC}"
@@ -4114,7 +4139,7 @@ _db_migrate_to_bundled() {
   # Wait for DB to be ready
   echo -e "  ${DIM}Waiting for database to initialize...${NC}"
   local waited=0
-  while ! docker exec seafile-db mysqladmin ping -u root -p"$NEW_ROOT_PASS" &>/dev/null; do
+  while ! docker exec -e MYSQL_PWD="$NEW_ROOT_PASS" seafile-db mysqladmin ping -u root &>/dev/null; do
     sleep 2
     ((waited+=2))
     if [[ $waited -ge 60 ]]; then
@@ -4129,7 +4154,7 @@ _db_migrate_to_bundled() {
   echo ""
   
   echo -e "  ${DIM}Importing data...${NC}"
-  if ! docker exec -i seafile-db mysql -u root -p"$NEW_ROOT_PASS" < "$DUMP_FILE" 2>/dev/null; then
+  if ! docker exec -i -e MYSQL_PWD="$NEW_ROOT_PASS" seafile-db mysql -u root < "$DUMP_FILE" 2>/dev/null; then
     err "Failed to import databases"
     return 1
   fi
@@ -4315,9 +4340,9 @@ _cfg_section_show() {
   if [[ "$show_secrets" == "true" ]]; then
     echo -e "  ${BOLD}Secrets${NC}"
     echo -e "    JWT_PRIVATE_KEY:            ${JWT_PRIVATE_KEY:-[not set]}"
-    echo -e "    REDIS_PASSWORD:             ${REDIS_PASSWORD:-[not set]}"
-    echo -e "    SMTP_PASSWORD:              ${SMTP_PASSWORD:-[not set]}"
-    [[ -n "${LDAP_BIND_PASSWORD:-}" ]] && echo -e "    LDAP_BIND_PASSWORD:         ${LDAP_BIND_PASSWORD}"
+    echo -e "    REDIS_PASSWORD:             ${DIM}$([ -n "${REDIS_PASSWORD:-}" ] && echo "[set]" || echo "[not set]")${NC}"
+    echo -e "    SMTP_PASSWORD:              ${DIM}$([ -n "${SMTP_PASSWORD:-}" ] && echo "[set]" || echo "[not set]")${NC}"
+    [[ -n "${LDAP_BIND_PASSWORD:-}" ]] && echo -e "    LDAP_BIND_PASSWORD:         ${DIM}[set]${NC}"
     echo ""
   fi
 }
@@ -5021,28 +5046,28 @@ _cli_import_db_dumps() {
 
     # Ensure target database exists
     if [[ "$db_method" == "internal" ]]; then
-      docker exec seafile-db mysql -u root -p"${root_pass}" \
+      docker exec -e MYSQL_PWD="${root_pass}" seafile-db mysql -u root \
         -e "CREATE DATABASE IF NOT EXISTS \`${db}\` CHARACTER SET utf8mb4;" 2>/dev/null
     else
-      mysql -h "$_db_host" -P "$_db_port" -u root -p"${root_pass}" \
+      MYSQL_PWD="${root_pass}" mysql -h "$_db_host" -P "$_db_port" -u root \
         -e "CREATE DATABASE IF NOT EXISTS \`${db}\` CHARACTER SET utf8mb4;" 2>/dev/null
     fi
 
     local _ok=false
     if [[ "$dump_file" == *.gz ]]; then
       if [[ "$db_method" == "internal" ]]; then
-        gunzip -c "$dump_file" | docker exec -i seafile-db \
-          mysql -u root -p"${root_pass}" "$db" 2>/dev/null && _ok=true
+        gunzip -c "$dump_file" | docker exec -i -e MYSQL_PWD="${root_pass}" seafile-db \
+          mysql -u root "$db" 2>/dev/null && _ok=true
       else
-        gunzip -c "$dump_file" | mysql -h "$_db_host" -P "$_db_port" \
-          -u root -p"${root_pass}" "$db" 2>/dev/null && _ok=true
+        gunzip -c "$dump_file" | MYSQL_PWD="${root_pass}" mysql -h "$_db_host" -P "$_db_port" \
+          -u root "$db" 2>/dev/null && _ok=true
       fi
     else
       if [[ "$db_method" == "internal" ]]; then
-        docker exec -i seafile-db mysql -u root -p"${root_pass}" "$db" \
+        docker exec -i -e MYSQL_PWD="${root_pass}" seafile-db mysql -u root "$db" \
           < "$dump_file" 2>/dev/null && _ok=true
       else
-        mysql -h "$_db_host" -P "$_db_port" -u root -p"${root_pass}" "$db" \
+        MYSQL_PWD="${root_pass}" mysql -h "$_db_host" -P "$_db_port" -u root "$db" \
           < "$dump_file" 2>/dev/null && _ok=true
       fi
     fi
@@ -5320,6 +5345,7 @@ cmd_migrate() {
       # Dump + import databases
       echo -e "  ${DIM}Dumping remote databases...${NC}"
       local _tmp_dumps=$(mktemp -d /tmp/seafile-cli-migrate.XXXXXX)
+      chmod 700 "$_tmp_dumps"
 
       for _rdb in \
           "${SEAFILE_MYSQL_DB_CCNET_DB_NAME:-ccnet_db}" \
@@ -5329,14 +5355,14 @@ cmd_migrate() {
         echo -e "  ${DIM}  Dumping ${_rdb}...${NC}"
         case "$_remote_db_type" in
           docker)
-            $_ssh_cmd "docker exec seafile-db mysqldump \
-              -u '${_remote_db_user}' -p'${_remote_db_pass}' \
+            $_ssh_cmd "docker exec -e MYSQL_PWD='${_remote_db_pass}' seafile-db mysqldump \
+              -u '${_remote_db_user}' \
               --single-transaction --quick '${_rdb}'" \
               2>/dev/null | gzip > "${_tmp_dumps}/${_rdb}.sql.gz"
             ;;
           *)
-            $_ssh_cmd "mysqldump \
-              -u '${_remote_db_user}' -p'${_remote_db_pass}' \
+            $_ssh_cmd "MYSQL_PWD='${_remote_db_pass}' mysqldump \
+              -u '${_remote_db_user}' \
               --single-transaction --quick '${_rdb}'" \
               2>/dev/null | gzip > "${_tmp_dumps}/${_rdb}.sql.gz"
             ;;
@@ -5829,7 +5855,7 @@ _show_splash() {
   echo "  ╚══════╝╚══════╝╚═╝  ╚═╝╚═╝     ╚═╝╚══════╝╚══════╝"
   echo -e "${NC}"
   echo -e "  ${DIM}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-  echo -e "  ${BOLD}nicogits92 / seafile-deploy${NC}   ${DIM}Seafile ${_SEAFILE_VERSION} CE  ·  v4.5-alpha  ·  config-fixes${NC}"
+  echo -e "  ${BOLD}nicogits92 / seafile-deploy${NC}   ${DIM}Seafile ${_SEAFILE_VERSION} CE  ·  v4.6-alpha  ·  config-fixes${NC}"
   echo -e "  ${DIM}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
   echo ""
   echo -e "  ${DIM}Community deployment · not affiliated with Seafile Ltd.${NC}"
@@ -6143,6 +6169,7 @@ STORCLASSEOF
 fi
 
 } > "${CONF_DIR}/seahub_settings.py"
+chmod 600 "${CONF_DIR}/seahub_settings.py"
 
 fi
 
@@ -6180,6 +6207,7 @@ port = 6379
 SEAFEVENTSEOF
 # Append password only when set — sending AUTH "" to no-auth Redis 7+ returns an error.
 [ -n "$REDIS_PASSWORD" ] && echo "password = ${REDIS_PASSWORD}" >> "${CONF_DIR}/seafevents.conf"
+chmod 600 "${CONF_DIR}/seafevents.conf"
 
 # Enable virus scan section if ClamAV is active
 if [[ "${CLAMAV_ENABLED:-false}" == "true" ]]; then
@@ -6351,6 +6379,7 @@ else
 fi
 
 } > "${CONF_DIR}/seafile.conf"
+chmod 600 "${CONF_DIR}/seafile.conf"
 fi
 
 # =============================================================================
@@ -6359,11 +6388,13 @@ fi
 if [[ "${_SELECTED[4]}" == "true" ]]; then
 info "Writing seafdav.conf (SEAFDAV_ENABLED=${SEAFDAV_ENABLED:-false})..."
 cat > "${CONF_DIR}/seafdav.conf" << SEAFDAVEOF
+chmod 600 "${CONF_DIR}/seafdav.conf"
 [WEBDAV]
 enabled = ${SEAFDAV_ENABLED:-false}
 port = 8080
 share_name = /seafdav
 SEAFDAVEOF
+chmod 600 "${CONF_DIR}/seafdav.conf"
 fi
 
 # =============================================================================
@@ -6378,6 +6409,7 @@ if [[ "${MAX_UPLOAD_SIZE_MB:-0}" != "0" ]]; then
   (( _timeout > 3600 )) && _timeout=3600
 fi
 cat > "${CONF_DIR}/gunicorn.conf.py" << GUNICORNEOF
+chmod 600 "${CONF_DIR}/gunicorn.conf.py"
 import os
 
 daemon = True
@@ -6394,6 +6426,7 @@ limit_request_line = 8190
 
 forwarder_headers = 'SCRIPT_NAME,PATH_INFO,REMOTE_USER'
 GUNICORNEOF
+chmod 600 "${CONF_DIR}/gunicorn.conf.py"
 fi
 
 # =============================================================================
@@ -6512,10 +6545,9 @@ for db in \
     "${SEAFILE_MYSQL_DB_CCNET_DB_NAME:-ccnet_db}" \
     "${SEAFILE_MYSQL_DB_SEAFILE_DB_NAME:-seafile_db}" \
     "${SEAFILE_MYSQL_DB_SEAHUB_DB_NAME:-seahub_db}"; do
-  docker exec seafile-db \
+  docker exec -e MYSQL_PWD="${SEAFILE_MYSQL_DB_PASSWORD}" seafile-db \
     mysqldump \
       -u "${SEAFILE_MYSQL_DB_USER:-seafile}" \
-      -p"${SEAFILE_MYSQL_DB_PASSWORD}" \
       --single-transaction \
       --quick \
       "${db}" \
@@ -6565,6 +6597,38 @@ fi
 # ---------------------------------------------------------------------------
 if [[ "${BACKUP_ENABLED:-false}" == "true" ]]; then
   _BK_DEST="${BACKUP_MOUNT:-/mnt/seafile_backup}"
+  _BK_STYPE="${BACKUP_STORAGE_TYPE:-nfs}"
+
+  # Ensure backup destination is mounted (handles post-install enable)
+  if [[ -n "$_BK_DEST" && "$_BK_STYPE" != "local" ]] && ! mountpoint -q "$_BK_DEST" 2>/dev/null; then
+    mkdir -p "$_BK_DEST"
+    if ! grep -qF "$_BK_DEST" /etc/fstab 2>/dev/null; then
+      case "$_BK_STYPE" in
+        nfs)
+          if [[ -n "${BACKUP_NFS_SERVER:-}" && -n "${BACKUP_NFS_EXPORT:-}" ]]; then
+            echo "${BACKUP_NFS_SERVER}:${BACKUP_NFS_EXPORT} ${_BK_DEST} nfs auto,x-systemd.automount,_netdev,nfsvers=4,rsize=1048576,wsize=1048576,hard,timeo=600,retrans=2,nofail 0 0" >> /etc/fstab
+            info "Added backup NFS entry to /etc/fstab."
+          fi
+          ;;
+        smb)
+          if [[ -n "${BACKUP_SMB_SERVER:-}" && -n "${BACKUP_SMB_SHARE:-}" ]]; then
+            local _bk_creds="/etc/seafile-backup-smb-credentials"
+            if [[ ! -f "$_bk_creds" ]]; then
+              printf 'username=%s\npassword=%s\n' "${BACKUP_SMB_USERNAME}" "${BACKUP_SMB_PASSWORD}" > "$_bk_creds"
+              [[ -n "${BACKUP_SMB_DOMAIN:-}" ]] && echo "domain=${BACKUP_SMB_DOMAIN}" >> "$_bk_creds"
+              chmod 600 "$_bk_creds"
+            fi
+            echo "//${BACKUP_SMB_SERVER}/${BACKUP_SMB_SHARE} ${_BK_DEST} cifs credentials=${_bk_creds},auto,x-systemd.automount,_netdev,nofail,uid=0,gid=0,file_mode=0700,dir_mode=0700 0 0" >> /etc/fstab
+            info "Added backup SMB entry to /etc/fstab."
+          fi
+          ;;
+      esac
+      systemctl daemon-reload 2>/dev/null
+    fi
+    mount "$_BK_DEST" 2>/dev/null && info "Backup destination mounted at $_BK_DEST." \
+      || warn "Could not mount backup destination at $_BK_DEST — check .env settings."
+  fi
+
   if [[ -z "$_BK_DEST" ]]; then
     warn "BACKUP_ENABLED=true but BACKUP_MOUNT is blank — skipping backup setup."
     warn "  Set BACKUP_MOUNT in .env and re-run: seafile fix"
@@ -6586,10 +6650,9 @@ for db in \
     "${SEAFILE_MYSQL_DB_CCNET_DB_NAME:-ccnet_db}" \
     "${SEAFILE_MYSQL_DB_SEAFILE_DB_NAME:-seafile_db}" \
     "${SEAFILE_MYSQL_DB_SEAHUB_DB_NAME:-seahub_db}"; do
-  docker exec seafile-db \
+  docker exec -e MYSQL_PWD="${SEAFILE_MYSQL_DB_PASSWORD}" seafile-db \
     mysqldump \
       -u "${SEAFILE_MYSQL_DB_USER:-seafile}" \
-      -p"${SEAFILE_MYSQL_DB_PASSWORD}" \
       --single-transaction \
       --quick \
       "${db}" \
@@ -6607,9 +6670,12 @@ for db in \
     "${SEAFILE_MYSQL_DB_CCNET_DB_NAME:-ccnet_db}" \
     "${SEAFILE_MYSQL_DB_SEAFILE_DB_NAME:-seafile_db}" \
     "${SEAFILE_MYSQL_DB_SEAHUB_DB_NAME:-seahub_db}"; do
+  _auth=$(mktemp /tmp/.seafile-backup-auth.XXXXXX)
+  chmod 600 "$_auth"
+  printf '[client]\nuser=%s\npassword=%s\n' "${DB_USER}" "${DB_PASS}" > "$_auth"
   mysqldump \
+    --defaults-extra-file="$_auth" \
     -h "${DB_HOST}" -P "${DB_PORT}" \
-    -u "${DB_USER}" -p"${DB_PASS}" \
     --single-transaction \
     --quick \
     "${db}" \
@@ -6617,6 +6683,7 @@ for db in \
     && log "  Dumped ${db}" \
     || err "  Failed to dump ${db}"
 done
+  rm -f "$_auth" 2>/dev/null || true
 SNIPPETEOF
 )
     fi
@@ -6635,7 +6702,15 @@ err()  { logger -t "\${LOG_TAG}" "ERROR: \$1"; echo "\$(date '+%Y-%m-%d %H:%M:%S
 
 # Source .env for current values
 ENV_FILE="/opt/seafile/.env"
-[[ -f "\$ENV_FILE" ]] && set -a && source "\$ENV_FILE" && set +a
+# Safe .env parser (avoids command injection from unquoted values)
+while IFS= read -r line || [[ -n "\$line" ]]; do
+  [[ "\$line" =~ ^[[:space:]]*# ]] && continue
+  [[ -z "\${line// }" ]] && continue
+  [[ "\$line" != *=* ]] && continue
+  key="\${line%%=*}"; value="\${line#*=}"
+  if [[ "\$value" == \\"*\\" ]]; then value="\${value#\\"}"; value="\${value%\\"}"; fi
+  export "\$key=\$value"
+done < "\$ENV_FILE"
 
 SEAFILE_VOLUME="${SEAFILE_VOLUME}"
 BACKUP_MOUNT="${_BK_DEST}"
@@ -6747,6 +6822,21 @@ ${_CADDY_SITE_ADDR} {
         reverse_proxy thumbnail-server:80
     }
 
+CADDYEOF
+
+# --- Office suite proxy blocks (conditional) ---
+if [[ "${OFFICE_SUITE:-collabora}" == "onlyoffice" ]]; then
+cat >> "$CADDYFILE_PATH" << 'OOBLOCK'
+
+    # --- OnlyOffice ---
+    handle /onlyoffice/* {
+        reverse_proxy onlyoffice:80
+    }
+
+OOBLOCK
+elif [[ "${OFFICE_SUITE:-collabora}" != "none" ]]; then
+cat >> "$CADDYFILE_PATH" << 'COLLABBLOCK'
+
     # --- Collabora Online ---
     handle /browser/* {
         reverse_proxy collabora:9980
@@ -6774,6 +6864,12 @@ ${_CADDY_SITE_ADDR} {
         }
     }
 
+COLLABBLOCK
+fi
+
+# --- Catch-all and close ---
+cat >> "$CADDYFILE_PATH" << CADDYTAILEOF
+
     # --- Seafile Core (catch-all) ---
     handle {
         reverse_proxy seafile:80 {
@@ -6783,7 +6879,7 @@ ${_CADDY_SITE_ADDR} {
         }
     }
 }
-CADDYEOF
+CADDYTAILEOF
 
 chmod 644 "$CADDYFILE_PATH"
 info "Caddyfile written to $CADDYFILE_PATH (site: ${_CADDY_SITE_ADDR})"
@@ -6944,7 +7040,7 @@ heading() { echo -e "\n${BOLD}${CYAN}==> $1${NC}"; }
 # ---------------------------------------------------------------------------
 # Deployment version
 # ---------------------------------------------------------------------------
-DEPLOY_VERSION="v4.5-alpha"
+DEPLOY_VERSION="v4.6-alpha"
 
 # ---------------------------------------------------------------------------
 # Colours (safe to re-source — just variable assignments)
@@ -8219,6 +8315,29 @@ SECHDR
 }
 
 # ---------------------------------------------------------------------------
+# Secure MySQL authentication — uses a temp defaults file instead of passing
+# passwords on the command line (which would be visible in `ps aux`).
+# Usage:
+#   _mysql_auth_file <user> <password>   → creates file, prints path
+#   _mysql_auth_cleanup                  → removes the file
+# The caller must clean up after use.
+# ---------------------------------------------------------------------------
+_MYSQL_AUTH_FILE=""
+
+_mysql_auth_file() {
+  local user="$1" pass="$2"
+  _MYSQL_AUTH_FILE=$(mktemp /tmp/.seafile-my.cnf.XXXXXX)
+  chmod 600 "$_MYSQL_AUTH_FILE"
+  printf '[client]\nuser=%s\npassword=%s\n' "$user" "$pass" > "$_MYSQL_AUTH_FILE"
+  echo "$_MYSQL_AUTH_FILE"
+}
+
+_mysql_auth_cleanup() {
+  [[ -n "${_MYSQL_AUTH_FILE:-}" && -f "$_MYSQL_AUTH_FILE" ]] && rm -f "$_MYSQL_AUTH_FILE"
+  _MYSQL_AUTH_FILE=""
+}
+
+# ---------------------------------------------------------------------------
 # Import database dumps — shared by recovery-finalize and migration.
 # Looks for .sql.gz or .sql files in the given directory matching each
 # Seafile database name. Supports both exact names (ccnet_db.sql.gz)
@@ -8229,9 +8348,14 @@ _import_db_dumps() {
   local root_pass="$2"
   local db_method="${3:-internal}"  # "internal" = docker exec, "external" = mysql client
 
-  local _db_user="${SEAFILE_MYSQL_DB_USER:-seafile}"
   local _db_host="${SEAFILE_MYSQL_DB_HOST:-seafile-db}"
   local _db_port="${SEAFILE_MYSQL_DB_PORT:-3306}"
+
+  # Create auth file for external DB access
+  local _auth_file=""
+  if [[ "$db_method" != "internal" ]]; then
+    _auth_file=$(_mysql_auth_file "root" "$root_pass")
+  fi
 
   for db in \
       "${SEAFILE_MYSQL_DB_CCNET_DB_NAME:-ccnet_db}" \
@@ -8254,10 +8378,10 @@ _import_db_dumps() {
 
     # Ensure target database exists
     if [[ "$db_method" == "internal" ]]; then
-      docker exec seafile-db mysql -u root -p"${root_pass}" \
+      docker exec -e MYSQL_PWD="${root_pass}" seafile-db mysql -u root \
         -e "CREATE DATABASE IF NOT EXISTS \`${db}\` CHARACTER SET utf8mb4;" 2>/dev/null
     else
-      mysql -h "$_db_host" -P "$_db_port" -u root -p"${root_pass}" \
+      mysql --defaults-extra-file="$_auth_file" -h "$_db_host" -P "$_db_port" \
         -e "CREATE DATABASE IF NOT EXISTS \`${db}\` CHARACTER SET utf8mb4;" 2>/dev/null
     fi
 
@@ -8265,18 +8389,18 @@ _import_db_dumps() {
     local _import_ok=false
     if [[ "$dump_file" == *.gz ]]; then
       if [[ "$db_method" == "internal" ]]; then
-        gunzip -c "$dump_file" | docker exec -i seafile-db \
-          mysql -u root -p"${root_pass}" "$db" 2>/dev/null && _import_ok=true
+        gunzip -c "$dump_file" | docker exec -i -e MYSQL_PWD="${root_pass}" seafile-db \
+          mysql -u root "$db" 2>/dev/null && _import_ok=true
       else
-        gunzip -c "$dump_file" | mysql -h "$_db_host" -P "$_db_port" \
-          -u root -p"${root_pass}" "$db" 2>/dev/null && _import_ok=true
+        gunzip -c "$dump_file" | mysql --defaults-extra-file="$_auth_file" \
+          -h "$_db_host" -P "$_db_port" "$db" 2>/dev/null && _import_ok=true
       fi
     else
       if [[ "$db_method" == "internal" ]]; then
-        docker exec -i seafile-db mysql -u root -p"${root_pass}" "$db" \
+        docker exec -i -e MYSQL_PWD="${root_pass}" seafile-db mysql -u root "$db" \
           < "$dump_file" 2>/dev/null && _import_ok=true
       else
-        mysql -h "$_db_host" -P "$_db_port" -u root -p"${root_pass}" "$db" \
+        mysql --defaults-extra-file="$_auth_file" -h "$_db_host" -P "$_db_port" "$db" \
           < "$dump_file" 2>/dev/null && _import_ok=true
       fi
     fi
@@ -8287,6 +8411,9 @@ _import_db_dumps() {
       warn "  ✗ Failed to import ${db} — check dump file and database access."
     fi
   done
+
+  # Clean up auth file
+  [[ -n "$_auth_file" ]] && rm -f "$_auth_file"
 }
 
 ok()      { echo -e "${GREEN}  ✓${NC}  $1"; }
@@ -9013,6 +9140,8 @@ if [[ "${_SELECTED[2]}" == "true" ]]; then
             && ok "Repo cloned." \
             || warn "git clone failed — GitOps integration may not be fully set up."
         fi
+        # Lock down clone directory — .git/config contains the auth token
+        [ -d "$CLONE_PATH" ] && chmod 700 "$CLONE_PATH"
 
         # --- Ensure listener script is current ---
         if [ ! -f "$GITOPS_SCRIPT" ]; then
@@ -9540,8 +9669,7 @@ COMPOSEEOF
     info "Waiting for database to accept connections..."
     _db_ready=false
     for _attempt in {1..30}; do
-      if docker exec seafile-db mysqladmin ping -u root \
-          -p"${INIT_SEAFILE_MYSQL_ROOT_PASSWORD:-}" --silent 2>/dev/null; then
+      if docker exec -e MYSQL_PWD="${INIT_SEAFILE_MYSQL_ROOT_PASSWORD:-}" seafile-db mysqladmin ping -u root --silent 2>/dev/null; then
         _db_ready=true
         break
       fi
@@ -9555,10 +9683,11 @@ COMPOSEEOF
     fi
   else
     info "Stage 1: External database — verifying connectivity..."
+    _ext_auth=$(_mysql_auth_file "root" "${INIT_SEAFILE_MYSQL_ROOT_PASSWORD:-}")
     _db_ready=false
     for _attempt in {1..18}; do
-      if mysql -h "${SEAFILE_MYSQL_DB_HOST}" -P "${SEAFILE_MYSQL_DB_PORT:-3306}" \
-          -u root -p"${INIT_SEAFILE_MYSQL_ROOT_PASSWORD:-}" -e "SELECT 1" &>/dev/null; then
+      if mysql --defaults-extra-file="$_ext_auth" -h "${SEAFILE_MYSQL_DB_HOST}" \
+          -P "${SEAFILE_MYSQL_DB_PORT:-3306}" -e "SELECT 1" &>/dev/null; then
         _db_ready=true
         break
       fi
@@ -9580,12 +9709,12 @@ COMPOSEEOF
   # Build mysql command for table checking
   if [[ "${DB_INTERNAL:-true}" == "true" ]]; then
     _mysql_cmd() {
-      docker exec seafile-db mysql -u root -p"${INIT_SEAFILE_MYSQL_ROOT_PASSWORD:-}" "$@" 2>/dev/null
+      docker exec -e MYSQL_PWD="${INIT_SEAFILE_MYSQL_ROOT_PASSWORD:-}" seafile-db mysql -u root "$@" 2>/dev/null
     }
   else
     _mysql_cmd() {
-      mysql -h "${SEAFILE_MYSQL_DB_HOST}" -P "${SEAFILE_MYSQL_DB_PORT:-3306}" \
-        -u root -p"${INIT_SEAFILE_MYSQL_ROOT_PASSWORD:-}" "$@" 2>/dev/null
+      mysql --defaults-extra-file="${_ext_auth}" -h "${SEAFILE_MYSQL_DB_HOST}" \
+        -P "${SEAFILE_MYSQL_DB_PORT:-3306}" "$@" 2>/dev/null
     }
   fi
 
@@ -9671,8 +9800,7 @@ COMPOSEEOF
         COMPOSE_PROFILES="$COMPOSE_PROFILES" docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" up -d seafile-db 2>&1
         info "Waiting for database..."
         for _attempt in {1..30}; do
-          docker exec seafile-db mysqladmin ping -u root \
-            -p"${INIT_SEAFILE_MYSQL_ROOT_PASSWORD:-}" --silent 2>/dev/null && break
+          docker exec -e MYSQL_PWD="${INIT_SEAFILE_MYSQL_ROOT_PASSWORD:-}" seafile-db mysqladmin ping -u root --silent 2>/dev/null && break
           sleep 3
         done
       fi
@@ -9698,8 +9826,7 @@ COMPOSEEOF
         info "Waiting for database to accept connections..."
         _db_ready=false
         for _attempt in {1..30}; do
-          if docker exec seafile-db mysqladmin ping -u root \
-              -p"${INIT_SEAFILE_MYSQL_ROOT_PASSWORD:-}" --silent 2>/dev/null; then
+          if docker exec -e MYSQL_PWD="${INIT_SEAFILE_MYSQL_ROOT_PASSWORD:-}" seafile-db mysqladmin ping -u root --silent 2>/dev/null; then
             _db_ready=true; break
           fi
           sleep 3
@@ -9788,8 +9915,7 @@ COMPOSEEOF
         info "Waiting for local database to accept connections..."
         _db_ready=false
         for _attempt in {1..30}; do
-          if docker exec seafile-db mysqladmin ping -u root \
-              -p"${INIT_SEAFILE_MYSQL_ROOT_PASSWORD:-}" --silent 2>/dev/null; then
+          if docker exec -e MYSQL_PWD="${INIT_SEAFILE_MYSQL_ROOT_PASSWORD:-}" seafile-db mysqladmin ping -u root --silent 2>/dev/null; then
             _db_ready=true; break
           fi
           sleep 3
@@ -9800,8 +9926,10 @@ COMPOSEEOF
       # Stage 2: Dump remote databases and import locally
       info "Stage 2: Dumping databases from remote server..."
 
-      # Create temporary dump directory
+      # Create temporary dump directory (secured, cleaned up on exit)
       _LOCAL_DUMP_DIR=$(mktemp -d /tmp/seafile-migrate-dumps.XXXXXX)
+      chmod 700 "$_LOCAL_DUMP_DIR"
+      trap 'rm -rf "$_LOCAL_DUMP_DIR" 2>/dev/null' EXIT
 
       for _rdb in \
           "${SEAFILE_MYSQL_DB_CCNET_DB_NAME:-ccnet_db}" \
@@ -9813,23 +9941,23 @@ COMPOSEEOF
         case "$_REMOTE_DB_TYPE" in
           docker)
             # Source is Docker — mysqldump via docker exec on remote
-            $_SSH_CMD "docker exec seafile-db mysqldump \
-              -u '${_REMOTE_DB_USER}' -p'${_REMOTE_DB_PASS}' \
+            $_SSH_CMD "docker exec -e MYSQL_PWD='${_REMOTE_DB_PASS}' seafile-db mysqldump \
+              -u '${_REMOTE_DB_USER}' \
               --single-transaction --quick '${_rdb}'" \
               2>/dev/null | gzip > "${_LOCAL_DUMP_DIR}/${_rdb}.sql.gz"
             ;;
           local)
             # Source is manual install — mysqldump directly on remote
-            $_SSH_CMD "mysqldump \
-              -u '${_REMOTE_DB_USER}' -p'${_REMOTE_DB_PASS}' \
+            $_SSH_CMD "MYSQL_PWD='${_REMOTE_DB_PASS}' mysqldump \
+              -u '${_REMOTE_DB_USER}' \
               --single-transaction --quick '${_rdb}'" \
               2>/dev/null | gzip > "${_LOCAL_DUMP_DIR}/${_rdb}.sql.gz"
             ;;
           external)
             # Source uses an external DB — mysqldump with -h flag on remote
-            $_SSH_CMD "mysqldump \
+            $_SSH_CMD "MYSQL_PWD='${_REMOTE_DB_PASS}' mysqldump \
               -h '${_REMOTE_DB_HOST}' \
-              -u '${_REMOTE_DB_USER}' -p'${_REMOTE_DB_PASS}' \
+              -u '${_REMOTE_DB_USER}' \
               --single-transaction --quick '${_rdb}'" \
               2>/dev/null | gzip > "${_LOCAL_DUMP_DIR}/${_rdb}.sql.gz"
             ;;
@@ -9970,6 +10098,10 @@ else
         mkdir -p "$GITOPS_CLONE"
         git clone -b "${GITOPS_BRANCH:-main}" "$AUTHED_URL" "$GITOPS_CLONE" \
           || { warn "git clone failed — GitOps setup skipped."; }
+        # Lock down clone directory — .git/config contains the auth token
+        if [ -d "$GITOPS_CLONE/.git" ]; then
+          chmod 700 "$GITOPS_CLONE"
+        fi
       fi
 
       # Push current .env and docker-compose.yml as initial commit
@@ -10095,7 +10227,11 @@ def run_sync():
             timeout=30
         )
         if result.returncode != 0:
-            log.error(f'git pull failed:\n{result.stderr.strip()}')
+            # Sanitize stderr to avoid leaking auth tokens from the remote URL
+            stderr_clean = result.stderr.strip()
+            if 'oauth2:' in stderr_clean:
+                stderr_clean = '(authentication error — check GITOPS_TOKEN)'
+            log.error(f'git pull failed: {stderr_clean}')
             return
         log.info(f'git pull: {result.stdout.strip()}')
 
@@ -10828,9 +10964,8 @@ if [[ "${_RESTORE_DB}" == "true" && "${PORTAINER_MANAGED,,}" != "true" ]]; then
   info "Waiting for seafile-db to accept connections (up to 60s)..."
   _READY=false
   for i in $(seq 1 30); do
-    if docker exec seafile-db mysqladmin \
-        ping -u root -p"${INIT_SEAFILE_MYSQL_ROOT_PASSWORD}" \
-        --silent 2>/dev/null; then
+    if docker exec -e MYSQL_PWD="${INIT_SEAFILE_MYSQL_ROOT_PASSWORD}" seafile-db mysqladmin \
+        ping -u root --silent 2>/dev/null; then
       _READY=true
       break
     fi
@@ -10847,8 +10982,8 @@ if [[ "${_RESTORE_DB}" == "true" && "${PORTAINER_MANAGED,,}" != "true" ]]; then
     if [[ -n "$LATEST" ]]; then
       SNAP_DATE=$(basename "$LATEST" | grep -oP '\d{8}_\d{6}' || echo "unknown date")
       info "  Restoring ${db} from snapshot ${SNAP_DATE}..."
-      gunzip -c "$LATEST" | docker exec -i seafile-db \
-        mysql -u root -p"${INIT_SEAFILE_MYSQL_ROOT_PASSWORD}" "$db" \
+      gunzip -c "$LATEST" | docker exec -i -e MYSQL_PWD="${INIT_SEAFILE_MYSQL_ROOT_PASSWORD}" seafile-db \
+        mysql -u root "$db" \
         && info "  ✓ ${db} restored" \
         || warn "  ✗ Failed to restore ${db} — database will initialize empty"
     else
@@ -10875,7 +11010,15 @@ elif [[ "${_RESTORE_DB}" == "true" && "${PORTAINER_MANAGED,,}" == "true" ]]; the
 # Manual DB restore helper for Portainer-managed recovery
 # Run this AFTER seafile-db is running but BEFORE deploying the full stack.
 set -euo pipefail
-source /opt/seafile/.env
+# Safe .env parser (avoids command injection from unquoted values)
+while IFS= read -r line || [[ -n "$line" ]]; do
+  [[ "$line" =~ ^[[:space:]]*# ]] && continue
+  [[ -z "${line// }" ]] && continue
+  [[ "$line" != *=* ]] && continue
+  key="${line%%=*}"; value="${line#*=}"
+  if [[ "$value" == \"*\" ]]; then value="${value#\"}"; value="${value%\"}"; fi
+  export "$key=$value"
+done < /opt/seafile/.env
 DB_BACKUP_DIR="\${SEAFILE_VOLUME}/db-backup"
 for db in "\${SEAFILE_MYSQL_DB_CCNET_DB_NAME:-ccnet_db}" \
            "\${SEAFILE_MYSQL_DB_SEAFILE_DB_NAME:-seafile_db}" \
@@ -10883,8 +11026,8 @@ for db in "\${SEAFILE_MYSQL_DB_CCNET_DB_NAME:-ccnet_db}" \
   LATEST=\$(ls -t "\${DB_BACKUP_DIR}/\${db}_"*.sql.gz 2>/dev/null | head -1 || true)
   if [[ -n "\$LATEST" ]]; then
     echo "Restoring \${db} from \$(basename \$LATEST)..."
-    gunzip -c "\$LATEST" | docker exec -i seafile-db \
-      mysql -u root -p"\${INIT_SEAFILE_MYSQL_ROOT_PASSWORD}" "\${db}" \
+    gunzip -c "\$LATEST" | docker exec -i -e MYSQL_PWD="\${INIT_SEAFILE_MYSQL_ROOT_PASSWORD}" seafile-db \
+      mysql -u root "\${db}" \
       && echo "  ✓ \${db} restored" || echo "  ✗ Failed to restore \${db}"
   else
     echo "No snapshot for \${db} — skipping"
@@ -10950,7 +11093,7 @@ _ROOT_PASS="${INIT_SEAFILE_MYSQL_ROOT_PASSWORD:-}"
 if [[ -n "$_ROOT_PASS" && "${DB_INTERNAL:-true}" == "true" ]]; then
   _tables_ready=false
   for _t in {1..60}; do
-    _tcount=$(docker exec seafile-db mysql -u root -p"${_ROOT_PASS}" -N \
+    _tcount=$(docker exec -e MYSQL_PWD="${_ROOT_PASS}" seafile-db mysql -u root -N \
       -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='${SEAFILE_MYSQL_DB_SEAHUB_DB_NAME:-seahub_db}';" 2>/dev/null || echo "0")
     if [[ "$_tcount" -gt 10 ]]; then
       info "Database tables verified (${_tcount} tables in seahub_db)."

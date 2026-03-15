@@ -460,7 +460,7 @@ _print_config_review() {
   printf "    %-42s %b\n" "SEAFDAV_ENABLED"         "$(_pfv SEAFDAV_ENABLED)"
   printf "    %-42s %b\n" "LDAP_ENABLED"            "$(_pfv LDAP_ENABLED)"
   printf "    %-42s %b\n" "BACKUP_ENABLED"          "$(_pfv BACKUP_ENABLED)"
-  printf "    %-42s %b\n" "BACKUP_DEST"             "${BACKUP_DEST:-[blank]}"
+  printf "    %-42s %b\n" "BACKUP_MOUNT"             "${BACKUP_MOUNT:-[blank]}"
   printf "    %-42s %b\n" "GC_ENABLED"              "$(_pfv GC_ENABLED)"
   printf "    %-42s %b\n" "GC_SCHEDULE"             "$(_pfv GC_SCHEDULE)"
   printf "    %-42s %b\n" "DEFAULT_USER_QUOTA_GB"   "$(_pfv DEFAULT_USER_QUOTA_GB)"
@@ -571,7 +571,7 @@ _preflight_print_summary() {
   # Backup label
   local _backup_label
   if [[ "${BACKUP_ENABLED:-false}" == "true" ]]; then
-    _backup_label="Enabled  →  ${BACKUP_DEST:-[dest not set]}"
+    _backup_label="Enabled  →  ${BACKUP_MOUNT:-[not set]} (${BACKUP_STORAGE_TYPE:-nfs})"
   else
     _backup_label="Disabled  ${DIM}(nightly DB snapshot to share still runs)${NC}"
   fi

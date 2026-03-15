@@ -36,8 +36,8 @@ if [ -f "$LOCAL_ENV" ]; then
   PORTAINER_MANAGED_VAL="${PORTAINER_MANAGED_VAL:-false}"
 fi
 STORAGE_ENV="${STORAGE_DIR}/.env"
-LOCAL_SECRETS="/opt/seafile/.secrets"
-STORAGE_SECRETS="${STORAGE_DIR}/.secrets"
+# Note: .secrets is NOT synced to the network share for security.
+# Use "seafile secrets --show" on the host to view generated credentials.
 
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -106,11 +106,7 @@ else
   cp "$LOCAL_ENV" "$STORAGE_ENV"
   chmod 600 "$STORAGE_ENV"
   log "Synced $LOCAL_ENV → $STORAGE_ENV"
-  # Sync secrets reference file if it exists
-  if [[ -f "$LOCAL_SECRETS" ]]; then
-    cp "$LOCAL_SECRETS" "$STORAGE_SECRETS"
-    chmod 600 "$STORAGE_SECRETS"
-  fi
+
 fi
 
 # Initial history commit on startup
@@ -125,11 +121,7 @@ while true; do
     cp "$LOCAL_ENV" "$STORAGE_ENV"
     chmod 600 "$STORAGE_ENV"
     log "Change detected — synced $LOCAL_ENV → $STORAGE_ENV"
-    # Also sync secrets reference file
-    if [[ -f "$LOCAL_SECRETS" ]]; then
-      cp "$LOCAL_SECRETS" "$STORAGE_SECRETS"
-      chmod 600 "$STORAGE_SECRETS"
-    fi
+
 
     # 2. Commit to config history (versioning)
     _commit_history

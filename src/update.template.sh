@@ -506,6 +506,8 @@ if [[ "${_SELECTED[2]}" == "true" ]]; then
             && ok "Repo cloned." \
             || warn "git clone failed — GitOps integration may not be fully set up."
         fi
+        # Lock down clone directory — .git/config contains the auth token
+        [ -d "$CLONE_PATH" ] && chmod 700 "$CLONE_PATH"
 
         # --- Ensure listener script is current ---
         if [ ! -f "$GITOPS_SCRIPT" ]; then

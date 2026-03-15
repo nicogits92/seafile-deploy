@@ -14,7 +14,7 @@
 # ---------------------------------------------------------------------------
 # Deployment version
 # ---------------------------------------------------------------------------
-DEPLOY_VERSION="v4.5-alpha"
+DEPLOY_VERSION="v4.6-alpha"
 
 # ---------------------------------------------------------------------------
 # Colours (safe to re-source — just variable assignments)
@@ -719,6 +719,29 @@ SECHDR
 }
 
 # ---------------------------------------------------------------------------
+# Secure MySQL authentication — uses a temp defaults file instead of passing
+# passwords on the command line (which would be visible in `ps aux`).
+# Usage:
+#   _mysql_auth_file <user> <password>   → creates file, prints path
+#   _mysql_auth_cleanup                  → removes the file
+# The caller must clean up after use.
+# ---------------------------------------------------------------------------
+_MYSQL_AUTH_FILE=""
+
+_mysql_auth_file() {
+  local user="$1" pass="$2"
+  _MYSQL_AUTH_FILE=$(mktemp /tmp/.seafile-my.cnf.XXXXXX)
+  chmod 600 "$_MYSQL_AUTH_FILE"
+  printf '[client]\nuser=%s\npassword=%s\n' "$user" "$pass" > "$_MYSQL_AUTH_FILE"
+  echo "$_MYSQL_AUTH_FILE"
+}
+
+_mysql_auth_cleanup() {
+  [[ -n "${_MYSQL_AUTH_FILE:-}" && -f "$_MYSQL_AUTH_FILE" ]] && rm -f "$_MYSQL_AUTH_FILE"
+  _MYSQL_AUTH_FILE=""
+}
+
+# ---------------------------------------------------------------------------
 # Import database dumps — shared by recovery-finalize and migration.
 # Looks for .sql.gz or .sql files in the given directory matching each
 # Seafile database name. Supports both exact names (ccnet_db.sql.gz)
@@ -729,9 +752,14 @@ _import_db_dumps() {
   local root_pass="$2"
   local db_method="${3:-internal}"  # "internal" = docker exec, "external" = mysql client
 
-  local _db_user="${SEAFILE_MYSQL_DB_USER:-seafile}"
   local _db_host="${SEAFILE_MYSQL_DB_HOST:-seafile-db}"
   local _db_port="${SEAFILE_MYSQL_DB_PORT:-3306}"
+
+  # Create auth file for external DB access
+  local _auth_file=""
+  if [[ "$db_method" != "internal" ]]; then
+    _auth_file=$(_mysql_auth_file "root" "$root_pass")
+  fi
 
   for db in \
       "${SEAFILE_MYSQL_DB_CCNET_DB_NAME:-ccnet_db}" \
@@ -754,10 +782,10 @@ _import_db_dumps() {
 
     # Ensure target database exists
     if [[ "$db_method" == "internal" ]]; then
-      docker exec seafile-db mysql -u root -p"${root_pass}" \
+      docker exec -e MYSQL_PWD="${root_pass}" seafile-db mysql -u root \
         -e "CREATE DATABASE IF NOT EXISTS \`${db}\` CHARACTER SET utf8mb4;" 2>/dev/null
     else
-      mysql -h "$_db_host" -P "$_db_port" -u root -p"${root_pass}" \
+      mysql --defaults-extra-file="$_auth_file" -h "$_db_host" -P "$_db_port" \
         -e "CREATE DATABASE IF NOT EXISTS \`${db}\` CHARACTER SET utf8mb4;" 2>/dev/null
     fi
 
@@ -765,18 +793,18 @@ _import_db_dumps() {
     local _import_ok=false
     if [[ "$dump_file" == *.gz ]]; then
       if [[ "$db_method" == "internal" ]]; then
-        gunzip -c "$dump_file" | docker exec -i seafile-db \
-          mysql -u root -p"${root_pass}" "$db" 2>/dev/null && _import_ok=true
+        gunzip -c "$dump_file" | docker exec -i -e MYSQL_PWD="${root_pass}" seafile-db \
+          mysql -u root "$db" 2>/dev/null && _import_ok=true
       else
-        gunzip -c "$dump_file" | mysql -h "$_db_host" -P "$_db_port" \
-          -u root -p"${root_pass}" "$db" 2>/dev/null && _import_ok=true
+        gunzip -c "$dump_file" | mysql --defaults-extra-file="$_auth_file" \
+          -h "$_db_host" -P "$_db_port" "$db" 2>/dev/null && _import_ok=true
       fi
     else
       if [[ "$db_method" == "internal" ]]; then
-        docker exec -i seafile-db mysql -u root -p"${root_pass}" "$db" \
+        docker exec -i -e MYSQL_PWD="${root_pass}" seafile-db mysql -u root "$db" \
           < "$dump_file" 2>/dev/null && _import_ok=true
       else
-        mysql -h "$_db_host" -P "$_db_port" -u root -p"${root_pass}" "$db" \
+        mysql --defaults-extra-file="$_auth_file" -h "$_db_host" -P "$_db_port" "$db" \
           < "$dump_file" 2>/dev/null && _import_ok=true
       fi
     fi
@@ -787,4 +815,7 @@ _import_db_dumps() {
       warn "  ✗ Failed to import ${db} — check dump file and database access."
     fi
   done
+
+  # Clean up auth file
+  [[ -n "$_auth_file" ]] && rm -f "$_auth_file"
 }

@@ -97,7 +97,11 @@ def run_sync():
             timeout=30
         )
         if result.returncode != 0:
-            log.error(f'git pull failed:\n{result.stderr.strip()}')
+            # Sanitize stderr to avoid leaking auth tokens from the remote URL
+            stderr_clean = result.stderr.strip()
+            if 'oauth2:' in stderr_clean:
+                stderr_clean = '(authentication error — check GITOPS_TOKEN)'
+            log.error(f'git pull failed: {stderr_clean}')
             return
         log.info(f'git pull: {result.stdout.strip()}')
 

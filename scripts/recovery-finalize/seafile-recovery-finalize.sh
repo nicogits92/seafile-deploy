@@ -139,9 +139,8 @@ if [[ "${_RESTORE_DB}" == "true" && "${PORTAINER_MANAGED,,}" != "true" ]]; then
   info "Waiting for seafile-db to accept connections (up to 60s)..."
   _READY=false
   for i in $(seq 1 30); do
-    if docker exec seafile-db mysqladmin \
-        ping -u root -p"${INIT_SEAFILE_MYSQL_ROOT_PASSWORD}" \
-        --silent 2>/dev/null; then
+    if docker exec -e MYSQL_PWD="${INIT_SEAFILE_MYSQL_ROOT_PASSWORD}" seafile-db mysqladmin \
+        ping -u root --silent 2>/dev/null; then
       _READY=true
       break
     fi
@@ -158,8 +157,8 @@ if [[ "${_RESTORE_DB}" == "true" && "${PORTAINER_MANAGED,,}" != "true" ]]; then
     if [[ -n "$LATEST" ]]; then
       SNAP_DATE=$(basename "$LATEST" | grep -oP '\d{8}_\d{6}' || echo "unknown date")
       info "  Restoring ${db} from snapshot ${SNAP_DATE}..."
-      gunzip -c "$LATEST" | docker exec -i seafile-db \
-        mysql -u root -p"${INIT_SEAFILE_MYSQL_ROOT_PASSWORD}" "$db" \
+      gunzip -c "$LATEST" | docker exec -i -e MYSQL_PWD="${INIT_SEAFILE_MYSQL_ROOT_PASSWORD}" seafile-db \
+        mysql -u root "$db" \
         && info "  ✓ ${db} restored" \
         || warn "  ✗ Failed to restore ${db} — database will initialize empty"
     else
@@ -186,7 +185,15 @@ elif [[ "${_RESTORE_DB}" == "true" && "${PORTAINER_MANAGED,,}" == "true" ]]; the
 # Manual DB restore helper for Portainer-managed recovery
 # Run this AFTER seafile-db is running but BEFORE deploying the full stack.
 set -euo pipefail
-source /opt/seafile/.env
+# Safe .env parser (avoids command injection from unquoted values)
+while IFS= read -r line || [[ -n "$line" ]]; do
+  [[ "$line" =~ ^[[:space:]]*# ]] && continue
+  [[ -z "${line// }" ]] && continue
+  [[ "$line" != *=* ]] && continue
+  key="${line%%=*}"; value="${line#*=}"
+  if [[ "$value" == \"*\" ]]; then value="${value#\"}"; value="${value%\"}"; fi
+  export "$key=$value"
+done < /opt/seafile/.env
 DB_BACKUP_DIR="\${SEAFILE_VOLUME}/db-backup"
 for db in "\${SEAFILE_MYSQL_DB_CCNET_DB_NAME:-ccnet_db}" \
            "\${SEAFILE_MYSQL_DB_SEAFILE_DB_NAME:-seafile_db}" \
@@ -194,8 +201,8 @@ for db in "\${SEAFILE_MYSQL_DB_CCNET_DB_NAME:-ccnet_db}" \
   LATEST=\$(ls -t "\${DB_BACKUP_DIR}/\${db}_"*.sql.gz 2>/dev/null | head -1 || true)
   if [[ -n "\$LATEST" ]]; then
     echo "Restoring \${db} from \$(basename \$LATEST)..."
-    gunzip -c "\$LATEST" | docker exec -i seafile-db \
-      mysql -u root -p"\${INIT_SEAFILE_MYSQL_ROOT_PASSWORD}" "\${db}" \
+    gunzip -c "\$LATEST" | docker exec -i -e MYSQL_PWD="\${INIT_SEAFILE_MYSQL_ROOT_PASSWORD}" seafile-db \
+      mysql -u root "\${db}" \
       && echo "  ✓ \${db} restored" || echo "  ✗ Failed to restore \${db}"
   else
     echo "No snapshot for \${db} — skipping"
@@ -261,7 +268,7 @@ _ROOT_PASS="${INIT_SEAFILE_MYSQL_ROOT_PASSWORD:-}"
 if [[ -n "$_ROOT_PASS" && "${DB_INTERNAL:-true}" == "true" ]]; then
   _tables_ready=false
   for _t in {1..60}; do
-    _tcount=$(docker exec seafile-db mysql -u root -p"${_ROOT_PASS}" -N \
+    _tcount=$(docker exec -e MYSQL_PWD="${_ROOT_PASS}" seafile-db mysql -u root -N \
       -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='${SEAFILE_MYSQL_DB_SEAHUB_DB_NAME:-seahub_db}';" 2>/dev/null || echo "0")
     if [[ "$_tcount" -gt 10 ]]; then
       info "Database tables verified (${_tcount} tables in seahub_db)."
