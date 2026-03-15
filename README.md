@@ -1,4 +1,4 @@
-# nicogits92/seafile-deploy 13 v4.6-alpha
+# nicogits92/seafile-deploy 13 v4.7-alpha
 
 <details>
 <summary>📋 Quick Navigation — click to expand</summary>
@@ -30,6 +30,7 @@
 **Day-to-day management**
 [Using update.sh](#using-updatesh) ·
 [The seafile CLI](#the-seafile-cli) ·
+[Web Configuration Panel](#web-configuration-panel) ·
 [Git-Managed Configuration](#git-managed-configuration) ·
 [Config History](#config-history) ·
 [Image Version Management](#image-version-management) ·
@@ -125,8 +126,8 @@ Everything site-specific -- your domain, database credentials, storage paths, im
 
 After the initial setup, day-to-day management works like this:
 
-1. Edit your `.env` — run `seafile config` to use the interactive wizard, or `seafile config edit` to open it directly
-2. Run `seafile update`
+1. Edit your `.env` — use the **web configuration panel** in your browser, run `seafile config` for the CLI wizard, or `seafile config edit` to open the file directly
+2. Run `seafile update` (or click "Save and apply" in the web panel — it runs the same thing automatically)
 
 That command validates your config, shows a diff of what changed, pulls any updated images, re-applies Seafile's config files, restarts the affected containers, and prints a health summary. It handles image updates, timezone changes, domain changes, and anything else that touches `.env` -- all in one step.
 
@@ -243,6 +244,9 @@ Caddy (bundled container, port 7080 by default)
 | `recovery-finalize/seafile-recovery-finalize.service` | No | `/etc/systemd/system/` | Systemd unit for recovery finalization (one-shot) |
 | `gitops/seafile-gitops-sync.py` | No | `/opt/seafile/seafile-gitops-sync.py` | Webhook listener for GitOps push events |
 | `gitops/seafile-gitops-sync.service` | No | `/etc/systemd/system/` | Systemd unit for GitOps webhook listener |
+| `config-ui/seafile-config-ui.py` | No | `/opt/seafile/seafile-config-ui.py` | Web configuration panel backend |
+| `config-ui/config-ui.html` | No | `/opt/seafile/config-ui.html` | Web configuration panel frontend |
+| `config-ui/seafile-config-ui.service` | No | `/etc/systemd/system/` | Systemd unit for web configuration panel |
 
 **`config/` — reference configs and proxy snippets:**
 
@@ -699,12 +703,18 @@ The splash screen appears. Select **1 - Fresh Install** for a new deployment, **
 
 ### Deployment mode
 
-If no configuration file exists, the script asks how you want to deploy:
+If no configuration file exists, the script asks when you want to configure:
+
+1. **Configure now** *(default)* — choose a deployment style and walk through the guided wizard
+2. **Configure later** — get a basic server running immediately, then configure everything in the browser or CLI
+
+**Configure now** presents deployment style options:
 
 1. **Just give me Seafile** — Minimal setup, two questions, done in minutes. See [Quick Start](#quick-start).
 2. **Standard deployment** — Interactive wizard walks you through every choice (described below)
 3. **Git-managed deployment** — Same as standard, plus manages .env through a git repository
-4. **Quit** — Exit to prepare your configuration offline
+
+**Configure later** asks only for your admin email and password, installs with all defaults (local storage, bundled database, no office suite), and shows you the web configuration panel URL when it finishes. Open the panel in your browser to set up storage, email, LDAP, backups, and everything else — no SSH required.
 
 ### Guided Setup (standard and git-managed deployment)
 
@@ -958,6 +968,7 @@ This deployment uses several systemd services for background tasks. All are inst
 | Service | Purpose | When active |
 |---|---|---|
 | `seafile-env-sync` | Mirrors `.env` and `.secrets` to network share, commits config history, triggers Portainer webhook | Always (inotify watcher) |
+| `seafile-config-ui` | Web configuration panel — browser-based .env editor on port 9443 | Always |
 | `seafile-config-server` | Local git HTTP server for Portainer stack sync | Only when `PORTAINER_MANAGED=true` |
 | `seafile-storage-sync` | Background rsync during storage migration | Only during migration |
 | `seafile-recovery-finalize` | Restores DB and starts stack after recovery | Once after recovery, then disables |
@@ -1050,6 +1061,52 @@ seafile version
 ```
 
 The CLI is installed to `/usr/local/bin/seafile` during Step 4 and is available to all users immediately after setup completes. Commands that write to the system (update, fix, config) will prompt for sudo if not already root.
+
+---
+
+## Web Configuration Panel
+
+Every seafile-deploy installation includes a browser-based configuration panel. It runs as a lightweight Python service on port 9443 and provides the same configuration capabilities as `seafile config` — in a visual interface that requires no SSH access.
+
+### Accessing the panel
+
+After installation, the panel is available at:
+
+```
+http://YOUR_SERVER_IP:9443
+```
+
+The password is auto-generated during install and shown in the completion message. You can retrieve it any time with:
+
+```bash
+seafile secrets --show | grep CONFIG_UI
+```
+
+### What you can configure
+
+The panel covers every setting in `.env`, organized into sections: Server, Storage, Database, Proxy, Office Suite, Email, LDAP, Features, Backup, and Advanced. Each section shows only the fields relevant to your current configuration — toggle a feature on and its sub-fields appear.
+
+**Save flow:** Click "Save and apply" to see a diff of what will change. Confirm to write the changes to `.env` and automatically run `seafile-config-fixes.sh` — config files are regenerated and affected containers restart. The entire process takes about 10 seconds.
+
+**Schedules:** Backup and garbage collection schedules use a human-readable picker (frequency + time + day) instead of cron syntax. The panel converts your selection to cron format automatically.
+
+**Post-save actions:** When a change requires steps outside of Seafile (like updating your reverse proxy after a hostname change), the panel shows a step-by-step action panel with pre-filled values and copy buttons.
+
+### How it works
+
+The panel is a single Python script (`/opt/seafile/seafile-config-ui.py`) using only the Python standard library — no pip packages, no frameworks, no build step. It serves a single HTML file (`/opt/seafile/config-ui.html`) and exposes a JSON API for reading and writing `.env` sections.
+
+When you click "Save and apply", the backend writes the updated values to `/opt/seafile/.env` and runs `seafile-config-fixes.sh --yes` in a background thread. The existing env-sync service detects the change and handles propagation to the network share, config history, and Portainer (if enabled).
+
+The service runs as `seafile-config-ui.service` under systemd and starts automatically on boot.
+
+### Security
+
+The panel is protected by HTTP Basic Auth using the `CONFIG_UI_PASSWORD` from `.env`. This password is auto-generated during install (same strength as Redis and database passwords) and recorded in `.secrets`.
+
+The service listens on `0.0.0.0:9443`. On a dedicated VM this is appropriate — the panel is only reachable from your local network. If running on a shared host or exposing ports to the internet, restrict access via firewall rules.
+
+Sensitive values (passwords, tokens, secrets) are masked in the UI and API responses. The show/hide toggle reveals them only on explicit click.
 
 ---
 
@@ -1641,10 +1698,11 @@ The main risks on a shared host are the `apt-get upgrade` step and port conflict
 |---|---|---|
 | `7080` | Caddy (external proxy target) | Yes -- set `CADDY_PORT` in `.env` |
 | `9001` | Portainer Agent | No -- hardcoded in the agent run command |
+| `9443` | Web configuration panel | No -- hardcoded in service |
 
 Check for conflicts before running:
 ```bash
-ss -tlnp | grep -E "7080|9001"
+ss -tlnp | grep -E "7080|9001|9443"
 ```
 
 If port 7080 is in use, change `CADDY_PORT` in `/opt/seafile/.env` to a free port before running the script. You will also need to update the port in your reverse proxy config.
@@ -2194,6 +2252,7 @@ seafile-deploy/
 │   ├── config-git-server/                # Local git HTTP server for Portainer
 │   ├── storage-sync/                     # Storage migration rsync
 │   ├── gitops/                           # GitOps webhook handler
+│   ├── config-ui/                        # Web configuration panel
 │   └── recovery-finalize/                # Recovery finalizer
 └── config/                               # Reference configs and proxy snippets
 ```
@@ -2220,6 +2279,8 @@ After `seafile-deploy.sh` → Fresh Install completes, all files are placed auto
 │   ├── docker-compose.yml            # Stack definition
 │   ├── seafile-env-sync.sh           # .env sync + history + Portainer webhook
 │   ├── seafile-config-server.sh      # Git HTTP server (Portainer integration)
+│   ├── seafile-config-ui.py          # Web configuration panel backend
+│   ├── config-ui.html                # Web configuration panel frontend
 │   ├── seafile-gitops-sync.py        # GitOps webhook listener (if enabled)
 │   └── seafile_storage_classes.json  # Multi-backend config (if enabled)
 ├── seafile-caddy/
@@ -2295,6 +2356,9 @@ This repo uses a **template system** to prevent drift between source files and t
                src/docker-compose.yml
                scripts/recovery-finalize/seafile-recovery-finalize.sh
                scripts/gitops/seafile-gitops-sync.py
+               scripts/config-ui/seafile-config-ui.py
+               scripts/config-ui/config-ui.html
+               scripts/config-ui/seafile-config-ui.service
 
 4. Assemble seafile-deploy.sh (repo root) from:
    └── src/deploy-header.sh
@@ -2472,19 +2536,13 @@ The thumbnail-server and metadata-server also need read access — add the same 
 
 **Estimated effort:** 300-400 lines of code across docker-compose.yml, setup.template.sh, config-fixes, CLI, and recovery-finalize. Requires thorough testing with actual multi-NAS setups. Recommend a dedicated implementation cycle rather than inclusion in a broader refactor.
 
-#### Web Configuration Interface
-
-A lightweight web-based config editor that eliminates SSH for routine .env changes. Would run as a profile-gated container (`seafile-config-ui`) serving a form-based editor at a URL like `https://seafile.example.com/admin/config`. The editor writes to `.env` and the existing env-sync pipeline handles propagation (storage backup, config history, Portainer webhook). Estimated at ~760 lines of code (FastAPI backend + vanilla HTML frontend) and 4-6 days of implementation. See `web-config-abstract.md` in the repository root for the full design document covering architecture, security model, UX design, and integration points.
-
-This feature would enable a fourth deployment mode ("Web-managed") that provides genuine browser-based configuration management — the use case that Portainer-managed mode was intended to serve but cannot deliver due to the config generation layer (see below).
-
 #### True Portainer-Managed Configuration
 
 The current Portainer integration lets Portainer manage the stack lifecycle (deploy/redeploy) but not configuration. Editing env vars in Portainer's UI and clicking redeploy does not work because Seafile reads most settings from generated config files (`seahub_settings.py`, `seafile.conf`, etc.), not directly from environment variables. The config generation layer (`config-fixes`) must run after every `.env` change to regenerate these files.
 
 A bridge container approach was investigated: a sidecar that detects when Portainer injects new env vars, writes them back to `.env` on the host, and triggers config-fixes. This is technically possible but produces a degraded experience — every change triggers two full stack restarts (once by Portainer, once by config-fixes) with a confusing intermediate state where env vars and config files are mismatched.
 
-The cleaner solution is the Web Configuration Interface described above, which is purpose-built for this project's architecture. It understands the config generation layer, writes to `.env` correctly, and can trigger config-fixes directly for a single-restart experience. If implemented, it would replace the need for Portainer-based configuration entirely while still allowing Portainer to handle monitoring and stack lifecycle.
+The [Web Configuration Panel](#web-configuration-panel) is the solution to this problem. It understands the config generation layer, writes to `.env` correctly, and triggers config-fixes directly for a single-restart experience. It provides genuine browser-based configuration management while Portainer continues to handle monitoring and stack lifecycle.
 
 </details>
 
@@ -2696,6 +2754,7 @@ All credentials for both office suites are generated on first boot, regardless o
 | `CADDY_PORT` | `7080` | Port Caddy exposes on the Docker host. Set to `80` automatically when `PROXY_TYPE=caddy-bundled`. |
 | `TIME_ZONE` | `America/New_York` | [TZ database name](https://en.wikipedia.org/wiki/List_of_tz_database_time_zones) |
 | `REDIS_PASSWORD` | — | Redis authentication password. Leave blank to disable. |
+| `CONFIG_UI_PASSWORD` | *(auto-generated)* | Password for the web configuration panel at port 9443. |
 | `SEAFILE_LOG_TO_STDOUT` | `true` | `false` writes logs to files on the storage share instead |
 | `MD_FILE_COUNT_LIMIT` | `100000` | Max files per library the metadata server indexes |
 | `NOTIFICATION_SERVER_LOG_LEVEL` | `info` | `debug` \| `info` \| `warn` \| `error` |

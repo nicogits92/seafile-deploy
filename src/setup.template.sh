@@ -704,6 +704,29 @@ else
   info "Config git server installed (inactive — enable via PORTAINER_MANAGED=true)."
 fi
 
+# --- Web configuration panel ---
+CONFIGUI_SCRIPT="/opt/seafile/seafile-config-ui.py"
+CONFIGUI_HTML="/opt/seafile/config-ui.html"
+CONFIGUI_SERVICE="/etc/systemd/system/seafile-config-ui.service"
+
+cat > "$CONFIGUI_SCRIPT" << 'CONFIGUIPYEOF'
+{{EMBED:scripts/config-ui/seafile-config-ui.py}}
+CONFIGUIPYEOF
+chmod +x "$CONFIGUI_SCRIPT"
+
+cat > "$CONFIGUI_HTML" << 'CONFIGUIHTMLEOF'
+{{EMBED:scripts/config-ui/config-ui.html}}
+CONFIGUIHTMLEOF
+
+cat > "$CONFIGUI_SERVICE" << 'CONFIGUISVCEOF'
+{{EMBED:scripts/config-ui/seafile-config-ui.service}}
+CONFIGUISVCEOF
+
+systemctl daemon-reload
+systemctl enable seafile-config-ui
+systemctl start seafile-config-ui
+info "Web configuration panel installed and started (port 9443)."
+
 fi
 
 # =============================================================================
@@ -1442,8 +1465,20 @@ NPMCONF
     echo -e "  ${DIM}Change this password after your first login.${NC}"
     echo -e "  ${DIM}Go to Profile (top right) → Password.${NC}"
     echo ""
-    echo -e "  ${DIM}Want more features? Run:${NC} ${BOLD}seafile config${NC}"
-    echo -e "  ${DIM}(network storage, email, LDAP, backups, and more)${NC}"
+
+    # Show config panel info
+    local _cui_pw=""
+    _cui_pw=$(grep "^CONFIG_UI_PASSWORD=" "$ENV_FILE" 2>/dev/null | cut -d= -f2-)
+    if [[ -n "$_cui_pw" ]]; then
+      local _host_for_panel
+      _host_for_panel=$(hostname -I 2>/dev/null | awk '{print $1}')
+      echo -e "  ${BOLD}Web configuration panel:${NC}"
+      echo -e "    ${BOLD}http://${_host_for_panel}:9443${NC}"
+      echo -e "    ${DIM}Password: ${_cui_pw}  (also in: seafile secrets --show)${NC}"
+      echo ""
+    fi
+
+    echo -e "  ${DIM}Configure via browser or CLI:${NC} ${BOLD}seafile config${NC}"
     echo ""
   fi
 

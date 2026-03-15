@@ -67,7 +67,7 @@ heading() { echo -e "\n${BOLD}${CYAN}==> $1${NC}"; }
 # ---------------------------------------------------------------------------
 # Deployment version
 # ---------------------------------------------------------------------------
-DEPLOY_VERSION="v4.6-alpha"
+DEPLOY_VERSION="v4.7-alpha"
 
 # ---------------------------------------------------------------------------
 # Colours (safe to re-source — just variable assignments)
@@ -128,7 +128,7 @@ _DEFAULTS=(
   "ONLYOFFICE_PORT=6233"
   "ONLYOFFICE_VOLUME=/opt/onlyoffice"
   "CLAMAV_ENABLED=false"
-  "SMTP_ENABLED=true"
+  "SMTP_ENABLED=false"
   "SMTP_PORT=465"
   "SMTP_USE_TLS=true"
   "SMTP_FROM=noreply@yourdomain.com"
@@ -137,6 +137,16 @@ _DEFAULTS=(
   "TRASH_CLEAN_AFTER_DAYS=30"
   "FORCE_2FA=false"
   "ENABLE_GUEST=false"
+  "ENABLE_SIGNUP=false"
+  "LOGIN_ATTEMPT_LIMIT=5"
+  "SHARE_LINK_FORCE_USE_PASSWORD=false"
+  "SHARE_LINK_EXPIRE_DAYS_DEFAULT=0"
+  "SHARE_LINK_EXPIRE_DAYS_MAX=0"
+  "SESSION_COOKIE_AGE=0"
+  "FILE_HISTORY_KEEP_DAYS=0"
+  "AUDIT_ENABLED=true"
+  "SITE_NAME=Seafile"
+  "SITE_TITLE=Seafile"
   "SEAFDAV_ENABLED=false"
   "LDAP_ENABLED=false"
   "LDAP_LOGIN_ATTR=mail"
@@ -146,6 +156,8 @@ _DEFAULTS=(
   "GC_DRY_RUN=false"
   "BACKUP_ENABLED=false"
   "BACKUP_SCHEDULE=0 2 * * *"
+  "BACKUP_STORAGE_TYPE=nfs"
+  "BACKUP_MOUNT=/mnt/seafile_backup"
   "THUMBNAIL_PATH=/opt/seafile-thumbnails"
   "METADATA_PATH=/opt/seafile-metadata"
   "SEADOC_DATA_PATH=/opt/seadoc-data"
@@ -160,6 +172,7 @@ _DEFAULTS=(
   "PORTAINER_MANAGED=false"
   "PORTAINER_STACK_WEBHOOK="
   "CONFIG_GIT_PORT=9418"
+  "CONFIG_UI_PASSWORD="
   "CONFIG_HISTORY_ENABLED=true"
   "CONFIG_HISTORY_RETAIN=50"
   "PROXY_TYPE=nginx"
@@ -706,6 +719,10 @@ TIME_ZONE=America/New_York
 # If set, all internal services are configured to use it automatically.
 REDIS_PASSWORD=
 
+# Web configuration panel password. Auto-generated during install.
+# Access the panel at https://your-hostname/admin/config
+CONFIG_UI_PASSWORD=
+
 # Set to false to write logs to files on the storage share instead of stdout.
 SEAFILE_LOG_TO_STDOUT=true
 
@@ -1143,6 +1160,7 @@ _print_config_review() {
   echo -e "  ${BOLD}Auth${NC}"
   printf "    %-42s %b\n" "JWT_PRIVATE_KEY" "$(_mask_secret "${JWT_PRIVATE_KEY:-}")"
   printf "    %-42s %b\n" "REDIS_PASSWORD"  "$(_mask_secret "${REDIS_PASSWORD:-}")"
+  printf "    %-42s %b\n" "CONFIG_UI_PASSWORD" "$(_mask_secret "${CONFIG_UI_PASSWORD:-}")"
   printf "    %-42s %b\n" "REDIS_PORT"      "$(_pfv REDIS_PORT)"
   echo ""
 
@@ -1826,6 +1844,8 @@ services:
       - "traefik.http.routers.seafile.middlewares=seafile-headers"
     networks:
       - seafile-net
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
 
   # --- Cache ---
   redis:

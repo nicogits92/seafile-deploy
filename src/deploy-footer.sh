@@ -39,6 +39,7 @@ prompt_secret_generation() {
   local db_internal db_host db_pass db_root_pass storage_type
   jwt=$(grep            "^JWT_PRIVATE_KEY="                  "$env_file" | cut -d'=' -f2- || true)
   redis_secret=$(grep   "^REDIS_PASSWORD="                   "$env_file" | cut -d'=' -f2- || true)
+  config_ui_pw=$(grep   "^CONFIG_UI_PASSWORD="               "$env_file" | cut -d'=' -f2- || true)
   gitops_secret=$(grep  "^GITOPS_WEBHOOK_SECRET="            "$env_file" | cut -d'=' -f2- || true)
   admin_pass=$(grep     "^INIT_SEAFILE_ADMIN_PASSWORD="      "$env_file" | cut -d'=' -f2- || true)
   collabora_user=$(grep "^COLLABORA_ADMIN_USER="             "$env_file" | cut -d'=' -f2- || true)
@@ -58,6 +59,7 @@ prompt_secret_generation() {
   local infra_blank=() user_blank=()
   [[ -z "$jwt"           ]] && infra_blank+=("JWT_PRIVATE_KEY")
   [[ -z "$redis_secret"  ]] && infra_blank+=("REDIS_PASSWORD")
+  [[ -z "$config_ui_pw"  ]] && infra_blank+=("CONFIG_UI_PASSWORD")
   [[ -z "$gitops_secret" ]] && infra_blank+=("GITOPS_WEBHOOK_SECRET")
   # Office suite credentials (auto-generated, never need to be remembered)
   [[ -z "$collabora_user"  ]] && infra_blank+=("COLLABORA_ADMIN_USER")
@@ -90,6 +92,7 @@ prompt_secret_generation() {
   local infra_desc=(
     "JWT_PRIVATE_KEY            internal auth token signing"
     "REDIS_PASSWORD             cache authentication"
+    "CONFIG_UI_PASSWORD         web configuration panel access"
     "GITOPS_WEBHOOK_SECRET      webhook HMAC signing (only used if GitOps is enabled)"
     "COLLABORA_ADMIN_USER       Collabora admin console username (auto: admin)"
     "COLLABORA_ADMIN_PASSWORD   Collabora admin console password"
@@ -234,7 +237,7 @@ PYEOF
         # For DB_INTERNAL=true, the database is the seafile-db container
         val="seafile-db"
         ;;
-      REDIS_PASSWORD|COLLABORA_ADMIN_PASSWORD|INIT_SEAFILE_ADMIN_PASSWORD|SEAFILE_MYSQL_DB_PASSWORD|INIT_SEAFILE_MYSQL_ROOT_PASSWORD)
+      REDIS_PASSWORD|COLLABORA_ADMIN_PASSWORD|INIT_SEAFILE_ADMIN_PASSWORD|SEAFILE_MYSQL_DB_PASSWORD|INIT_SEAFILE_MYSQL_ROOT_PASSWORD|CONFIG_UI_PASSWORD)
         # 24 random hex chars -- no special characters, safe in all SQL contexts
         val=$(openssl rand -hex 24)
         ;;
@@ -801,13 +804,29 @@ while true; do
         fi
         echo ""
         echo -e "  ${BOLD}Login:${NC}     ${MINIMAL_ADMIN_EMAIL}"
-        echo -e "  ${BOLD}Password:${NC}  changeme"
+        echo -e "  ${BOLD}Password:${NC}  ${MINIMAL_ADMIN_PASS:-changeme}"
         echo ""
         echo -e "  ${YELLOW}Change this password after your first login.${NC}"
         echo -e "  ${DIM}Go to Profile (top right) → Password.${NC}"
-        echo ""
-        echo -e "  ${DIM}Want more features? Run: ${BOLD}seafile config${NC}"
-        echo -e "  ${DIM}(network storage, email, LDAP, backups, and more)${NC}"
+
+        if [[ "${CONFIGURE_LATER:-false}" == "true" ]]; then
+          # Config UI password from .env
+          local _cui_pw=""
+          _cui_pw=$(grep "^CONFIG_UI_PASSWORD=" "$ENV_FILE" 2>/dev/null | cut -d= -f2-)
+          echo ""
+          echo -e "  ${DIM}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+          echo ""
+          echo -e "  ${BOLD}Configure your server:${NC}"
+          echo ""
+          echo -e "  ${CYAN}${BOLD}  Web panel:${NC}  ${BOLD}http://${MINIMAL_ACCESS_URL##*://}:9443${NC}"
+          echo -e "  ${DIM}  Password:   ${_cui_pw}${NC}"
+          echo ""
+          echo -e "  ${DIM}  Or from the command line:  ${BOLD}seafile config${NC}"
+        else
+          echo ""
+          echo -e "  ${DIM}Want more features? Run: ${BOLD}seafile config${NC}"
+          echo -e "  ${DIM}(network storage, email, LDAP, backups, and more)${NC}"
+        fi
         echo ""
         echo -e "  ${DIM}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
         echo ""

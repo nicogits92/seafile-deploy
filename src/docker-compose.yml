@@ -27,6 +27,8 @@ services:
       - "traefik.http.routers.seafile.middlewares=seafile-headers"
     networks:
       - seafile-net
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
 
   # --- Cache ---
   redis:

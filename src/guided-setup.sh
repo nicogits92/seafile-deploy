@@ -1229,6 +1229,13 @@ run_minimal_setup() {
     fi
     echo -e "  ${RED}Please enter a valid email address.${NC}"
   done
+
+  # --- Admin password ---
+  echo ""
+  echo -ne "  ${BOLD}Admin password${NC} ${DIM}(leave blank for 'changeme')${NC}: "
+  read -rs _admin_pass
+  echo ""
+  _admin_pass="${_admin_pass:-changeme}"
   echo ""
 
   # --- Access mode (local vs internet) ---
@@ -1443,6 +1450,153 @@ ENVTEMPLATE
 }
 
 # ===========================================================================
+# DEPLOYMENT MODE SUBMENU — shown when user chooses "Configure now"
+# ===========================================================================
+_show_deployment_modes() {
+  local env_file="$1"
+
+  echo ""
+  echo -e "  ${DIM}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+  echo ""
+  echo -e "  ${BOLD}Choose your deployment style:${NC}"
+  echo ""
+  echo -e "  ${GREEN}${BOLD}  1  ${NC}${BOLD}Just give me Seafile${NC}"
+  echo -e "     ${DIM}Quick setup · get started in minutes${NC}"
+  echo ""
+  echo -e "  ${CYAN}${BOLD}  2  ${NC}${BOLD}Standard deployment${NC}"
+  echo -e "     ${DIM}Network storage · disaster recovery · all options${NC}"
+  echo ""
+  echo -e "  ${YELLOW}${BOLD}  3  ${NC}${BOLD}Git-managed deployment${NC}"
+  echo -e "     ${DIM}Same as standard, plus manage .env through a git${NC}"
+  echo -e "     ${DIM}repository — config changes without SSH${NC}"
+  echo ""
+  echo -e "  ${DIM}  0  Back${NC}"
+  echo ""
+  echo -e "  ${DIM}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+  echo ""
+
+  local choice=""
+  while true; do
+    echo -ne "  ${BOLD}Select [1/2/3/0]:${NC} "
+    read -r choice
+    case "$choice" in
+      1) run_minimal_setup "$env_file"; return 0 ;;
+      2) export WIZ_DEPLOYMENT_MODE="native"; export WIZ_GITOPS_ENABLED="false"
+         run_guided_setup "$env_file"; return 0 ;;
+      3) export WIZ_DEPLOYMENT_MODE="native"; export WIZ_GITOPS_ENABLED="true"
+         run_guided_setup "$env_file"; return 0 ;;
+      0) check_env_and_configure; return $? ;;
+      *) echo -e "  ${DIM}Enter 1, 2, 3, or 0.${NC}" ;;
+    esac
+  done
+}
+
+# ===========================================================================
+# CONFIGURE LATER — bare minimum install, configure in browser or CLI after
+# ===========================================================================
+run_configure_later() {
+  local env_file="${1:-/opt/seafile/.env}"
+
+  echo ""
+  echo -e "  ${DIM}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+  echo ""
+  echo -e "  ${BOLD}Quick Install${NC}"
+  echo ""
+  echo -e "  ${DIM}We just need your login credentials — everything else${NC}"
+  echo -e "  ${DIM}can be configured later in the browser or CLI.${NC}"
+  echo ""
+
+  # --- Admin email ---
+  local _admin_email=""
+  while true; do
+    echo -ne "  ${BOLD}Admin email${NC} ${DIM}(this is your login)${NC}: "
+    read -r _admin_email
+    if [[ -n "$_admin_email" && "$_admin_email" == *@* ]]; then
+      break
+    fi
+    echo -e "  ${RED}Please enter a valid email address.${NC}"
+  done
+
+  # --- Admin password ---
+  echo ""
+  echo -ne "  ${BOLD}Admin password${NC} ${DIM}(leave blank for 'changeme')${NC}: "
+  read -rs _admin_pass
+  echo ""
+  _admin_pass="${_admin_pass:-changeme}"
+  echo ""
+
+  # --- Auto-detect hostname ---
+  local _hostname
+  _hostname=$(hostname -I 2>/dev/null | awk '{print $1}')
+  [[ -z "$_hostname" ]] && _hostname=$(ip route get 1.1.1.1 2>/dev/null | awk '{print $7; exit}')
+  [[ -z "$_hostname" ]] && _hostname="localhost"
+
+  local _access_url="http://${_hostname}"
+
+  # --- Generate .env ---
+  mkdir -p "$(dirname "$env_file")"
+
+  local template_content
+  template_content=$(cat << 'ENVTEMPLATE'
+{{ENV_TEMPLATE}}
+ENVTEMPLATE
+)
+
+  _mini_set() {
+    local key="$1" val="$2"
+    template_content=$(echo "$template_content" | sed "s|^${key}=.*|${key}=${val}|")
+  }
+
+  _mini_set "SEAFILE_SERVER_HOSTNAME" "$_hostname"
+  _mini_set "SEAFILE_SERVER_PROTOCOL" "http"
+  _mini_set "INIT_SEAFILE_ADMIN_EMAIL" "$_admin_email"
+  _mini_set "INIT_SEAFILE_ADMIN_PASSWORD" "$_admin_pass"
+  _mini_set "STORAGE_TYPE" "local"
+  _mini_set "SEAFILE_VOLUME" "/opt/seafile-data"
+  _mini_set "DB_INTERNAL" "true"
+  _mini_set "PROXY_TYPE" "nginx"
+  _mini_set "CADDY_PORT" "80"
+  _mini_set "CADDY_HTTPS_PORT" "7443"
+  _mini_set "OFFICE_SUITE" "none"
+  _mini_set "PORTAINER_MANAGED" "false"
+  _mini_set "SMTP_ENABLED" "false"
+  _mini_set "CLAMAV_ENABLED" "false"
+  _mini_set "GITOPS_INTEGRATION" "false"
+  _mini_set "SEAFDAV_ENABLED" "false"
+  _mini_set "LDAP_ENABLED" "false"
+  _mini_set "BACKUP_ENABLED" "false"
+
+  # Generate all infrastructure secrets
+  _mini_set "JWT_PRIVATE_KEY" "$(openssl rand -base64 32)"
+  _mini_set "REDIS_PASSWORD" "$(openssl rand -hex 24)"
+  _mini_set "GITOPS_WEBHOOK_SECRET" "$(openssl rand -hex 20)"
+  _mini_set "COLLABORA_ADMIN_USER" "admin"
+  _mini_set "COLLABORA_ADMIN_PASSWORD" "$(openssl rand -hex 24)"
+  local _escaped_host
+  _escaped_host=$(echo "$_hostname" | sed 's/\./\\./g')
+  _mini_set "COLLABORA_ALIAS_GROUP" "http://${_escaped_host}"
+  _mini_set "ONLYOFFICE_JWT_SECRET" "$(openssl rand -hex 16)"
+  _mini_set "SEAFILE_MYSQL_DB_HOST" "seafile-db"
+  _mini_set "SEAFILE_MYSQL_DB_PASSWORD" "$(openssl rand -hex 24)"
+  _mini_set "INIT_SEAFILE_MYSQL_ROOT_PASSWORD" "$(openssl rand -hex 24)"
+  _mini_set "CONFIG_UI_PASSWORD" "$(openssl rand -hex 16)"
+
+  echo "$template_content" > "$env_file"
+  chmod 600 "$env_file"
+
+  echo -e "  ${GREEN}✓${NC}  Configuration saved."
+  echo ""
+
+  # Signal to deploy-footer
+  export MINIMAL_INSTALL=true
+  export CONFIGURE_LATER=true
+  export MINIMAL_ACCESS_URL="$_access_url"
+  export MINIMAL_ADMIN_EMAIL="$_admin_email"
+  export MINIMAL_ADMIN_PASS="$_admin_pass"
+  export SEAFILE_SERVER_PROTOCOL="http"
+}
+
+# ===========================================================================
 # CHECK FOR .ENV AND OFFER OPTIONS
 # ===========================================================================
 check_env_and_configure() {
@@ -1452,64 +1606,30 @@ check_env_and_configure() {
   # Create directory if needed
   mkdir -p "$env_dir"
 
-  # ── State 1: No .env (or empty) — show deployment mode choice ───────────
+  # ── State 1: No .env (or empty) — show configuration timing choice ──────
   if [[ ! -f "$env_file" ]] || [[ ! -s "$env_file" ]]; then
     echo ""
     echo -e "  ${DIM}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo ""
-    echo -e "  ${BOLD}How would you like to deploy Seafile?${NC}"
+    echo -e "  ${GREEN}${BOLD}  1  ${NC}${BOLD}Configure now${NC}  ${DIM}(default)${NC}"
+    echo -e "     ${DIM}Set up your server with the guided installer${NC}"
     echo ""
-    echo -e "  ${GREEN}${BOLD}  1  ${NC}${BOLD}Just give me Seafile${NC}"
-    echo -e "     ${DIM}Quick setup · get started in minutes${NC}"
-    echo ""
-    echo -e "  ${CYAN}${BOLD}  2  ${NC}${BOLD}Standard deployment${NC}"
-    echo -e "     ${DIM}Network storage · disaster recovery · all options${NC}"
-    echo ""
-    echo -e "  ${YELLOW}${BOLD}  3  ${NC}${BOLD}Git-managed deployment${NC}"
-    echo -e "     ${DIM}Same as standard, plus manage .env through a git${NC}"
-    echo -e "     ${DIM}repository — config changes without SSH${NC}"
-    echo ""
-    echo -e "  ${DIM}  4  Quit${NC}"
-    echo ""
-    echo -e "  ${DIM}All modes include the Portainer Agent for web-based${NC}"
-    echo -e "  ${DIM}container monitoring. To use Portainer for stack${NC}"
-    echo -e "  ${DIM}management, set PORTAINER_MANAGED=true after setup.${NC}"
+    echo -e "  ${CYAN}${BOLD}  2  ${NC}${BOLD}Configure later${NC}"
+    echo -e "     ${DIM}Get a basic server running now — configure${NC}"
+    echo -e "     ${DIM}everything else in the browser or CLI after${NC}"
     echo ""
     echo -e "  ${DIM}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo ""
 
-    local choice=""
+    local _timing=""
     while true; do
-      echo -ne "  ${BOLD}Select [1/2/3/4]:${NC} "
-      read -r choice
-      case "$choice" in
-        1)
-          run_minimal_setup "$env_file"
-          return 0
-          ;;
-        2)
-          export WIZ_DEPLOYMENT_MODE="native"
-          export WIZ_GITOPS_ENABLED="false"
-          run_guided_setup "$env_file"
-          return 0
-          ;;
-        3)
-          export WIZ_DEPLOYMENT_MODE="native"
-          export WIZ_GITOPS_ENABLED="true"
-          run_guided_setup "$env_file"
-          return 0
-          ;;
-        4)
-          echo ""
-          echo -e "  ${DIM}To configure manually:${NC}"
-          echo -e "  ${DIM}  1. Place your .env at ${env_file}${NC}"
-          echo -e "  ${DIM}  2. Run this script again${NC}"
-          echo ""
-          exit 0
-          ;;
-        *)
-          echo -e "  ${DIM}Enter 1, 2, 3, or 4.${NC}"
-          ;;
+      echo -ne "  ${BOLD}Select [1/2] (default: 1):${NC} "
+      read -r _timing
+      _timing="${_timing:-1}"
+      case "$_timing" in
+        1) _show_deployment_modes "$env_file"; return $? ;;
+        2) run_configure_later "$env_file"; return 0 ;;
+        *) echo -e "  ${DIM}Enter 1 or 2.${NC}" ;;
       esac
     done
     return 0

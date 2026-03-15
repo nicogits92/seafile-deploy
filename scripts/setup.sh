@@ -38,7 +38,7 @@ export DEBIAN_FRONTEND=noninteractive
 # ---------------------------------------------------------------------------
 # Deployment version
 # ---------------------------------------------------------------------------
-DEPLOY_VERSION="v4.6-alpha"
+DEPLOY_VERSION="v4.7-alpha"
 
 # ---------------------------------------------------------------------------
 # Colours (safe to re-source — just variable assignments)
@@ -99,7 +99,7 @@ _DEFAULTS=(
   "ONLYOFFICE_PORT=6233"
   "ONLYOFFICE_VOLUME=/opt/onlyoffice"
   "CLAMAV_ENABLED=false"
-  "SMTP_ENABLED=true"
+  "SMTP_ENABLED=false"
   "SMTP_PORT=465"
   "SMTP_USE_TLS=true"
   "SMTP_FROM=noreply@yourdomain.com"
@@ -108,6 +108,16 @@ _DEFAULTS=(
   "TRASH_CLEAN_AFTER_DAYS=30"
   "FORCE_2FA=false"
   "ENABLE_GUEST=false"
+  "ENABLE_SIGNUP=false"
+  "LOGIN_ATTEMPT_LIMIT=5"
+  "SHARE_LINK_FORCE_USE_PASSWORD=false"
+  "SHARE_LINK_EXPIRE_DAYS_DEFAULT=0"
+  "SHARE_LINK_EXPIRE_DAYS_MAX=0"
+  "SESSION_COOKIE_AGE=0"
+  "FILE_HISTORY_KEEP_DAYS=0"
+  "AUDIT_ENABLED=true"
+  "SITE_NAME=Seafile"
+  "SITE_TITLE=Seafile"
   "SEAFDAV_ENABLED=false"
   "LDAP_ENABLED=false"
   "LDAP_LOGIN_ATTR=mail"
@@ -117,6 +127,8 @@ _DEFAULTS=(
   "GC_DRY_RUN=false"
   "BACKUP_ENABLED=false"
   "BACKUP_SCHEDULE=0 2 * * *"
+  "BACKUP_STORAGE_TYPE=nfs"
+  "BACKUP_MOUNT=/mnt/seafile_backup"
   "THUMBNAIL_PATH=/opt/seafile-thumbnails"
   "METADATA_PATH=/opt/seafile-metadata"
   "SEADOC_DATA_PATH=/opt/seadoc-data"
@@ -131,6 +143,7 @@ _DEFAULTS=(
   "PORTAINER_MANAGED=false"
   "PORTAINER_STACK_WEBHOOK="
   "CONFIG_GIT_PORT=9418"
+  "CONFIG_UI_PASSWORD="
   "CONFIG_HISTORY_ENABLED=true"
   "CONFIG_HISTORY_RETAIN=50"
   "PROXY_TYPE=nginx"
@@ -677,6 +690,10 @@ TIME_ZONE=America/New_York
 # If set, all internal services are configured to use it automatically.
 REDIS_PASSWORD=
 
+# Web configuration panel password. Auto-generated during install.
+# Access the panel at https://your-hostname/admin/config
+CONFIG_UI_PASSWORD=
+
 # Set to false to write logs to files on the storage share instead of stdout.
 SEAFILE_LOG_TO_STDOUT=true
 
@@ -1114,6 +1131,7 @@ _print_config_review() {
   echo -e "  ${BOLD}Auth${NC}"
   printf "    %-42s %b\n" "JWT_PRIVATE_KEY" "$(_mask_secret "${JWT_PRIVATE_KEY:-}")"
   printf "    %-42s %b\n" "REDIS_PASSWORD"  "$(_mask_secret "${REDIS_PASSWORD:-}")"
+  printf "    %-42s %b\n" "CONFIG_UI_PASSWORD" "$(_mask_secret "${CONFIG_UI_PASSWORD:-}")"
   printf "    %-42s %b\n" "REDIS_PORT"      "$(_pfv REDIS_PORT)"
   echo ""
 
@@ -5759,6 +5777,832 @@ else
   info "Config git server installed (inactive — enable via PORTAINER_MANAGED=true)."
 fi
 
+# --- Web configuration panel ---
+CONFIGUI_SCRIPT="/opt/seafile/seafile-config-ui.py"
+CONFIGUI_HTML="/opt/seafile/config-ui.html"
+CONFIGUI_SERVICE="/etc/systemd/system/seafile-config-ui.service"
+
+cat > "$CONFIGUI_SCRIPT" << 'CONFIGUIPYEOF'
+#!/usr/bin/env python3
+# =============================================================================
+# seafile-config-ui.py — Web configuration panel for seafile-deploy
+# =============================================================================
+# Lightweight HTTP server serving a browser-based .env editor.
+# Runs as a systemd service, proxied through Caddy at /admin/config.
+#
+# Installed to: /opt/seafile/seafile-config-ui.py
+# HTML served:  /opt/seafile/config-ui.html
+# Managed by:   seafile-config-ui.service (systemd)
+# =============================================================================
+
+import base64
+import hashlib
+import hmac
+import http.server
+import json
+import os
+import re
+import subprocess
+import sys
+import threading
+import time
+
+PORT = 9443
+ENV_FILE = '/opt/seafile/.env'
+HTML_FILE = '/opt/seafile/config-ui.html'
+SECRETS_FILE = '/opt/seafile/.secrets'
+
+# ---------------------------------------------------------------------------
+# .env reader/writer (same safe parser as shared-lib.sh)
+# ---------------------------------------------------------------------------
+
+def load_env(path=ENV_FILE):
+    env = {}
+    if not os.path.isfile(path):
+        return env
+    with open(path) as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith('#') or '=' not in line:
+                continue
+            key, val = line.split('=', 1)
+            key = key.strip()
+            if val.startswith('"') and val.endswith('"'):
+                val = val[1:-1]
+            elif val.startswith("'") and val.endswith("'"):
+                val = val[1:-1]
+            env[key] = val
+    return env
+
+
+def save_env(updates, path=ENV_FILE):
+    """Update specific keys in .env, preserving comments and structure."""
+    if not os.path.isfile(path):
+        return False
+    lines = open(path).readlines()
+    keys_written = set()
+    out = []
+    for line in lines:
+        stripped = line.strip()
+        if stripped and not stripped.startswith('#') and '=' in stripped:
+            key = stripped.split('=', 1)[0].strip()
+            if key in updates:
+                val = updates[key]
+                # Quote values containing spaces, #, or special chars
+                if ' ' in val or '#' in val or ';' in val:
+                    val = f'"{val}"'
+                out.append(f'{key}={val}\n')
+                keys_written.add(key)
+                continue
+        out.append(line)
+    # Append any new keys not already in the file
+    for k, v in updates.items():
+        if k not in keys_written:
+            if ' ' in v or '#' in v or ';' in v:
+                v = f'"{v}"'
+            out.append(f'{k}={v}\n')
+    with open(path, 'w') as f:
+        f.writelines(out)
+    os.chmod(path, 0o600)
+    return True
+
+
+# ---------------------------------------------------------------------------
+# Container status
+# ---------------------------------------------------------------------------
+
+def get_container_status():
+    containers = []
+    try:
+        result = subprocess.run(
+            ['docker', 'ps', '-a', '--format', '{{.Names}}\t{{.Status}}\t{{.Image}}'],
+            capture_output=True, text=True, timeout=10
+        )
+        for line in result.stdout.strip().split('\n'):
+            if not line:
+                continue
+            parts = line.split('\t')
+            if len(parts) >= 3:
+                name = parts[0]
+                status_raw = parts[1]
+                image = parts[2]
+                running = 'Up' in status_raw
+                uptime = ''
+                if running:
+                    m = re.search(r'Up\s+(.+)', status_raw)
+                    if m:
+                        uptime = m.group(1)
+                containers.append({
+                    'name': name,
+                    'running': running,
+                    'uptime': uptime,
+                    'image': image.split(':')[-1] if ':' in image else image
+                })
+    except Exception:
+        pass
+    return containers
+
+
+# ---------------------------------------------------------------------------
+# Config apply (runs seafile-config-fixes.sh)
+# ---------------------------------------------------------------------------
+
+_apply_lock = threading.Lock()
+_apply_status = {'running': False, 'last_result': None, 'last_time': None}
+
+
+def apply_config():
+    """Run config-fixes in background thread."""
+    if _apply_status['running']:
+        return False
+    def _run():
+        _apply_status['running'] = True
+        try:
+            result = subprocess.run(
+                ['bash', '/opt/seafile-config-fixes.sh', '--yes'],
+                capture_output=True, text=True, timeout=300
+            )
+            _apply_status['last_result'] = 'success' if result.returncode == 0 else 'error'
+        except Exception as e:
+            _apply_status['last_result'] = f'error: {e}'
+        _apply_status['last_time'] = time.strftime('%Y-%m-%d %H:%M:%S')
+        _apply_status['running'] = False
+    threading.Thread(target=_run, daemon=True).start()
+    return True
+
+
+# ---------------------------------------------------------------------------
+# Schedule conversion (human-readable ↔ cron)
+# ---------------------------------------------------------------------------
+
+DAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
+
+
+def cron_to_human(cron_str):
+    """Convert cron string to {frequency, time, day} dict."""
+    parts = cron_str.strip().split()
+    if len(parts) != 5:
+        return {'frequency': 'daily', 'time': '02:00', 'day': 0}
+    minute, hour, dom, mon, dow = parts
+    time_str = f'{int(hour):02d}:{int(minute):02d}'
+    if dow != '*' and dom == '*':
+        return {'frequency': 'weekly', 'time': time_str, 'day': int(dow)}
+    if hour == '*':
+        return {'frequency': 'hourly', 'time': '00:00', 'day': 0}
+    return {'frequency': 'daily', 'time': time_str, 'day': 0}
+
+
+def human_to_cron(freq, time_str, day=0):
+    """Convert frequency/time/day to cron string."""
+    try:
+        h, m = time_str.split(':')
+    except ValueError:
+        h, m = '2', '0'
+    if freq == 'hourly':
+        return '0 * * * *'
+    if freq == 'weekly':
+        return f'{m} {h} * * {day}'
+    return f'{m} {h} * * *'
+
+
+# ---------------------------------------------------------------------------
+# Authentication
+# ---------------------------------------------------------------------------
+
+def check_auth(handler):
+    """Verify HTTP Basic Auth against CONFIG_UI_PASSWORD."""
+    env = load_env()
+    password = env.get('CONFIG_UI_PASSWORD', '')
+    if not password:
+        return True  # No password set = allow (first-run)
+    auth_header = handler.headers.get('Authorization', '')
+    if not auth_header.startswith('Basic '):
+        return False
+    try:
+        decoded = base64.b64decode(auth_header[6:]).decode()
+        _, pw = decoded.split(':', 1)
+        return hmac.compare_digest(pw, password)
+    except Exception:
+        return False
+
+
+def send_auth_required(handler):
+    handler.send_response(401)
+    handler.send_header('WWW-Authenticate', 'Basic realm="Seafile Configuration"')
+    handler.send_header('Content-Type', 'text/plain')
+    handler.end_headers()
+    handler.wfile.write(b'Authentication required')
+
+
+# ---------------------------------------------------------------------------
+# Sensitive keys (masked in API responses)
+# ---------------------------------------------------------------------------
+
+SENSITIVE_KEYS = {
+    'SEAFILE_MYSQL_DB_PASSWORD', 'INIT_SEAFILE_MYSQL_ROOT_PASSWORD',
+    'REDIS_PASSWORD', 'SMTP_PASSWORD', 'LDAP_BIND_PASSWORD',
+    'JWT_PRIVATE_KEY', 'COLLABORA_ADMIN_PASSWORD', 'ONLYOFFICE_JWT_SECRET',
+    'GITOPS_TOKEN', 'GITOPS_WEBHOOK_SECRET', 'CONFIG_UI_PASSWORD',
+    'SMB_PASSWORD', 'ISCSI_CHAP_PASSWORD', 'BACKUP_SMB_PASSWORD',
+    'INIT_SEAFILE_ADMIN_PASSWORD',
+}
+
+
+def mask_env(env):
+    """Return env dict with sensitive values masked."""
+    masked = {}
+    for k, v in env.items():
+        if k in SENSITIVE_KEYS and v:
+            masked[k] = '••••••••'
+        else:
+            masked[k] = v
+    return masked
+
+
+# ---------------------------------------------------------------------------
+# HTTP Handler
+# ---------------------------------------------------------------------------
+
+class ConfigHandler(http.server.BaseHTTPRequestHandler):
+
+    def do_GET(self):
+        if not check_auth(self):
+            return send_auth_required(self)
+
+        if self.path == '/' or self.path == '/index.html':
+            self._serve_html()
+        elif self.path == '/api/env':
+            self._json_response(mask_env(load_env()))
+        elif self.path == '/api/status':
+            self._json_response({
+                'containers': get_container_status(),
+                'apply': _apply_status
+            })
+        elif self.path == '/api/schedules':
+            env = load_env()
+            self._json_response({
+                'backup': cron_to_human(env.get('BACKUP_SCHEDULE', '0 2 * * *')),
+                'gc': cron_to_human(env.get('GC_SCHEDULE', '0 3 * * 0')),
+            })
+        else:
+            self.send_error(404)
+
+    def do_POST(self):
+        if not check_auth(self):
+            return send_auth_required(self)
+
+        length = int(self.headers.get('Content-Length', 0))
+        body = self.rfile.read(length)
+
+        if self.path == '/api/env':
+            try:
+                data = json.loads(body)
+                updates = data.get('updates', {})
+                # Convert schedule fields to cron
+                for sched_key, env_key in [('backup_schedule', 'BACKUP_SCHEDULE'), ('gc_schedule', 'GC_SCHEDULE')]:
+                    if sched_key in data:
+                        s = data[sched_key]
+                        updates[env_key] = human_to_cron(s.get('frequency', 'daily'), s.get('time', '02:00'), s.get('day', 0))
+                if not updates:
+                    self._json_response({'error': 'No updates provided'}, 400)
+                    return
+                # Compute diff
+                current = load_env()
+                diff = []
+                for k, v in updates.items():
+                    old = current.get(k, '')
+                    if old != v:
+                        display_old = '••••••••' if k in SENSITIVE_KEYS and old else old
+                        display_new = '••••••••' if k in SENSITIVE_KEYS and v else v
+                        diff.append({'key': k, 'old': display_old, 'new': display_new})
+                if not diff:
+                    self._json_response({'status': 'no_changes', 'diff': []})
+                    return
+                # Check if this is a preview or apply
+                if data.get('preview', False):
+                    self._json_response({'status': 'preview', 'diff': diff})
+                    return
+                # Write and apply
+                save_env(updates)
+                apply_config()
+                self._json_response({'status': 'applied', 'diff': diff})
+            except json.JSONDecodeError:
+                self._json_response({'error': 'Invalid JSON'}, 400)
+
+        elif self.path == '/api/apply':
+            if apply_config():
+                self._json_response({'status': 'started'})
+            else:
+                self._json_response({'status': 'already_running'}, 409)
+        else:
+            self.send_error(404)
+
+    def _serve_html(self):
+        try:
+            with open(HTML_FILE, 'rb') as f:
+                content = f.read()
+            self.send_response(200)
+            self.send_header('Content-Type', 'text/html; charset=utf-8')
+            self.send_header('Content-Length', len(content))
+            self.end_headers()
+            self.wfile.write(content)
+        except FileNotFoundError:
+            self.send_error(500, 'config-ui.html not found')
+
+    def _json_response(self, data, code=200):
+        body = json.dumps(data).encode()
+        self.send_response(code)
+        self.send_header('Content-Type', 'application/json')
+        self.send_header('Content-Length', len(body))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, fmt, *args):
+        sys.stdout.write(f'[CONFIG-UI] {fmt % args}\n')
+        sys.stdout.flush()
+
+
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
+
+if __name__ == '__main__':
+    print(f'[CONFIG-UI] Starting on port {PORT}')
+    print(f'[CONFIG-UI] Serving {HTML_FILE}')
+    print(f'[CONFIG-UI] Reading {ENV_FILE}')
+    server = http.server.HTTPServer(('0.0.0.0', PORT), ConfigHandler)
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        print('[CONFIG-UI] Stopped.')
+CONFIGUIPYEOF
+chmod +x "$CONFIGUI_SCRIPT"
+
+cat > "$CONFIGUI_HTML" << 'CONFIGUIHTMLEOF'
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Seafile configuration</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;background:#f8f8f6;color:#1a1a1a;line-height:1.5}
+.wrap{max-width:800px;margin:0 auto;padding:1.5rem 1rem}
+.hdr{display:flex;align-items:center;justify-content:space-between;margin-bottom:1.5rem;padding-bottom:1rem;border-bottom:1px solid #e5e5e0}
+.hdr h1{font-size:20px;font-weight:500}
+.hdr-status{display:flex;align-items:center;gap:6px;font-size:13px;color:#666}
+.dot{width:8px;height:8px;border-radius:50%}
+.dot-ok{background:#1d9e75}.dot-warn{background:#ef9f27}.dot-err{background:#e24b4a}
+.status-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(155px,1fr));gap:6px;margin-bottom:1.5rem}
+.sc{padding:8px 10px;background:#fff;border:1px solid #e5e5e0;border-radius:8px;font-size:12px}
+.sc .sn{color:#888;margin-bottom:1px}.sc .sv{font-weight:500;display:flex;align-items:center;gap:4px}
+.sv-ok{color:#1d9e75}.sv-off{color:#bbb}
+nav{display:flex;flex-wrap:wrap;gap:5px;margin-bottom:1.5rem}
+nav button{background:#fff;border:1px solid #e5e5e0;border-radius:8px;padding:6px 13px;font-size:13px;color:#888;cursor:pointer;transition:all .15s}
+nav button:hover{border-color:#ccc;color:#444}
+nav button.on{border-color:#999;color:#1a1a1a;font-weight:500}
+.sec{display:none}.sec.vis{display:block}
+.sec h2{font-size:16px;font-weight:500;margin-bottom:3px}
+.sec .desc{font-size:13px;color:#888;margin-bottom:1.25rem}
+.grp{margin-bottom:1.25rem;padding:1rem;background:#fff;border:1px solid #e5e5e0;border-radius:10px}
+.grp-t{font-size:14px;font-weight:500;margin-bottom:10px}
+.row{display:flex;align-items:center;gap:10px;margin-bottom:8px}.row:last-child{margin-bottom:0}
+.lbl{flex:0 0 170px;font-size:13px;color:#888}
+.val{flex:1}.val input,.val select{width:100%;padding:7px 10px;font-size:13px;border:1px solid #ddd;border-radius:6px;background:#fff;outline:none}
+.val input:focus,.val select:focus{border-color:#999}
+.hint{font-size:11px;color:#aaa;margin-top:2px}
+.pw-wrap{position:relative}.pw-wrap input{padding-right:50px}
+.pw-tog{position:absolute;right:8px;top:50%;transform:translateY(-50%);background:none;border:none;font-size:11px;color:#888;cursor:pointer}
+.tog-row{display:flex;align-items:center;justify-content:space-between;padding:7px 0;border-bottom:1px solid #f0f0ec}
+.tog-row:last-child{border-bottom:none}
+.tog-name{font-size:13px;font-weight:500}.tog-desc{font-size:12px;color:#888;margin-top:1px}
+.sw{position:relative;width:38px;height:20px;flex-shrink:0;cursor:pointer}
+.sw input{display:none}.sw .track{position:absolute;inset:0;background:#ccc;border-radius:10px;transition:.2s}
+.sw input:checked+.track{background:#1d9e75}
+.sw .knob{position:absolute;top:2px;left:2px;width:16px;height:16px;background:#fff;border-radius:50%;transition:.2s}
+.sw input:checked~.knob{left:20px}
+.expand{margin-top:8px;padding-top:8px;border-top:1px solid #f0f0ec}
+.sched-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:6px}
+.sched-row select,.sched-row input[type=time]{padding:6px 8px;font-size:13px;border:1px solid #ddd;border-radius:6px}
+.sched-preview{font-size:12px;color:#888;font-family:monospace;background:#f8f8f6;padding:3px 8px;border-radius:4px;margin-top:4px}
+.bar{position:sticky;bottom:0;background:#fff;border-top:1px solid #e5e5e0;padding:10px 0;margin-top:1.5rem;display:flex;align-items:center;justify-content:space-between}
+.bar .meta{font-size:12px;color:#888}
+.bar .acts{display:flex;gap:6px}
+.btn{padding:7px 16px;font-size:13px;border-radius:6px;cursor:pointer;border:1px solid #ddd;background:#fff;color:#666}
+.btn:hover{border-color:#999;color:#333}
+.btn-p{background:#e6f1fb;color:#185fa5;border-color:#b5d4f4}.btn-p:hover{background:#d4e6f8}
+.diff-box{background:#f8f8f6;border-radius:6px;padding:10px 14px;font-family:monospace;font-size:12px;line-height:1.8;margin:10px 0;border:1px solid #e5e5e0}
+.diff-old{color:#e24b4a}.diff-new{color:#1d9e75}
+.action{border:1px solid #b5d4f4;border-radius:10px;margin-bottom:1.25rem;overflow:hidden}
+.action-hdr{background:#e6f1fb;padding:9px 14px;font-size:13px;font-weight:500;color:#185fa5;display:flex;justify-content:space-between}
+.action-body{padding:14px}
+.action-body p{font-size:13px;color:#666;margin-bottom:10px}
+.step{display:flex;gap:8px;margin-bottom:10px}
+.step-n{flex-shrink:0;width:20px;height:20px;border-radius:50%;background:#e6f1fb;color:#185fa5;font-size:11px;font-weight:500;display:flex;align-items:center;justify-content:center;margin-top:2px}
+.step-c{flex:1;font-size:13px}
+.code{position:relative;background:#f8f8f6;border:1px solid #e5e5e0;border-radius:6px;padding:10px 12px;font-family:monospace;font-size:11.5px;line-height:1.6;margin-top:6px;white-space:pre;overflow-x:auto}
+.code .cp{position:absolute;top:6px;right:6px;background:#fff;border:1px solid #ddd;border-radius:4px;padding:2px 8px;font-size:11px;color:#888;cursor:pointer}
+.code .cp:hover{color:#333}
+.warn{background:#faeeda;border:1px solid #fac775;border-radius:6px;padding:8px 12px;margin-top:8px}
+.warn p{font-size:12px;color:#854f0b;margin:0}
+.welcome{text-align:center;padding:3rem 1rem}
+.welcome h2{font-size:22px;font-weight:500;margin-bottom:8px}
+.welcome p{font-size:14px;color:#666;max-width:500px;margin:0 auto 2rem}
+@media(max-width:600px){.lbl{flex:0 0 100%;margin-bottom:2px}.row{flex-wrap:wrap}.hdr{flex-wrap:wrap;gap:8px}}
+</style>
+</head>
+<body>
+<div class="wrap" id="app">
+<div class="hdr">
+<h1>Seafile configuration</h1>
+<div class="hdr-status" id="hdr-status"><span class="dot dot-ok"></span> Loading...</div>
+</div>
+<div id="status-grid" class="status-grid"></div>
+<nav id="nav"></nav>
+<div id="sections"></div>
+<div id="action-panels"></div>
+<div class="bar">
+<div class="meta" id="bar-meta"></div>
+<div class="acts">
+<button class="btn" onclick="discardChanges()">Discard</button>
+<button class="btn btn-p" onclick="previewSave()">Save and apply</button>
+</div>
+</div>
+<div id="diff-panel" style="display:none"></div>
+</div>
+
+<script>
+var ENV = {};
+var ORIGINAL = {};
+var TABS = [
+  {id:'server',label:'Server'},
+  {id:'storage',label:'Storage'},
+  {id:'database',label:'Database'},
+  {id:'proxy',label:'Proxy'},
+  {id:'office',label:'Office suite'},
+  {id:'email',label:'Email'},
+  {id:'ldap',label:'LDAP'},
+  {id:'features',label:'Features'},
+  {id:'backup',label:'Backup'},
+  {id:'advanced',label:'Advanced'}
+];
+var NAMES = {
+  'seafile-caddy':'caddy','seafile-redis':'redis','seafile':'seafile','seadoc':'seadoc',
+  'notification-server':'notifications','thumbnail-server':'thumbnails',
+  'seafile-metadata':'metadata','seafile-db':'db',
+  'seafile-collabora':'collabora','seafile-onlyoffice':'onlyoffice','seafile-clamav':'clamav'
+};
+var SENSITIVE = new Set([
+  'SEAFILE_MYSQL_DB_PASSWORD','INIT_SEAFILE_MYSQL_ROOT_PASSWORD','REDIS_PASSWORD',
+  'SMTP_PASSWORD','LDAP_BIND_PASSWORD','JWT_PRIVATE_KEY','COLLABORA_ADMIN_PASSWORD',
+  'ONLYOFFICE_JWT_SECRET','GITOPS_TOKEN','GITOPS_WEBHOOK_SECRET','CONFIG_UI_PASSWORD',
+  'SMB_PASSWORD','ISCSI_CHAP_PASSWORD','BACKUP_SMB_PASSWORD','INIT_SEAFILE_ADMIN_PASSWORD'
+]);
+var DAYS = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
+var activeTab = 'server';
+
+function $(s){return document.querySelector(s)}
+function $$(s){return document.querySelectorAll(s)}
+
+var API_BASE = location.pathname.startsWith('/admin/config') ? '/admin/config' : '';
+
+function api(method, path, body){
+  var opts = {method:method, headers:{'Content-Type':'application/json'}};
+  if(body) opts.body = JSON.stringify(body);
+  return fetch(API_BASE + path, opts).then(r=>r.json());
+}
+
+function init(){
+  buildNav();
+  Promise.all([api('GET','/api/env'), api('GET','/api/status'), api('GET','/api/schedules')])
+    .then(function(r){
+      ENV = r[0]; ORIGINAL = JSON.parse(JSON.stringify(r[0]));
+      renderStatus(r[1]);
+      renderSections(r[2]);
+      showTab('server');
+      updateBarMeta(r[1]);
+    });
+}
+
+function buildNav(){
+  var nav = $('#nav');
+  TABS.forEach(function(t){
+    var b = document.createElement('button');
+    b.textContent = t.label;
+    b.dataset.t = t.id;
+    b.onclick = function(){showTab(t.id)};
+    nav.appendChild(b);
+  });
+}
+
+function showTab(id){
+  activeTab = id;
+  $$('nav button').forEach(function(b){b.classList.toggle('on', b.dataset.t===id)});
+  $$('.sec').forEach(function(s){s.classList.toggle('vis', s.id==='s-'+id)});
+}
+
+function renderStatus(data){
+  var grid = $('#status-grid');
+  grid.innerHTML = '';
+  var all_ok = true;
+  (data.containers||[]).forEach(function(c){
+    var name = NAMES[c.name] || c.name;
+    var cls = c.running ? 'sv-ok' : 'sv-off';
+    if(!c.running) all_ok = false;
+    grid.innerHTML += '<div class="sc"><div class="sn">'+name+'</div><div class="sv '+cls+'">'+(c.running?'running':'stopped')+(c.uptime?' · '+c.uptime:'')+'</div></div>';
+  });
+  var dot = all_ok ? 'dot-ok' : 'dot-warn';
+  $('#hdr-status').innerHTML = '<span class="dot '+dot+'"></span> '+(all_ok?'All services running':'Some services down');
+}
+
+function updateBarMeta(statusData){
+  var ap = statusData.apply || {};
+  var txt = ap.last_time ? 'Last applied: '+ap.last_time : '';
+  if(ap.running) txt = 'Applying changes...';
+  $('#bar-meta').textContent = txt;
+}
+
+function field(key, label, hint, opts){
+  opts = opts || {};
+  var type = opts.password ? 'password' : 'text';
+  var val = ENV[key] || opts.def || '';
+  var readonly = opts.readonly ? ' readonly style="background:#f8f8f6;color:#aaa"' : '';
+  var html = '<div class="row"><span class="lbl">'+label+'</span><div class="val">';
+  if(opts.options){
+    html += '<select data-key="'+key+'" onchange="envSet(\''+key+'\',this.value)">';
+    opts.options.forEach(function(o){
+      var ov = typeof o==='object' ? o.value : o;
+      var ol = typeof o==='object' ? o.label : o;
+      html += '<option value="'+ov+'"'+(val===ov?' selected':'')+'>'+ol+'</option>';
+    });
+    html += '</select>';
+  } else if(opts.password){
+    html += '<div class="pw-wrap"><input type="password" data-key="'+key+'" value="'+esc(val)+'" onchange="envSet(\''+key+'\',this.value)"'+readonly+'>';
+    html += '<button class="pw-tog" onclick="togPw(this)">show</button></div>';
+  } else {
+    html += '<input type="'+type+'" data-key="'+key+'" value="'+esc(val)+'" onchange="envSet(\''+key+'\',this.value)"'+readonly+'>';
+  }
+  if(hint) html += '<div class="hint">'+hint+'</div>';
+  html += '</div></div>';
+  return html;
+}
+
+function toggle(key, name, desc, expandId){
+  var checked = (ENV[key]||'false')==='true' ? ' checked' : '';
+  var onChange = 'envSet(\''+key+'\',this.checked?\'true\':\'false\')';
+  if(expandId) onChange += ';toggleExpand(\''+expandId+'\',this.checked)';
+  return '<div class="tog-row"><div><div class="tog-name">'+name+'</div><div class="tog-desc">'+desc+'</div></div>'
+    +'<label class="sw"><input type="checkbox" data-key="'+key+'"'+checked+' onchange="'+onChange+'"><span class="track"></span><span class="knob"></span></label></div>';
+}
+
+function schedPicker(id, schedData){
+  var f = schedData.frequency||'daily', t = schedData.time||'02:00', d = schedData.day||0;
+  var html = '<div class="sched-row">';
+  html += '<select id="'+id+'-freq" onchange="updateSched(\''+id+'\')"><option value="daily"'+(f==='daily'?' selected':'')+'>Every day</option><option value="weekly"'+(f==='weekly'?' selected':'')+'>Once a week</option><option value="hourly"'+(f==='hourly'?' selected':'')+'>Every hour</option></select>';
+  html += '<select id="'+id+'-day" onchange="updateSched(\''+id+'\')" style="'+(f==='weekly'?'':'display:none')+'">';
+  DAYS.forEach(function(dn,i){html+='<option value="'+i+'"'+(d===i?' selected':'')+'>'+dn+'</option>'});
+  html += '</select>';
+  html += '<input type="time" id="'+id+'-time" value="'+t+'" onchange="updateSched(\''+id+'\')" style="'+(f==='hourly'?'display:none':'')+'">';
+  html += '</div><div class="sched-preview" id="'+id+'-preview">'+schedText(f,t,d)+'</div>';
+  return html;
+}
+
+function schedText(f,t,d){
+  var h=parseInt(t.split(':')[0]),m=t.split(':')[1],ap=h>=12?'PM':'AM';h=h%12||12;
+  var ts=h+':'+m+' '+ap;
+  if(f==='hourly') return 'Runs every hour';
+  if(f==='weekly') return 'Runs every '+DAYS[d]+' at '+ts;
+  return 'Runs daily at '+ts;
+}
+
+function updateSched(id){
+  var f=$('#'+id+'-freq').value, t=$('#'+id+'-time').value, d=parseInt($('#'+id+'-day').value);
+  $('#'+id+'-day').style.display = f==='weekly'?'':'none';
+  $('#'+id+'-time').style.display = f==='hourly'?'none':'';
+  $('#'+id+'-preview').textContent = schedText(f,t,d);
+}
+
+function renderSections(schedules){
+  var el = $('#sections');
+  el.innerHTML = ''
+    + sec('server','Server','Core server identity and access settings.',
+        grp(field('SEAFILE_SERVER_HOSTNAME','Hostname','Public hostname users will access Seafile at')
+          + field('SEAFILE_SERVER_PROTOCOL','Protocol',null,{options:['https','http']})
+          + field('TIME_ZONE','Time zone',null)
+          + field('INIT_SEAFILE_ADMIN_EMAIL','Admin email',null)
+          + field('SITE_NAME','Site name','Shown in browser tab and emails')
+          + field('SITE_TITLE','Site title','Shown on the login page')))
+
+    + sec('storage','Storage','Where Seafile file data is stored. Changing storage type requires data migration.',
+        grp(field('STORAGE_TYPE','Storage type',null,{options:[
+            {value:'nfs',label:'NFS share'},{value:'smb',label:'SMB/CIFS share'},
+            {value:'glusterfs',label:'GlusterFS'},{value:'iscsi',label:'iSCSI'},
+            {value:'local',label:'Local disk'}]})
+          + field('SEAFILE_VOLUME','Mount point',null))
+        + grp(field('NFS_SERVER','NFS server',null) + field('NFS_EXPORT','NFS export',null)))
+
+    + sec('database','Database','Seafile uses MariaDB for user accounts, library metadata, and sharing data.',
+        grp(field('DB_INTERNAL','Database type',null,{options:[{value:'true',label:'Bundled (internal)'},{value:'false',label:'External server'}]})
+          + field('DB_INTERNAL_VOLUME','DB volume','Local path for bundled MariaDB data',{readonly:true})))
+
+    + sec('proxy','Proxy','How external traffic reaches Seafile.',
+        grp(field('PROXY_TYPE','Proxy type',null,{options:[
+            {value:'nginx',label:'Nginx Proxy Manager'},{value:'traefik',label:'Traefik'},
+            {value:'caddy-bundled',label:'Caddy (bundled SSL)'},{value:'caddy-external',label:'Caddy (external)'},
+            {value:'haproxy',label:'HAProxy'}]})
+          + field('CADDY_PORT','HTTP port',null)))
+
+    + sec('office','Office suite','In-browser document editing for Word, Excel, and PowerPoint files.',
+        grp(field('OFFICE_SUITE','Office suite',null,{options:[
+            {value:'collabora',label:'Collabora Online'},{value:'onlyoffice',label:'OnlyOffice'},
+            {value:'none',label:'None — file sync only'}]})))
+
+    + sec('email','Email / SMTP','Required for password resets, share notifications, and file update digests.',
+        grp(toggle('SMTP_ENABLED','Enable email','Send notifications and password reset emails','smtp-fields')
+          + '<div class="expand" id="smtp-fields" style="'+(ENV.SMTP_ENABLED==='true'?'':'display:none')+'">'
+          + field('SMTP_HOST','SMTP server',null)
+          + field('SMTP_PORT','Port',null)
+          + field('SMTP_USER','Username',null)
+          + field('SMTP_PASSWORD','Password',null,{password:true})
+          + field('SMTP_FROM','From address',null)
+          + field('SMTP_USE_TLS','Encryption',null,{options:[{value:'true',label:'STARTTLS (port 587)'},{value:'false',label:'SSL/TLS (port 465)'}]})
+          + '</div>'))
+
+    + sec('ldap','LDAP / Active Directory','Authenticate users against an LDAP or Active Directory server.',
+        grp(toggle('LDAP_ENABLED','Enable LDAP','Users log in with their directory credentials','ldap-fields')
+          + '<div class="expand" id="ldap-fields" style="'+(ENV.LDAP_ENABLED==='true'?'':'display:none')+'">'
+          + field('LDAP_URL','LDAP URL',null)
+          + field('LDAP_BASE_DN','Base DN',null)
+          + field('LDAP_BIND_DN','Admin DN',null)
+          + field('LDAP_BIND_PASSWORD','Admin password',null,{password:true})
+          + field('LDAP_LOGIN_ATTR','Login attribute','sAMAccountName for AD, uid for OpenLDAP, mail for email')
+          + '</div>'))
+
+    + sec('features','Features','Toggle optional features. Changes are applied after saving.',
+        grp(toggle('GC_ENABLED','Garbage collection','Weekly cleanup of deleted file blocks')
+          + toggle('CLAMAV_ENABLED','Antivirus (ClamAV)','Scan uploaded files for malware · +1 GB RAM')
+          + toggle('SEAFDAV_ENABLED','WebDAV access','Mount libraries as a network drive')
+          + toggle('ENABLE_GUEST','Guest accounts','Allow read-only external sharing accounts')
+          + toggle('FORCE_2FA','Force two-factor auth','All users must enable 2FA on next login')
+          + toggle('ENABLE_SIGNUP','Allow public registration','Let strangers create accounts')
+          + toggle('SHARE_LINK_FORCE_USE_PASSWORD','Require share link passwords','Every share link must have a password')
+          + toggle('AUDIT_ENABLED','Audit logging','Track file access, downloads, and shares'))
+        + grp('<div class="grp-t">Limits and policies</div>'
+          + field('LOGIN_ATTEMPT_LIMIT','Login attempt limit','Lock account after this many failures · 0 = no limit')
+          + field('DEFAULT_USER_QUOTA_GB','User quota (GB)','Default storage per user · 0 = unlimited')
+          + field('MAX_UPLOAD_SIZE_MB','Max upload (MB)','Maximum file upload size · 0 = unlimited')
+          + field('TRASH_CLEAN_AFTER_DAYS','Trash auto-clean (days)','0 = never auto-delete')
+          + field('SESSION_COOKIE_AGE','Session timeout (seconds)','0 = browser session · 86400 = 1 day'))
+        + grp('<div class="grp-t">Schedules</div>'
+          + '<div class="row"><span class="lbl">GC schedule</span><div class="val">'+schedPicker('gc',schedules.gc)+'</div></div>'))
+
+    + sec('backup','Backup','Daily backup of database dumps and file data to a separate storage location.',
+        grp(toggle('BACKUP_ENABLED','Enable automated backup','Database dumps + file data rsync','bk-fields')
+          + '<div class="expand" id="bk-fields" style="'+(ENV.BACKUP_ENABLED==='true'?'':'display:none')+'">'
+          + field('BACKUP_STORAGE_TYPE','Destination type',null,{options:[
+              {value:'nfs',label:'NFS share'},{value:'smb',label:'SMB/CIFS share'},{value:'local',label:'Local path'}]})
+          + field('BACKUP_NFS_SERVER','NFS server',null)
+          + field('BACKUP_NFS_EXPORT','NFS export',null)
+          + field('BACKUP_MOUNT','Mount point',null)
+          + '<div class="row"><span class="lbl">Backup schedule</span><div class="val">'+schedPicker('bk',schedules.backup)+'</div></div>'
+          + '</div>'))
+
+    + sec('advanced','Advanced','Infrastructure operations and image versions.',
+        grp('<div class="grp-t">Image versions</div>'
+          + field('SEAFILE_IMAGE','Seafile',null)
+          + field('COLLABORA_IMAGE','Collabora',null)
+          + field('DB_INTERNAL_IMAGE','MariaDB',null)
+          + field('CADDY_IMAGE','Caddy',null)
+          + field('SEAFILE_REDIS_IMAGE','Redis',null))
+        + grp('<div class="grp-t">Branding</div>'
+          + field('SITE_NAME','Site name','Shown in browser tabs')
+          + field('SITE_TITLE','Site title','Shown on login page')));
+}
+
+function sec(id, title, desc, content){
+  return '<div class="sec" id="s-'+id+'"><h2>'+title+'</h2><p class="desc">'+desc+'</p>'+content+'</div>';
+}
+function grp(content){return '<div class="grp">'+content+'</div>';}
+function esc(s){return String(s).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;')}
+
+function envSet(key, val){
+  ENV[key] = val;
+}
+
+function toggleExpand(id, show){
+  var el = document.getElementById(id);
+  if(el) el.style.display = show ? '' : 'none';
+}
+
+function togPw(btn){
+  var inp = btn.previousElementSibling;
+  inp.type = inp.type==='password' ? 'text' : 'password';
+  btn.textContent = inp.type==='password' ? 'show' : 'hide';
+}
+
+function getChanges(){
+  var changes = {};
+  $$('input[data-key],select[data-key]').forEach(function(el){
+    var k = el.dataset.key;
+    var v = el.type==='checkbox' ? (el.checked?'true':'false') : el.value;
+    if(v !== (ORIGINAL[k]||'')) changes[k] = v;
+  });
+  // Schedules
+  var schedChanges = {};
+  ['bk','gc'].forEach(function(id){
+    var fEl=$('#'+id+'-freq'), tEl=$('#'+id+'-time'), dEl=$('#'+id+'-day');
+    if(fEl) schedChanges[id==='bk'?'backup_schedule':'gc_schedule'] = {
+      frequency:fEl.value, time:tEl?tEl.value:'02:00', day:dEl?parseInt(dEl.value):0
+    };
+  });
+  return {updates:changes, ...schedChanges};
+}
+
+function discardChanges(){
+  ENV = JSON.parse(JSON.stringify(ORIGINAL));
+  api('GET','/api/schedules').then(function(s){renderSections(s); showTab(activeTab)});
+}
+
+function previewSave(){
+  var data = getChanges();
+  data.preview = true;
+  api('POST','/api/env', data).then(function(r){
+    if(r.status==='no_changes'){
+      alert('No changes to apply.');
+      return;
+    }
+    var dp = $('#diff-panel');
+    var html = '<div class="grp" style="border-color:#b5d4f4;margin-top:1rem"><div class="grp-t">Changes to apply</div><div class="diff-box">';
+    (r.diff||[]).forEach(function(d){
+      html += '<div><span class="diff-old">- '+d.key+'='+d.old+'</span></div>';
+      html += '<div><span class="diff-new">+ '+d.key+'='+d.new+'</span></div>';
+    });
+    html += '</div><p style="font-size:12px;color:#888;margin:8px 0">This will regenerate config files and restart affected containers.</p>';
+    html += '<div style="display:flex;gap:6px"><button class="btn btn-p" onclick="confirmSave()">Confirm and apply</button>';
+    html += '<button class="btn" onclick="$(\'#diff-panel\').style.display=\'none\'">Cancel</button></div></div>';
+    dp.innerHTML = html;
+    dp.style.display = 'block';
+    dp.scrollIntoView({behavior:'smooth'});
+  });
+}
+
+function confirmSave(){
+  var data = getChanges();
+  data.preview = false;
+  api('POST','/api/env', data).then(function(r){
+    $('#diff-panel').style.display = 'none';
+    ORIGINAL = JSON.parse(JSON.stringify(ENV));
+    $('#bar-meta').textContent = 'Applying changes...';
+    pollStatus();
+  });
+}
+
+function pollStatus(){
+  setTimeout(function(){
+    api('GET','/api/status').then(function(r){
+      renderStatus(r);
+      updateBarMeta(r);
+      if(r.apply && r.apply.running) pollStatus();
+    });
+  }, 3000);
+}
+
+function copyCode(btn){
+  var code = btn.parentElement.textContent.replace('Copy','').trim();
+  navigator.clipboard.writeText(code).then(function(){btn.textContent='Copied';setTimeout(function(){btn.textContent='Copy'},1500)});
+}
+
+init();
+</script>
+</body>
+</html>
+CONFIGUIHTMLEOF
+
+cat > "$CONFIGUI_SERVICE" << 'CONFIGUISVCEOF'
+[Unit]
+Description=Seafile Configuration Panel — web-based .env editor
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /opt/seafile/seafile-config-ui.py
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=seafile-config-ui
+
+[Install]
+WantedBy=multi-user.target
+CONFIGUISVCEOF
+
+systemctl daemon-reload
+systemctl enable seafile-config-ui
+systemctl start seafile-config-ui
+info "Web configuration panel installed and started (port 9443)."
+
 fi
 
 # =============================================================================
@@ -5855,7 +6699,7 @@ _show_splash() {
   echo "  ╚══════╝╚══════╝╚═╝  ╚═╝╚═╝     ╚═╝╚══════╝╚══════╝"
   echo -e "${NC}"
   echo -e "  ${DIM}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-  echo -e "  ${BOLD}nicogits92 / seafile-deploy${NC}   ${DIM}Seafile ${_SEAFILE_VERSION} CE  ·  v4.6-alpha  ·  config-fixes${NC}"
+  echo -e "  ${BOLD}nicogits92 / seafile-deploy${NC}   ${DIM}Seafile ${_SEAFILE_VERSION} CE  ·  v4.7-alpha  ·  config-fixes${NC}"
   echo -e "  ${DIM}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
   echo ""
   echo -e "  ${DIM}Community deployment · not affiliated with Seafile Ltd.${NC}"
@@ -6867,6 +7711,19 @@ cat >> "$CADDYFILE_PATH" << 'COLLABBLOCK'
 COLLABBLOCK
 fi
 
+# --- Web configuration panel ---
+cat >> "$CADDYFILE_PATH" << 'CONFIGUIBLOCK'
+
+    # --- Configuration Panel ---
+    handle /admin/config {
+        redir /admin/config/ permanent
+    }
+    handle_path /admin/config/* {
+        reverse_proxy host.docker.internal:9443
+    }
+
+CONFIGUIBLOCK
+
 # --- Catch-all and close ---
 cat >> "$CADDYFILE_PATH" << CADDYTAILEOF
 
@@ -7040,7 +7897,7 @@ heading() { echo -e "\n${BOLD}${CYAN}==> $1${NC}"; }
 # ---------------------------------------------------------------------------
 # Deployment version
 # ---------------------------------------------------------------------------
-DEPLOY_VERSION="v4.6-alpha"
+DEPLOY_VERSION="v4.7-alpha"
 
 # ---------------------------------------------------------------------------
 # Colours (safe to re-source — just variable assignments)
@@ -7101,7 +7958,7 @@ _DEFAULTS=(
   "ONLYOFFICE_PORT=6233"
   "ONLYOFFICE_VOLUME=/opt/onlyoffice"
   "CLAMAV_ENABLED=false"
-  "SMTP_ENABLED=true"
+  "SMTP_ENABLED=false"
   "SMTP_PORT=465"
   "SMTP_USE_TLS=true"
   "SMTP_FROM=noreply@yourdomain.com"
@@ -7110,6 +7967,16 @@ _DEFAULTS=(
   "TRASH_CLEAN_AFTER_DAYS=30"
   "FORCE_2FA=false"
   "ENABLE_GUEST=false"
+  "ENABLE_SIGNUP=false"
+  "LOGIN_ATTEMPT_LIMIT=5"
+  "SHARE_LINK_FORCE_USE_PASSWORD=false"
+  "SHARE_LINK_EXPIRE_DAYS_DEFAULT=0"
+  "SHARE_LINK_EXPIRE_DAYS_MAX=0"
+  "SESSION_COOKIE_AGE=0"
+  "FILE_HISTORY_KEEP_DAYS=0"
+  "AUDIT_ENABLED=true"
+  "SITE_NAME=Seafile"
+  "SITE_TITLE=Seafile"
   "SEAFDAV_ENABLED=false"
   "LDAP_ENABLED=false"
   "LDAP_LOGIN_ATTR=mail"
@@ -7119,6 +7986,8 @@ _DEFAULTS=(
   "GC_DRY_RUN=false"
   "BACKUP_ENABLED=false"
   "BACKUP_SCHEDULE=0 2 * * *"
+  "BACKUP_STORAGE_TYPE=nfs"
+  "BACKUP_MOUNT=/mnt/seafile_backup"
   "THUMBNAIL_PATH=/opt/seafile-thumbnails"
   "METADATA_PATH=/opt/seafile-metadata"
   "SEADOC_DATA_PATH=/opt/seadoc-data"
@@ -7133,6 +8002,7 @@ _DEFAULTS=(
   "PORTAINER_MANAGED=false"
   "PORTAINER_STACK_WEBHOOK="
   "CONFIG_GIT_PORT=9418"
+  "CONFIG_UI_PASSWORD="
   "CONFIG_HISTORY_ENABLED=true"
   "CONFIG_HISTORY_RETAIN=50"
   "PROXY_TYPE=nginx"
@@ -7679,6 +8549,10 @@ TIME_ZONE=America/New_York
 # If set, all internal services are configured to use it automatically.
 REDIS_PASSWORD=
 
+# Web configuration panel password. Auto-generated during install.
+# Access the panel at https://your-hostname/admin/config
+CONFIG_UI_PASSWORD=
+
 # Set to false to write logs to files on the storage share instead of stdout.
 SEAFILE_LOG_TO_STDOUT=true
 
@@ -8116,6 +8990,7 @@ _print_config_review() {
   echo -e "  ${BOLD}Auth${NC}"
   printf "    %-42s %b\n" "JWT_PRIVATE_KEY" "$(_mask_secret "${JWT_PRIVATE_KEY:-}")"
   printf "    %-42s %b\n" "REDIS_PASSWORD"  "$(_mask_secret "${REDIS_PASSWORD:-}")"
+  printf "    %-42s %b\n" "CONFIG_UI_PASSWORD" "$(_mask_secret "${CONFIG_UI_PASSWORD:-}")"
   printf "    %-42s %b\n" "REDIS_PORT"      "$(_pfv REDIS_PORT)"
   echo ""
 
@@ -8799,6 +9674,8 @@ services:
       - "traefik.http.routers.seafile.middlewares=seafile-headers"
     networks:
       - seafile-net
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
 
   # --- Cache ---
   redis:
@@ -9370,6 +10247,8 @@ services:
       - "traefik.http.routers.seafile.middlewares=seafile-headers"
     networks:
       - seafile-net
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
 
   # --- Cache ---
   redis:
@@ -10499,8 +11378,20 @@ NPMCONF
     echo -e "  ${DIM}Change this password after your first login.${NC}"
     echo -e "  ${DIM}Go to Profile (top right) → Password.${NC}"
     echo ""
-    echo -e "  ${DIM}Want more features? Run:${NC} ${BOLD}seafile config${NC}"
-    echo -e "  ${DIM}(network storage, email, LDAP, backups, and more)${NC}"
+
+    # Show config panel info
+    local _cui_pw=""
+    _cui_pw=$(grep "^CONFIG_UI_PASSWORD=" "$ENV_FILE" 2>/dev/null | cut -d= -f2-)
+    if [[ -n "$_cui_pw" ]]; then
+      local _host_for_panel
+      _host_for_panel=$(hostname -I 2>/dev/null | awk '{print $1}')
+      echo -e "  ${BOLD}Web configuration panel:${NC}"
+      echo -e "    ${BOLD}http://${_host_for_panel}:9443${NC}"
+      echo -e "    ${DIM}Password: ${_cui_pw}  (also in: seafile secrets --show)${NC}"
+      echo ""
+    fi
+
+    echo -e "  ${DIM}Configure via browser or CLI:${NC} ${BOLD}seafile config${NC}"
     echo ""
   fi
 
@@ -10567,6 +11458,8 @@ services:
       - "traefik.http.routers.seafile.middlewares=seafile-headers"
     networks:
       - seafile-net
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
 
   # --- Cache ---
   redis:

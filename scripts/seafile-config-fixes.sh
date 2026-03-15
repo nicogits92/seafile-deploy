@@ -67,7 +67,7 @@ _show_splash() {
   echo "  ╚══════╝╚══════╝╚═╝  ╚═╝╚═╝     ╚═╝╚══════╝╚══════╝"
   echo -e "${NC}"
   echo -e "  ${DIM}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-  echo -e "  ${BOLD}nicogits92 / seafile-deploy${NC}   ${DIM}Seafile ${_SEAFILE_VERSION} CE  ·  v4.6-alpha  ·  config-fixes${NC}"
+  echo -e "  ${BOLD}nicogits92 / seafile-deploy${NC}   ${DIM}Seafile ${_SEAFILE_VERSION} CE  ·  v4.7-alpha  ·  config-fixes${NC}"
   echo -e "  ${DIM}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
   echo ""
   echo -e "  ${DIM}Community deployment · not affiliated with Seafile Ltd.${NC}"
@@ -1078,6 +1078,19 @@ cat >> "$CADDYFILE_PATH" << 'COLLABBLOCK'
 
 COLLABBLOCK
 fi
+
+# --- Web configuration panel ---
+cat >> "$CADDYFILE_PATH" << 'CONFIGUIBLOCK'
+
+    # --- Configuration Panel ---
+    handle /admin/config {
+        redir /admin/config/ permanent
+    }
+    handle_path /admin/config/* {
+        reverse_proxy host.docker.internal:9443
+    }
+
+CONFIGUIBLOCK
 
 # --- Catch-all and close ---
 cat >> "$CADDYFILE_PATH" << CADDYTAILEOF
