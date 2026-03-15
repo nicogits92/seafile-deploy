@@ -8231,7 +8231,7 @@ if [[ "${BACKUP_ENABLED:-false}" == "true" ]]; then
   else
     case "$_BACKUP_STYPE" in
       nfs)
-        local _bk_opts="auto,x-systemd.automount,_netdev,nfsvers=4,rsize=1048576,wsize=1048576,hard,timeo=600,retrans=2,nofail"
+        _bk_opts="auto,x-systemd.automount,_netdev,nfsvers=4,rsize=1048576,wsize=1048576,hard,timeo=600,retrans=2,nofail"
         info "Mounting backup NFS share ${BACKUP_NFS_SERVER}:${BACKUP_NFS_EXPORT} at ${_BACKUP_MOUNT}..."
         if ! grep -qF "$_BACKUP_MOUNT" /etc/fstab; then
           echo "${BACKUP_NFS_SERVER}:${BACKUP_NFS_EXPORT} ${_BACKUP_MOUNT} nfs ${_bk_opts} 0 0" >> /etc/fstab
@@ -8242,8 +8242,8 @@ if [[ "${BACKUP_ENABLED:-false}" == "true" ]]; then
           || warn "Failed to mount backup NFS share — backups will not work until mount is fixed."
         ;;
       smb)
-        local _bk_opts="auto,x-systemd.automount,_netdev,nofail,uid=0,gid=0,file_mode=0700,dir_mode=0700"
-        local _bk_creds="/etc/seafile-backup-smb-credentials"
+        _bk_opts="auto,x-systemd.automount,_netdev,nofail,uid=0,gid=0,file_mode=0700,dir_mode=0700"
+        _bk_creds="/etc/seafile-backup-smb-credentials"
         if [[ ! -f "$_bk_creds" ]]; then
           printf 'username=%s\npassword=%s\n' "${BACKUP_SMB_USERNAME}" "${BACKUP_SMB_PASSWORD}" > "$_bk_creds"
           [[ -n "${BACKUP_SMB_DOMAIN:-}" ]] && echo "domain=${BACKUP_SMB_DOMAIN}" >> "$_bk_creds"
