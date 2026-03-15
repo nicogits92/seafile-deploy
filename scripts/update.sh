@@ -920,17 +920,20 @@ _set_env_secret() {
   python3 - "$key" "$value" "$file" << 'PYEOF'
 import sys, re
 key, value, path = sys.argv[1], sys.argv[2], sys.argv[3]
-content = open(path).read()
+with open(path) as f:
+    content = f.read()
+# Use lambda to avoid backreference interpretation in value
 new_content = re.sub(
     r'^(' + re.escape(key) + r'=)\s*$',
-    r'\g<1>' + value,
+    lambda m: m.group(1) + value,
     content,
     flags=re.MULTILINE
 )
 if new_content == content:
     if not re.search(r'^' + re.escape(key) + r'=', content, re.MULTILINE):
         new_content = content.rstrip('\n') + '\n' + key + '=' + value + '\n'
-open(path, 'w').write(new_content)
+with open(path, 'w') as f:
+    f.write(new_content)
 PYEOF
 }
 
@@ -1177,7 +1180,7 @@ _print_config_review() {
   echo ""
 
   echo -e "  ${BOLD}Email / SMTP  (SMTP_ENABLED=$(_pfv SMTP_ENABLED))${NC}"
-  if [[ "${SMTP_ENABLED:-true}" == "true" ]]; then
+  if [[ "${SMTP_ENABLED:-false}" == "true" ]]; then
     printf "    %-42s %b\n" "SMTP_HOST"     "${SMTP_HOST:-[blank]}"
     printf "    %-42s %b\n" "SMTP_PORT"     "$(_pfv SMTP_PORT)"
     printf "    %-42s %b\n" "SMTP_USER"     "${SMTP_USER:-[blank]}"
@@ -1514,16 +1517,6 @@ _show_splash() {
 ENV_FILE="/opt/seafile/.env"
 SNAPSHOT_FILE="/opt/seafile/.env.snapshot"
 
-# Build active container list from .env (same logic as CLI and setup)
-CONTAINERS=(seafile-caddy seafile-redis seafile seadoc notification-server thumbnail-server seafile-metadata)
-case "${OFFICE_SUITE:-collabora}" in
-  onlyoffice) CONTAINERS+=(seafile-onlyoffice) ;;
-  none)       ;;  # No office suite container
-  *)          CONTAINERS+=(seafile-collabora)  ;;
-esac
-[[ "${CLAMAV_ENABLED:-false}" == "true" ]] && CONTAINERS+=(seafile-clamav)
-[[ "${DB_INTERNAL:-true}"    == "true" ]] && CONTAINERS+=(seafile-db)
-
 _PHASES=(
   "Update system packages (apt-get upgrade)"
   "Apply deployment changes (validate .env, diff, pull images, apply config, restart)"
@@ -1597,6 +1590,16 @@ _load_env "$ENV_FILE"
 
 # --- Normalize .env ---
 _normalize_env "$ENV_FILE"
+
+# Build active container list from .env (same logic as CLI and setup)
+CONTAINERS=(seafile-caddy seafile-redis seafile seadoc notification-server thumbnail-server seafile-metadata)
+case "${OFFICE_SUITE:-collabora}" in
+  onlyoffice) CONTAINERS+=(seafile-onlyoffice) ;;
+  none)       ;;  # No office suite container
+  *)          CONTAINERS+=(seafile-collabora)  ;;
+esac
+[[ "${CLAMAV_ENABLED:-false}" == "true" ]] && CONTAINERS+=(seafile-clamav)
+[[ "${DB_INTERNAL:-true}"    == "true" ]] && CONTAINERS+=(seafile-db)
 
 # Required variables — these must be non-empty for the deployment to function.
 # Each entry is "VARIABLE_NAME|human-readable description"

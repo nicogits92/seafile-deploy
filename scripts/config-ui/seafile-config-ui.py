@@ -90,7 +90,8 @@ def save_env(updates, path=ENV_FILE):
         return False
     fd = _lock(exclusive=True)
     try:
-        lines = open(path).readlines()
+        with open(path) as f:
+            lines = f.readlines()
         keys_written = set()
         out = []
         for line in lines:
@@ -191,11 +192,17 @@ def cron_to_human(cron_str):
     if len(parts) != 5:
         return {'frequency': 'daily', 'time': '02:00', 'day': 0}
     minute, hour, dom, mon, dow = parts
-    if hour == '*':
+    if hour == '*' or '/' in hour:
         return {'frequency': 'hourly', 'time': '00:00', 'day': 0}
-    time_str = f'{int(hour):02d}:{int(minute):02d}'
+    try:
+        time_str = f'{int(hour):02d}:{int(minute):02d}'
+    except ValueError:
+        return {'frequency': 'daily', 'time': '02:00', 'day': 0}
     if dow != '*' and dom == '*':
-        return {'frequency': 'weekly', 'time': time_str, 'day': int(dow)}
+        try:
+            return {'frequency': 'weekly', 'time': time_str, 'day': int(dow)}
+        except ValueError:
+            return {'frequency': 'weekly', 'time': time_str, 'day': 0}
     return {'frequency': 'daily', 'time': time_str, 'day': 0}
 
 

@@ -104,16 +104,6 @@ _show_splash() {
 ENV_FILE="/opt/seafile/.env"
 SNAPSHOT_FILE="/opt/seafile/.env.snapshot"
 
-# Build active container list from .env (same logic as CLI and setup)
-CONTAINERS=(seafile-caddy seafile-redis seafile seadoc notification-server thumbnail-server seafile-metadata)
-case "${OFFICE_SUITE:-collabora}" in
-  onlyoffice) CONTAINERS+=(seafile-onlyoffice) ;;
-  none)       ;;  # No office suite container
-  *)          CONTAINERS+=(seafile-collabora)  ;;
-esac
-[[ "${CLAMAV_ENABLED:-false}" == "true" ]] && CONTAINERS+=(seafile-clamav)
-[[ "${DB_INTERNAL:-true}"    == "true" ]] && CONTAINERS+=(seafile-db)
-
 _PHASES=(
   "Update system packages (apt-get upgrade)"
   "Apply deployment changes (validate .env, diff, pull images, apply config, restart)"
@@ -187,6 +177,16 @@ _load_env "$ENV_FILE"
 
 # --- Normalize .env ---
 _normalize_env "$ENV_FILE"
+
+# Build active container list from .env (same logic as CLI and setup)
+CONTAINERS=(seafile-caddy seafile-redis seafile seadoc notification-server thumbnail-server seafile-metadata)
+case "${OFFICE_SUITE:-collabora}" in
+  onlyoffice) CONTAINERS+=(seafile-onlyoffice) ;;
+  none)       ;;  # No office suite container
+  *)          CONTAINERS+=(seafile-collabora)  ;;
+esac
+[[ "${CLAMAV_ENABLED:-false}" == "true" ]] && CONTAINERS+=(seafile-clamav)
+[[ "${DB_INTERNAL:-true}"    == "true" ]] && CONTAINERS+=(seafile-db)
 
 # Required variables — these must be non-empty for the deployment to function.
 # Each entry is "VARIABLE_NAME|human-readable description"

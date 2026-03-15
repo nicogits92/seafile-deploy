@@ -891,17 +891,20 @@ _set_env_secret() {
   python3 - "$key" "$value" "$file" << 'PYEOF'
 import sys, re
 key, value, path = sys.argv[1], sys.argv[2], sys.argv[3]
-content = open(path).read()
+with open(path) as f:
+    content = f.read()
+# Use lambda to avoid backreference interpretation in value
 new_content = re.sub(
     r'^(' + re.escape(key) + r'=)\s*$',
-    r'\g<1>' + value,
+    lambda m: m.group(1) + value,
     content,
     flags=re.MULTILINE
 )
 if new_content == content:
     if not re.search(r'^' + re.escape(key) + r'=', content, re.MULTILINE):
         new_content = content.rstrip('\n') + '\n' + key + '=' + value + '\n'
-open(path, 'w').write(new_content)
+with open(path, 'w') as f:
+    f.write(new_content)
 PYEOF
 }
 
@@ -1148,7 +1151,7 @@ _print_config_review() {
   echo ""
 
   echo -e "  ${BOLD}Email / SMTP  (SMTP_ENABLED=$(_pfv SMTP_ENABLED))${NC}"
-  if [[ "${SMTP_ENABLED:-true}" == "true" ]]; then
+  if [[ "${SMTP_ENABLED:-false}" == "true" ]]; then
     printf "    %-42s %b\n" "SMTP_HOST"     "${SMTP_HOST:-[blank]}"
     printf "    %-42s %b\n" "SMTP_PORT"     "$(_pfv SMTP_PORT)"
     printf "    %-42s %b\n" "SMTP_USER"     "${SMTP_USER:-[blank]}"
@@ -2470,6 +2473,7 @@ NC='\033[0m'
 ok()      { echo -e "${GREEN}  ✓${NC}  $1"; }
 warn()    { echo -e "${YELLOW}  !${NC}  $1"; }
 err()     { echo -e "${RED}  ✗${NC}  $1"; }
+info()    { echo -e "  ${DIM}$1${NC}"; }
 heading() { echo -e "\n${BOLD}${CYAN}  $1${NC}\n"; }
 rule()    { echo -e "${DIM}  ────────────────────────────────────────────${NC}"; }
 
@@ -5556,12 +5560,12 @@ cmd_gc() {
   [[ ! "$confirm" =~ ^[yY] ]] && { echo "  Cancelled."; return; }
   echo ""
 
-  local gc_flags=""
-  [[ "${GC_REMOVE_DELETED:-true}" == "true" ]] && gc_flags="-r"
-  [[ "${GC_DRY_RUN:-false}"       == "true" ]] && gc_flags="${gc_flags} --dry-run"
+  local -a gc_flags=()
+  [[ "${GC_REMOVE_DELETED:-true}" == "true" ]] && gc_flags+=("-r")
+  [[ "${GC_DRY_RUN:-false}"       == "true" ]] && gc_flags+=("--dry-run")
 
   info "Running GC..."
-  docker exec seafile /scripts/gc.sh ${gc_flags}
+  docker exec seafile /scripts/gc.sh "${gc_flags[@]}"
   echo ""
   ok "GC complete."
   echo ""
@@ -5879,7 +5883,8 @@ def save_env(updates, path=ENV_FILE):
         return False
     fd = _lock(exclusive=True)
     try:
-        lines = open(path).readlines()
+        with open(path) as f:
+            lines = f.readlines()
         keys_written = set()
         out = []
         for line in lines:
@@ -5980,11 +5985,17 @@ def cron_to_human(cron_str):
     if len(parts) != 5:
         return {'frequency': 'daily', 'time': '02:00', 'day': 0}
     minute, hour, dom, mon, dow = parts
-    if hour == '*':
+    if hour == '*' or '/' in hour:
         return {'frequency': 'hourly', 'time': '00:00', 'day': 0}
-    time_str = f'{int(hour):02d}:{int(minute):02d}'
+    try:
+        time_str = f'{int(hour):02d}:{int(minute):02d}'
+    except ValueError:
+        return {'frequency': 'daily', 'time': '02:00', 'day': 0}
     if dow != '*' and dom == '*':
-        return {'frequency': 'weekly', 'time': time_str, 'day': int(dow)}
+        try:
+            return {'frequency': 'weekly', 'time': time_str, 'day': int(dow)}
+        except ValueError:
+            return {'frequency': 'weekly', 'time': time_str, 'day': 0}
     return {'frequency': 'daily', 'time': time_str, 'day': 0}
 
 
@@ -6977,9 +6988,11 @@ fi
 
 # --- SMTP ---
 if [[ "${SMTP_ENABLED:-false}" == "true" ]]; then
+_email_tls="False"
+[[ "${SMTP_USE_TLS:-true}" == "true" ]] && _email_tls="True"
 cat << SMTPEOF
 # --- Email / SMTP ---
-EMAIL_USE_TLS = ${SMTP_USE_TLS:-true}
+EMAIL_USE_TLS = ${_email_tls}
 EMAIL_HOST = '${SMTP_HOST}'
 EMAIL_PORT = ${SMTP_PORT:-465}
 EMAIL_HOST_USER = '${SMTP_USER}'
@@ -7563,13 +7576,13 @@ SNIPPETEOF
       _DB_DUMP_SNIPPET=$(cat << 'SNIPPETEOF'
 # --- Database dump (external server via mysqldump client) ---
 log "Dumping databases from external server ${DB_HOST}..."
+_auth=$(mktemp /tmp/.seafile-backup-auth.XXXXXX)
+chmod 600 "$_auth"
+printf '[client]\nuser=%s\npassword=%s\n' "${DB_USER}" "${DB_PASS}" > "$_auth"
 for db in \
     "${SEAFILE_MYSQL_DB_CCNET_DB_NAME:-ccnet_db}" \
     "${SEAFILE_MYSQL_DB_SEAFILE_DB_NAME:-seafile_db}" \
     "${SEAFILE_MYSQL_DB_SEAHUB_DB_NAME:-seahub_db}"; do
-  _auth=$(mktemp /tmp/.seafile-backup-auth.XXXXXX)
-  chmod 600 "$_auth"
-  printf '[client]\nuser=%s\npassword=%s\n' "${DB_USER}" "${DB_PASS}" > "$_auth"
   mysqldump \
     --defaults-extra-file="$_auth" \
     -h "${DB_HOST}" -P "${DB_PORT}" \
@@ -7580,7 +7593,7 @@ for db in \
     && log "  Dumped ${db}" \
     || err "  Failed to dump ${db}"
 done
-  rm -f "$_auth" 2>/dev/null || true
+rm -f "$_auth" 2>/dev/null || true
 SNIPPETEOF
 )
     fi
@@ -8803,17 +8816,20 @@ _set_env_secret() {
   python3 - "$key" "$value" "$file" << 'PYEOF'
 import sys, re
 key, value, path = sys.argv[1], sys.argv[2], sys.argv[3]
-content = open(path).read()
+with open(path) as f:
+    content = f.read()
+# Use lambda to avoid backreference interpretation in value
 new_content = re.sub(
     r'^(' + re.escape(key) + r'=)\s*$',
-    r'\g<1>' + value,
+    lambda m: m.group(1) + value,
     content,
     flags=re.MULTILINE
 )
 if new_content == content:
     if not re.search(r'^' + re.escape(key) + r'=', content, re.MULTILINE):
         new_content = content.rstrip('\n') + '\n' + key + '=' + value + '\n'
-open(path, 'w').write(new_content)
+with open(path, 'w') as f:
+    f.write(new_content)
 PYEOF
 }
 
@@ -9060,7 +9076,7 @@ _print_config_review() {
   echo ""
 
   echo -e "  ${BOLD}Email / SMTP  (SMTP_ENABLED=$(_pfv SMTP_ENABLED))${NC}"
-  if [[ "${SMTP_ENABLED:-true}" == "true" ]]; then
+  if [[ "${SMTP_ENABLED:-false}" == "true" ]]; then
     printf "    %-42s %b\n" "SMTP_HOST"     "${SMTP_HOST:-[blank]}"
     printf "    %-42s %b\n" "SMTP_PORT"     "$(_pfv SMTP_PORT)"
     printf "    %-42s %b\n" "SMTP_USER"     "${SMTP_USER:-[blank]}"
@@ -9397,16 +9413,6 @@ _show_splash() {
 ENV_FILE="/opt/seafile/.env"
 SNAPSHOT_FILE="/opt/seafile/.env.snapshot"
 
-# Build active container list from .env (same logic as CLI and setup)
-CONTAINERS=(seafile-caddy seafile-redis seafile seadoc notification-server thumbnail-server seafile-metadata)
-case "${OFFICE_SUITE:-collabora}" in
-  onlyoffice) CONTAINERS+=(seafile-onlyoffice) ;;
-  none)       ;;  # No office suite container
-  *)          CONTAINERS+=(seafile-collabora)  ;;
-esac
-[[ "${CLAMAV_ENABLED:-false}" == "true" ]] && CONTAINERS+=(seafile-clamav)
-[[ "${DB_INTERNAL:-true}"    == "true" ]] && CONTAINERS+=(seafile-db)
-
 _PHASES=(
   "Update system packages (apt-get upgrade)"
   "Apply deployment changes (validate .env, diff, pull images, apply config, restart)"
@@ -9480,6 +9486,16 @@ _load_env "$ENV_FILE"
 
 # --- Normalize .env ---
 _normalize_env "$ENV_FILE"
+
+# Build active container list from .env (same logic as CLI and setup)
+CONTAINERS=(seafile-caddy seafile-redis seafile seadoc notification-server thumbnail-server seafile-metadata)
+case "${OFFICE_SUITE:-collabora}" in
+  onlyoffice) CONTAINERS+=(seafile-onlyoffice) ;;
+  none)       ;;  # No office suite container
+  *)          CONTAINERS+=(seafile-collabora)  ;;
+esac
+[[ "${CLAMAV_ENABLED:-false}" == "true" ]] && CONTAINERS+=(seafile-clamav)
+[[ "${DB_INTERNAL:-true}"    == "true" ]] && CONTAINERS+=(seafile-db)
 
 # Required variables — these must be non-empty for the deployment to function.
 # Each entry is "VARIABLE_NAME|human-readable description"
@@ -11218,9 +11234,23 @@ class WebhookHandler(http.server.BaseHTTPRequestHandler):
         length = int(self.headers.get('Content-Length', 0))
         body   = self.rfile.read(length)
 
-        # Verify Gitea HMAC-SHA256 signature
-        if WEBHOOK_SECRET:
-            sig      = self.headers.get('X-Gitea-Signature', '')
+        # Verify webhook signature
+        if not WEBHOOK_SECRET:
+            log.error('GITOPS_WEBHOOK_SECRET is blank — rejecting request. Set a secret to enable webhooks.')
+            self._respond(403)
+            return
+
+        # Support Gitea, GitHub, and GitLab signature headers
+        sig = (self.headers.get('X-Gitea-Signature', '')
+               or self.headers.get('X-Hub-Signature-256', '').removeprefix('sha256=')
+               or self.headers.get('X-Gitlab-Token', ''))
+        if self.headers.get('X-Gitlab-Token'):
+            # GitLab uses plain token comparison, not HMAC
+            if not hmac.compare_digest(sig, WEBHOOK_SECRET):
+                log.warning('Webhook token mismatch — request rejected.')
+                self._respond(403)
+                return
+        else:
             expected = hmac.new(
                 WEBHOOK_SECRET.encode(), body, hashlib.sha256
             ).hexdigest()

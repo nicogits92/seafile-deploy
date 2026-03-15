@@ -155,9 +155,23 @@ class WebhookHandler(http.server.BaseHTTPRequestHandler):
         length = int(self.headers.get('Content-Length', 0))
         body   = self.rfile.read(length)
 
-        # Verify Gitea HMAC-SHA256 signature
-        if WEBHOOK_SECRET:
-            sig      = self.headers.get('X-Gitea-Signature', '')
+        # Verify webhook signature
+        if not WEBHOOK_SECRET:
+            log.error('GITOPS_WEBHOOK_SECRET is blank — rejecting request. Set a secret to enable webhooks.')
+            self._respond(403)
+            return
+
+        # Support Gitea, GitHub, and GitLab signature headers
+        sig = (self.headers.get('X-Gitea-Signature', '')
+               or self.headers.get('X-Hub-Signature-256', '').removeprefix('sha256=')
+               or self.headers.get('X-Gitlab-Token', ''))
+        if self.headers.get('X-Gitlab-Token'):
+            # GitLab uses plain token comparison, not HMAC
+            if not hmac.compare_digest(sig, WEBHOOK_SECRET):
+                log.warning('Webhook token mismatch — request rejected.')
+                self._respond(403)
+                return
+        else:
             expected = hmac.new(
                 WEBHOOK_SECRET.encode(), body, hashlib.sha256
             ).hexdigest()

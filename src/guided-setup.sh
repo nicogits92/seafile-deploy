@@ -967,7 +967,7 @@ ENVTEMPLATE
 import sys, re
 key, val = sys.argv[1], sys.argv[2]
 content = sys.stdin.read()
-print(re.sub(r'^' + re.escape(key) + r'=.*$', key + '=' + val, content, flags=re.MULTILINE), end='')
+print(re.sub(r'^' + re.escape(key) + r'=.*$', lambda m: key + '=' + val, content, flags=re.MULTILINE), end='')
 " "$key" "$val" <<< "$template_content")
   }
 
@@ -1408,7 +1408,7 @@ ENVTEMPLATE
 import sys, re
 key, val = sys.argv[1], sys.argv[2]
 content = sys.stdin.read()
-print(re.sub(r'^' + re.escape(key) + r'=.*$', key + '=' + val, content, flags=re.MULTILINE), end='')
+print(re.sub(r'^' + re.escape(key) + r'=.*$', lambda m: key + '=' + val, content, flags=re.MULTILINE), end='')
 " "$key" "$val" <<< "$template_content")
   }
 
@@ -1562,7 +1562,7 @@ ENVTEMPLATE
 import sys, re
 key, val = sys.argv[1], sys.argv[2]
 content = sys.stdin.read()
-print(re.sub(r'^' + re.escape(key) + r'=.*$', key + '=' + val, content, flags=re.MULTILINE), end='')
+print(re.sub(r'^' + re.escape(key) + r'=.*$', lambda m: key + '=' + val, content, flags=re.MULTILINE), end='')
 " "$key" "$val" <<< "$template_content")
   }
 

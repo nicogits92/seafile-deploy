@@ -118,7 +118,7 @@ prompt_secret_generation() {
       local _found=false
       for d in "${infra_desc[@]}"; do
         if [[ "$d" == "${v} "* ]]; then
-          echo -e "    ${CYAN}${v}${NC}${DIM}$(echo "$d" | sed "s/^${v}//")\${NC}"
+          echo -e "    ${CYAN}${v}${NC}${DIM}$(echo "$d" | sed "s/^${v}//")${NC}"
           _found=true
           break
         fi
