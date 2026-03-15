@@ -129,7 +129,13 @@ var API_BASE = location.pathname.startsWith('/admin/config') ? '/admin/config' :
 function api(method, path, body){
   var opts = {method:method, headers:{'Content-Type':'application/json'}};
   if(body) opts.body = JSON.stringify(body);
-  return fetch(API_BASE + path, opts).then(r=>r.json());
+  return fetch(API_BASE + path, opts).then(function(r){
+    if(!r.ok && r.status===401){alert('Authentication failed. Check your password.');throw new Error('auth');}
+    return r.json();
+  }).catch(function(e){
+    if(e.message!=='auth') console.error('API error:',e);
+    return {error:e.message};
+  });
 }
 
 function init(){
@@ -169,7 +175,7 @@ function renderStatus(data){
     var name = NAMES[c.name] || c.name;
     var cls = c.running ? 'sv-ok' : 'sv-off';
     if(!c.running) all_ok = false;
-    grid.innerHTML += '<div class="sc"><div class="sn">'+name+'</div><div class="sv '+cls+'">'+(c.running?'running':'stopped')+(c.uptime?' · '+c.uptime:'')+'</div></div>';
+    grid.innerHTML += '<div class="sc"><div class="sn">'+esc(name)+'</div><div class="sv '+cls+'">'+(c.running?'running':'stopped')+(c.uptime?' · '+esc(c.uptime):'')+'</div></div>';
   });
   var dot = all_ok ? 'dot-ok' : 'dot-warn';
   $('#hdr-status').innerHTML = '<span class="dot '+dot+'"></span> '+(all_ok?'All services running':'Some services down');
@@ -333,10 +339,7 @@ function renderSections(schedules){
           + field('COLLABORA_IMAGE','Collabora',null)
           + field('DB_INTERNAL_IMAGE','MariaDB',null)
           + field('CADDY_IMAGE','Caddy',null)
-          + field('SEAFILE_REDIS_IMAGE','Redis',null))
-        + grp('<div class="grp-t">Branding</div>'
-          + field('SITE_NAME','Site name','Shown in browser tabs')
-          + field('SITE_TITLE','Site title','Shown on login page')));
+          + field('SEAFILE_REDIS_IMAGE','Redis',null)));
 }
 
 function sec(id, title, desc, content){
@@ -387,6 +390,10 @@ function previewSave(){
   var data = getChanges();
   data.preview = true;
   api('POST','/api/env', data).then(function(r){
+    if(r.error){
+      alert('Error: '+r.error);
+      return;
+    }
     if(r.status==='no_changes'){
       alert('No changes to apply.');
       return;
@@ -394,8 +401,8 @@ function previewSave(){
     var dp = $('#diff-panel');
     var html = '<div class="grp" style="border-color:#b5d4f4;margin-top:1rem"><div class="grp-t">Changes to apply</div><div class="diff-box">';
     (r.diff||[]).forEach(function(d){
-      html += '<div><span class="diff-old">- '+d.key+'='+d.old+'</span></div>';
-      html += '<div><span class="diff-new">+ '+d.key+'='+d.new+'</span></div>';
+      html += '<div><span class="diff-old">- '+esc(d.key)+'='+esc(d.old)+'</span></div>';
+      html += '<div><span class="diff-new">+ '+esc(d.key)+'='+esc(d.new)+'</span></div>';
     });
     html += '</div><p style="font-size:12px;color:#888;margin:8px 0">This will regenerate config files and restart affected containers.</p>';
     html += '<div style="display:flex;gap:6px"><button class="btn btn-p" onclick="confirmSave()">Confirm and apply</button>';
@@ -410,6 +417,10 @@ function confirmSave(){
   var data = getChanges();
   data.preview = false;
   api('POST','/api/env', data).then(function(r){
+    if(r.error){
+      alert('Failed to save: '+r.error);
+      return;
+    }
     $('#diff-panel').style.display = 'none';
     ORIGINAL = JSON.parse(JSON.stringify(ENV));
     $('#bar-meta').textContent = 'Applying changes...';

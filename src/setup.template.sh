@@ -1467,10 +1467,10 @@ NPMCONF
     echo ""
 
     # Show config panel info
-    local _cui_pw=""
+    _cui_pw=""
     _cui_pw=$(grep "^CONFIG_UI_PASSWORD=" "$ENV_FILE" 2>/dev/null | cut -d= -f2-)
     if [[ -n "$_cui_pw" ]]; then
-      local _host_for_panel
+      _host_for_panel=""
       _host_for_panel=$(hostname -I 2>/dev/null | awk '{print $1}')
       echo -e "  ${BOLD}Web configuration panel:${NC}"
       echo -e "    ${BOLD}http://${_host_for_panel}:9443${NC}"

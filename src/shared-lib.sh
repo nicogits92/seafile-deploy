@@ -384,7 +384,9 @@ _run_phase_menu() {
       *)
         # Parse multiple space-separated numbers
         local _toggled=false
-        for _num in $_input; do
+        local _nums=()
+        read -ra _nums <<< "$_input"
+        for _num in "${_nums[@]}"; do
           if [[ "$_num" =~ ^[0-9]+$ ]]; then
             _idx=$(( _num - 1 ))
             if [[ $_idx -ge 0 && $_idx -lt ${#_PHASES[@]} ]]; then

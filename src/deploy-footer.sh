@@ -811,7 +811,7 @@ while true; do
 
         if [[ "${CONFIGURE_LATER:-false}" == "true" ]]; then
           # Config UI password from .env
-          local _cui_pw=""
+          _cui_pw=""
           _cui_pw=$(grep "^CONFIG_UI_PASSWORD=" "$ENV_FILE" 2>/dev/null | cut -d= -f2-)
           echo ""
           echo -e "  ${DIM}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"

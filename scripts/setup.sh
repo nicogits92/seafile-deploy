@@ -982,7 +982,9 @@ _run_phase_menu() {
       *)
         # Parse multiple space-separated numbers
         local _toggled=false
-        for _num in $_input; do
+        local _nums=()
+        read -ra _nums <<< "$_input"
+        for _num in "${_nums[@]}"; do
           if [[ "$_num" =~ ^[0-9]+$ ]]; then
             _idx=$(( _num - 1 ))
             if [[ $_idx -ge 0 && $_idx -lt ${#_PHASES[@]} ]]; then
@@ -2152,6 +2154,8 @@ _commit_history
 log "Watching $LOCAL_ENV for changes..."
 while true; do
   inotifywait -e close_write,moved_to,create "$LOCAL_ENV" 2>/dev/null
+  # Brief settle — avoids catching intermediate state during rapid successive writes
+  sleep 0.5
   if [ -f "$LOCAL_ENV" ]; then
     # 1. Backup to storage share (DR)
     cp "$LOCAL_ENV" "$STORAGE_ENV"
@@ -5706,8 +5710,8 @@ ENV_FILE="/opt/seafile/.env"
 # Read port from .env
 PORT=9418
 if [ -f "$ENV_FILE" ]; then
-  _port=$(grep "^CONFIG_GIT_PORT=" "$ENV_FILE" | cut -d'=' -f2 | tr -d '[:space:]')
-  PORT="${_port:-9418}"
+  _port=$(grep "^CONFIG_GIT_PORT=" "$ENV_FILE" | cut -d'=' -f2 | tr -dc '0-9')
+  [[ "$_port" =~ ^[0-9]+$ ]] && PORT="$_port"
 fi
 
 # Ensure repo exists and server-info is current
@@ -5796,6 +5800,7 @@ cat > "$CONFIGUI_SCRIPT" << 'CONFIGUIPYEOF'
 # =============================================================================
 
 import base64
+import fcntl
 import hashlib
 import hmac
 import http.server
@@ -5816,54 +5821,85 @@ SECRETS_FILE = '/opt/seafile/.secrets'
 # .env reader/writer (same safe parser as shared-lib.sh)
 # ---------------------------------------------------------------------------
 
+ENV_LOCK = ENV_FILE + '.lock'
+
+
+def _lock(exclusive=False):
+    """Acquire a file lock. Returns the lock file descriptor."""
+    fd = open(ENV_LOCK, 'w')
+    fcntl.flock(fd, fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH)
+    return fd
+
+
+def _unlock(fd):
+    """Release a file lock."""
+    fcntl.flock(fd, fcntl.LOCK_UN)
+    fd.close()
+
+
 def load_env(path=ENV_FILE):
     env = {}
     if not os.path.isfile(path):
         return env
-    with open(path) as f:
-        for line in f:
-            line = line.strip()
-            if not line or line.startswith('#') or '=' not in line:
-                continue
-            key, val = line.split('=', 1)
-            key = key.strip()
-            if val.startswith('"') and val.endswith('"'):
-                val = val[1:-1]
-            elif val.startswith("'") and val.endswith("'"):
-                val = val[1:-1]
-            env[key] = val
+    fd = _lock(exclusive=False)
+    try:
+        with open(path) as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith('#') or '=' not in line:
+                    continue
+                key, val = line.split('=', 1)
+                key = key.strip()
+                if val.startswith('"') and val.endswith('"'):
+                    val = val[1:-1]
+                elif val.startswith("'") and val.endswith("'"):
+                    val = val[1:-1]
+                env[key] = val
+    finally:
+        _unlock(fd)
     return env
+
+
+def _env_quote(val):
+    """Quote a value for safe .env writing. Escapes special characters."""
+    needs_quote = any(c in val for c in ' #;$`"\\')
+    if not needs_quote:
+        return val
+    # Escape backslashes first, then double quotes, $, and backticks
+    val = val.replace('\\', '\\\\')
+    val = val.replace('"', '\\"')
+    val = val.replace('$', '\\$')
+    val = val.replace('`', '\\`')
+    return f'"{val}"'
 
 
 def save_env(updates, path=ENV_FILE):
     """Update specific keys in .env, preserving comments and structure."""
     if not os.path.isfile(path):
         return False
-    lines = open(path).readlines()
-    keys_written = set()
-    out = []
-    for line in lines:
-        stripped = line.strip()
-        if stripped and not stripped.startswith('#') and '=' in stripped:
-            key = stripped.split('=', 1)[0].strip()
-            if key in updates:
-                val = updates[key]
-                # Quote values containing spaces, #, or special chars
-                if ' ' in val or '#' in val or ';' in val:
-                    val = f'"{val}"'
-                out.append(f'{key}={val}\n')
-                keys_written.add(key)
-                continue
-        out.append(line)
-    # Append any new keys not already in the file
-    for k, v in updates.items():
-        if k not in keys_written:
-            if ' ' in v or '#' in v or ';' in v:
-                v = f'"{v}"'
-            out.append(f'{k}={v}\n')
-    with open(path, 'w') as f:
-        f.writelines(out)
-    os.chmod(path, 0o600)
+    fd = _lock(exclusive=True)
+    try:
+        lines = open(path).readlines()
+        keys_written = set()
+        out = []
+        for line in lines:
+            stripped = line.strip()
+            if stripped and not stripped.startswith('#') and '=' in stripped:
+                key = stripped.split('=', 1)[0].strip()
+                if key in updates:
+                    out.append(f'{key}={_env_quote(updates[key])}\n')
+                    keys_written.add(key)
+                    continue
+            out.append(line)
+        # Append any new keys not already in the file
+        for k, v in updates.items():
+            if k not in keys_written:
+                out.append(f'{k}={_env_quote(v)}\n')
+        with open(path, 'w') as f:
+            f.writelines(out)
+        os.chmod(path, 0o600)
+    finally:
+        _unlock(fd)
     return True
 
 
@@ -5944,11 +5980,11 @@ def cron_to_human(cron_str):
     if len(parts) != 5:
         return {'frequency': 'daily', 'time': '02:00', 'day': 0}
     minute, hour, dom, mon, dow = parts
+    if hour == '*':
+        return {'frequency': 'hourly', 'time': '00:00', 'day': 0}
     time_str = f'{int(hour):02d}:{int(minute):02d}'
     if dow != '*' and dom == '*':
         return {'frequency': 'weekly', 'time': time_str, 'day': int(dow)}
-    if hour == '*':
-        return {'frequency': 'hourly', 'time': '00:00', 'day': 0}
     return {'frequency': 'daily', 'time': time_str, 'day': 0}
 
 
@@ -6083,7 +6119,9 @@ class ConfigHandler(http.server.BaseHTTPRequestHandler):
                     self._json_response({'status': 'preview', 'diff': diff})
                     return
                 # Write and apply
-                save_env(updates)
+                if not save_env(updates):
+                    self._json_response({'error': 'Failed to write .env'}, 500)
+                    return
                 apply_config()
                 self._json_response({'status': 'applied', 'diff': diff})
             except json.JSONDecodeError:
@@ -6270,7 +6308,13 @@ var API_BASE = location.pathname.startsWith('/admin/config') ? '/admin/config' :
 function api(method, path, body){
   var opts = {method:method, headers:{'Content-Type':'application/json'}};
   if(body) opts.body = JSON.stringify(body);
-  return fetch(API_BASE + path, opts).then(r=>r.json());
+  return fetch(API_BASE + path, opts).then(function(r){
+    if(!r.ok && r.status===401){alert('Authentication failed. Check your password.');throw new Error('auth');}
+    return r.json();
+  }).catch(function(e){
+    if(e.message!=='auth') console.error('API error:',e);
+    return {error:e.message};
+  });
 }
 
 function init(){
@@ -6310,7 +6354,7 @@ function renderStatus(data){
     var name = NAMES[c.name] || c.name;
     var cls = c.running ? 'sv-ok' : 'sv-off';
     if(!c.running) all_ok = false;
-    grid.innerHTML += '<div class="sc"><div class="sn">'+name+'</div><div class="sv '+cls+'">'+(c.running?'running':'stopped')+(c.uptime?' · '+c.uptime:'')+'</div></div>';
+    grid.innerHTML += '<div class="sc"><div class="sn">'+esc(name)+'</div><div class="sv '+cls+'">'+(c.running?'running':'stopped')+(c.uptime?' · '+esc(c.uptime):'')+'</div></div>';
   });
   var dot = all_ok ? 'dot-ok' : 'dot-warn';
   $('#hdr-status').innerHTML = '<span class="dot '+dot+'"></span> '+(all_ok?'All services running':'Some services down');
@@ -6474,10 +6518,7 @@ function renderSections(schedules){
           + field('COLLABORA_IMAGE','Collabora',null)
           + field('DB_INTERNAL_IMAGE','MariaDB',null)
           + field('CADDY_IMAGE','Caddy',null)
-          + field('SEAFILE_REDIS_IMAGE','Redis',null))
-        + grp('<div class="grp-t">Branding</div>'
-          + field('SITE_NAME','Site name','Shown in browser tabs')
-          + field('SITE_TITLE','Site title','Shown on login page')));
+          + field('SEAFILE_REDIS_IMAGE','Redis',null)));
 }
 
 function sec(id, title, desc, content){
@@ -6528,6 +6569,10 @@ function previewSave(){
   var data = getChanges();
   data.preview = true;
   api('POST','/api/env', data).then(function(r){
+    if(r.error){
+      alert('Error: '+r.error);
+      return;
+    }
     if(r.status==='no_changes'){
       alert('No changes to apply.');
       return;
@@ -6535,8 +6580,8 @@ function previewSave(){
     var dp = $('#diff-panel');
     var html = '<div class="grp" style="border-color:#b5d4f4;margin-top:1rem"><div class="grp-t">Changes to apply</div><div class="diff-box">';
     (r.diff||[]).forEach(function(d){
-      html += '<div><span class="diff-old">- '+d.key+'='+d.old+'</span></div>';
-      html += '<div><span class="diff-new">+ '+d.key+'='+d.new+'</span></div>';
+      html += '<div><span class="diff-old">- '+esc(d.key)+'='+esc(d.old)+'</span></div>';
+      html += '<div><span class="diff-new">+ '+esc(d.key)+'='+esc(d.new)+'</span></div>';
     });
     html += '</div><p style="font-size:12px;color:#888;margin:8px 0">This will regenerate config files and restart affected containers.</p>';
     html += '<div style="display:flex;gap:6px"><button class="btn btn-p" onclick="confirmSave()">Confirm and apply</button>';
@@ -6551,6 +6596,10 @@ function confirmSave(){
   var data = getChanges();
   data.preview = false;
   api('POST','/api/env', data).then(function(r){
+    if(r.error){
+      alert('Failed to save: '+r.error);
+      return;
+    }
     $('#diff-panel').style.display = 'none';
     ORIGINAL = JSON.parse(JSON.stringify(ENV));
     $('#bar-meta').textContent = 'Applying changes...';
@@ -7232,7 +7281,6 @@ fi
 if [[ "${_SELECTED[4]}" == "true" ]]; then
 info "Writing seafdav.conf (SEAFDAV_ENABLED=${SEAFDAV_ENABLED:-false})..."
 cat > "${CONF_DIR}/seafdav.conf" << SEAFDAVEOF
-chmod 600 "${CONF_DIR}/seafdav.conf"
 [WEBDAV]
 enabled = ${SEAFDAV_ENABLED:-false}
 port = 8080
@@ -7253,7 +7301,6 @@ if [[ "${MAX_UPLOAD_SIZE_MB:-0}" != "0" ]]; then
   (( _timeout > 3600 )) && _timeout=3600
 fi
 cat > "${CONF_DIR}/gunicorn.conf.py" << GUNICORNEOF
-chmod 600 "${CONF_DIR}/gunicorn.conf.py"
 import os
 
 daemon = True
@@ -7370,10 +7417,16 @@ LOG="/var/log/seafile-db-snapshot.log"
 log() { echo "$(date '+%Y-%m-%d %H:%M:%S') [INFO]  $1" | tee -a "$LOG"; }
 err() { echo "$(date '+%Y-%m-%d %H:%M:%S') [ERROR] $1" | tee -a "$LOG"; exit 1; }
 
-# Source .env for volume path and credentials
+# Source .env for volume path and credentials (safe inline parser)
 ENV_FILE="/opt/seafile/.env"
 [[ -f "$ENV_FILE" ]] || err ".env not found at $ENV_FILE"
-_load_env "$ENV_FILE"
+while IFS='=' read -r key val; do
+  [[ -z "$key" || "$key" == \#* ]] && continue
+  key="${key%%[[:space:]]*}"
+  val="${val#\"}" ; val="${val%\"}"
+  val="${val#\'}" ; val="${val%\'}"
+  export "$key=$val"
+done < "$ENV_FILE"
 
 DEST="${SEAFILE_VOLUME}/db-backup"
 TIMESTAMP="$(date '+%Y%m%d_%H%M%S')"
@@ -7456,7 +7509,7 @@ if [[ "${BACKUP_ENABLED:-false}" == "true" ]]; then
           ;;
         smb)
           if [[ -n "${BACKUP_SMB_SERVER:-}" && -n "${BACKUP_SMB_SHARE:-}" ]]; then
-            local _bk_creds="/etc/seafile-backup-smb-credentials"
+            _bk_creds="/etc/seafile-backup-smb-credentials"
             if [[ ! -f "$_bk_creds" ]]; then
               printf 'username=%s\npassword=%s\n' "${BACKUP_SMB_USERNAME}" "${BACKUP_SMB_PASSWORD}" > "$_bk_creds"
               [[ -n "${BACKUP_SMB_DOMAIN:-}" ]] && echo "domain=${BACKUP_SMB_DOMAIN}" >> "$_bk_creds"
@@ -8841,7 +8894,9 @@ _run_phase_menu() {
       *)
         # Parse multiple space-separated numbers
         local _toggled=false
-        for _num in $_input; do
+        local _nums=()
+        read -ra _nums <<< "$_input"
+        for _num in "${_nums[@]}"; do
           if [[ "$_num" =~ ^[0-9]+$ ]]; then
             _idx=$(( _num - 1 ))
             if [[ $_idx -ge 0 && $_idx -lt ${#_PHASES[@]} ]]; then
@@ -9669,7 +9724,7 @@ services:
       - "traefik.http.routers.seafile.rule=Host(`${SEAFILE_SERVER_HOSTNAME}`)"
       - "traefik.http.routers.seafile.entrypoints=${TRAEFIK_ENTRYPOINT:-websecure}"
       - "traefik.http.routers.seafile.tls.certresolver=${TRAEFIK_CERTRESOLVER:-letsencrypt}"
-      - "traefik.http.services.seafile.loadbalancer.server.port=${CADDY_PORT:-7080}"
+      - "traefik.http.services.seafile.loadbalancer.server.port=80"
       - "traefik.http.middlewares.seafile-headers.headers.customrequestheaders.X-Forwarded-Proto=https"
       - "traefik.http.routers.seafile.middlewares=seafile-headers"
     networks:
@@ -10112,8 +10167,7 @@ fi
 # --- Disk usage ---
 echo ""
 echo -e "${BOLD}  Disk usage:${NC}"
-NFS_USAGE=$(df -h "$STORAGE_MOUNT" 2>/dev/null | awk 'NR==2 {print $3 " used of " $2 " (" $5 " full)"}' \
-  || df -h "$STORAGE_PATH" 2>/dev/null | awk 'NR==2 {print $3 " used of " $2 " (" $5 " full")"}' \
+NFS_USAGE=$(df -h "$STORAGE_PATH" 2>/dev/null | awk 'NR==2 {print $3 " used of " $2 " (" $5 " full)"}' \
   || echo "unavailable")
 LOCAL_USAGE=$(df -h /opt 2>/dev/null | awk 'NR==2 {print $3 " used of " $2 " (" $5 " full)"}' || echo "unavailable")
 THUMB_USAGE=$(du -sh "${THUMBNAIL_PATH:-/opt/seafile-thumbnails}" 2>/dev/null | cut -f1 || echo "0")
@@ -10125,7 +10179,7 @@ echo -e "    Thumbnail cache:                    ${THUMB_USAGE}"
 echo -e "    Metadata index:                     ${META_USAGE}"
 
 # --- Disk usage warnings ---
-_NFS_PCT=$(df "$STORAGE_MOUNT" 2>/dev/null | awk 'NR==2 {gsub(/%/,"",$5); print $5}' || echo "0")
+_NFS_PCT=$(df "$STORAGE_PATH" 2>/dev/null | awk 'NR==2 {gsub(/%/,"",$5); print $5}' || echo "0")
 _LOCAL_PCT=$(df /opt 2>/dev/null | awk 'NR==2 {gsub(/%/,"",$5); print $5}' || echo "0")
 if (( _NFS_PCT >= 90 )); then
   fail "Storage volume is ${_NFS_PCT}% full — consider freeing space immediately."
@@ -10242,7 +10296,7 @@ services:
       - "traefik.http.routers.seafile.rule=Host(`${SEAFILE_SERVER_HOSTNAME}`)"
       - "traefik.http.routers.seafile.entrypoints=${TRAEFIK_ENTRYPOINT:-websecure}"
       - "traefik.http.routers.seafile.tls.certresolver=${TRAEFIK_CERTRESOLVER:-letsencrypt}"
-      - "traefik.http.services.seafile.loadbalancer.server.port=${CADDY_PORT:-7080}"
+      - "traefik.http.services.seafile.loadbalancer.server.port=80"
       - "traefik.http.middlewares.seafile-headers.headers.customrequestheaders.X-Forwarded-Proto=https"
       - "traefik.http.routers.seafile.middlewares=seafile-headers"
     networks:
@@ -11380,10 +11434,10 @@ NPMCONF
     echo ""
 
     # Show config panel info
-    local _cui_pw=""
+    _cui_pw=""
     _cui_pw=$(grep "^CONFIG_UI_PASSWORD=" "$ENV_FILE" 2>/dev/null | cut -d= -f2-)
     if [[ -n "$_cui_pw" ]]; then
-      local _host_for_panel
+      _host_for_panel=""
       _host_for_panel=$(hostname -I 2>/dev/null | awk '{print $1}')
       echo -e "  ${BOLD}Web configuration panel:${NC}"
       echo -e "    ${BOLD}http://${_host_for_panel}:9443${NC}"
@@ -11453,7 +11507,7 @@ services:
       - "traefik.http.routers.seafile.rule=Host(`${SEAFILE_SERVER_HOSTNAME}`)"
       - "traefik.http.routers.seafile.entrypoints=${TRAEFIK_ENTRYPOINT:-websecure}"
       - "traefik.http.routers.seafile.tls.certresolver=${TRAEFIK_CERTRESOLVER:-letsencrypt}"
-      - "traefik.http.services.seafile.loadbalancer.server.port=${CADDY_PORT:-7080}"
+      - "traefik.http.services.seafile.loadbalancer.server.port=80"
       - "traefik.http.middlewares.seafile-headers.headers.customrequestheaders.X-Forwarded-Proto=https"
       - "traefik.http.routers.seafile.middlewares=seafile-headers"
     networks:

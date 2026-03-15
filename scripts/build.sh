@@ -27,6 +27,9 @@ GITOPS_SYNC="${REPO_ROOT}/scripts/gitops/seafile-gitops-sync.py"
 GITOPS_SERVICE="${REPO_ROOT}/scripts/gitops/seafile-gitops-sync.service"
 STORAGE_SYNC="${REPO_ROOT}/scripts/storage-sync/seafile-storage-sync.sh"
 STORAGE_SYNC_SERVICE="${REPO_ROOT}/scripts/storage-sync/seafile-storage-sync.service"
+CONFIGUI_PY="${REPO_ROOT}/scripts/config-ui/seafile-config-ui.py"
+CONFIGUI_HTML="${REPO_ROOT}/scripts/config-ui/config-ui.html"
+CONFIGUI_SERVICE="${REPO_ROOT}/scripts/config-ui/seafile-config-ui.service"
 GUIDED_SETUP="${REPO_ROOT}/src/guided-setup.sh"
 ENV_TEMPLATE="${REPO_ROOT}/src/.env.template"
 CLI_SCRIPT="${REPO_ROOT}/scripts/seafile-cli.sh"
@@ -48,6 +51,12 @@ process_template() {
     if [[ "$line" =~ \{\{EMBED:([^}]+)\}\} ]]; then
       local embed_path="${BASH_REMATCH[1]}"
       local full_path="${REPO_ROOT}/${embed_path}"
+      # Path traversal check — resolve symlinks and verify within repo
+      local resolved
+      resolved=$(realpath -m "$full_path" 2>/dev/null) || resolved="$full_path"
+      if [[ "$resolved" != "${REPO_ROOT}/"* ]]; then
+        err "Embed path escapes repo root: $embed_path" && return 1
+      fi
       [[ ! -f "$full_path" ]] && err "Embed file not found: $embed_path" && return 1
       cat "$full_path" >> "$output"
     elif [[ "$line" =~ \{\{ENV_TEMPLATE\}\} ]]; then
@@ -68,6 +77,7 @@ verify_sources() {
            "$DOCKER_COMPOSE" "$CADDYFILE" "$CONFIG_FIXES" "$ENV_SYNC" "$RECOVERY_FINALIZE" \
            "$CONFIG_GIT_SERVER" "$CONFIG_GIT_SERVICE" \
            "$GITOPS_SYNC" "$GITOPS_SERVICE" "$STORAGE_SYNC" "$STORAGE_SYNC_SERVICE" \
+           "$CONFIGUI_PY" "$CONFIGUI_HTML" "$CONFIGUI_SERVICE" \
            "$GUIDED_SETUP" "$ENV_TEMPLATE" "$CLI_SCRIPT"; do
     [[ -f "$f" ]] || missing+=("$f")
   done
@@ -86,46 +96,60 @@ clean_generated() {
 # =============================================================================
 # Main build
 # =============================================================================
+
+# Temp files (global for trap cleanup)
+_PROCESSED_SHARED=""
+_SHARED_BACKUP=""
+_PROCESSED_GUIDED=""
+_PROCESSED_FOOTER=""
+
+_build_cleanup() {
+  [[ -n "$_SHARED_BACKUP" && -f "$_SHARED_BACKUP" ]] && cp "$_SHARED_BACKUP" "$SHARED_LIB" 2>/dev/null
+  rm -f "$_PROCESSED_SHARED" "$_SHARED_BACKUP" "$_PROCESSED_GUIDED" "$_PROCESSED_FOOTER"
+}
+trap _build_cleanup EXIT
+
 build_all() {
   echo ""; echo "Building from templates..."; echo ""
 
   # Step 1: Process shared-lib.sh (resolve {{ENV_TEMPLATE}})
   info "Processing shared-lib.sh..."
-  local processed_shared; processed_shared=$(mktemp)
-  sed -e "/{{ENV_TEMPLATE}}/r ${ENV_TEMPLATE}" -e "/{{ENV_TEMPLATE}}/d" "$SHARED_LIB" > "$processed_shared"
-  ok "Processed shared-lib.sh ($(wc -l < "$processed_shared") lines)"
+  _PROCESSED_SHARED=$(mktemp)
+  _SHARED_BACKUP=$(mktemp)
+  _PROCESSED_GUIDED=$(mktemp)
+  _PROCESSED_FOOTER=$(mktemp)
+
+  sed -e "/{{ENV_TEMPLATE}}/r ${ENV_TEMPLATE}" -e "/{{ENV_TEMPLATE}}/d" "$SHARED_LIB" > "$_PROCESSED_SHARED"
+  ok "Processed shared-lib.sh ($(wc -l < "$_PROCESSED_SHARED") lines)"
 
   # Step 2: Process update.sh
   # update.template.sh embeds shared-lib and docker-compose — we need shared-lib
   # pre-processed (with .env.template resolved), so temporarily replace src/shared-lib.sh
-  local shared_backup; shared_backup=$(mktemp)
-  cp "$SHARED_LIB" "$shared_backup"
-  cp "$processed_shared" "$SHARED_LIB"
+  cp "$SHARED_LIB" "$_SHARED_BACKUP"
+  cp "$_PROCESSED_SHARED" "$SHARED_LIB"
 
   info "Processing update.template.sh..."
   process_template "$UPDATE_TEMPLATE" "$UPDATE_OUTPUT" \
     && ok "Generated scripts/update.sh ($(wc -l < "$UPDATE_OUTPUT") lines)" \
-    || { err "Failed to process update.template.sh"; cp "$shared_backup" "$SHARED_LIB"; exit 1; }
+    || { err "Failed to process update.template.sh"; exit 1; }
 
   # Step 3: Process setup.sh (embeds update.sh, config-fixes, CLI, etc.)
   info "Processing setup.template.sh..."
   process_template "$SETUP_TEMPLATE" "$SETUP_OUTPUT" \
     && ok "Generated scripts/setup.sh ($(wc -l < "$SETUP_OUTPUT") lines)" \
-    || { err "Failed to process setup.template.sh"; cp "$shared_backup" "$SHARED_LIB"; exit 1; }
+    || { err "Failed to process setup.template.sh"; exit 1; }
 
   # Restore original shared-lib.sh (with {{ENV_TEMPLATE}} marker intact)
-  cp "$shared_backup" "$SHARED_LIB"
+  cp "$_SHARED_BACKUP" "$SHARED_LIB"
 
   # Step 4: Process guided-setup.sh (resolve {{ENV_TEMPLATE}})
   info "Processing guided-setup.sh..."
-  local processed_guided; processed_guided=$(mktemp)
-  sed -e "/{{ENV_TEMPLATE}}/r ${ENV_TEMPLATE}" -e "/{{ENV_TEMPLATE}}/d" "$GUIDED_SETUP" > "$processed_guided"
+  sed -e "/{{ENV_TEMPLATE}}/r ${ENV_TEMPLATE}" -e "/{{ENV_TEMPLATE}}/d" "$GUIDED_SETUP" > "$_PROCESSED_GUIDED"
 
   # Step 5: Process deploy-footer.sh (resolve {{ENV_TEMPLATE}} in normalize_env)
   # Footer no longer has {{ENV_TEMPLATE}} since normalize moved to shared-lib,
   # but process it anyway for future-proofing
-  local processed_footer; processed_footer=$(mktemp)
-  sed -e "/{{ENV_TEMPLATE}}/r ${ENV_TEMPLATE}" -e "/{{ENV_TEMPLATE}}/d" "$FOOTER" > "$processed_footer"
+  sed -e "/{{ENV_TEMPLATE}}/r ${ENV_TEMPLATE}" -e "/{{ENV_TEMPLATE}}/d" "$FOOTER" > "$_PROCESSED_FOOTER"
 
   # Step 6: Assemble seafile-deploy.sh
   echo ""; info "Assembling seafile-deploy.sh..."
@@ -135,12 +159,12 @@ build_all() {
     echo "# ==========================================================================="
     echo "# Shared Library (embedded from src/shared-lib.sh)"
     echo "# ==========================================================================="
-    cat "$processed_shared"
+    cat "$_PROCESSED_SHARED"
     echo ""
     echo "# ==========================================================================="
     echo "# Guided Setup Wizard (embedded from src/guided-setup.sh)"
     echo "# ==========================================================================="
-    cat "$processed_guided"
+    cat "$_PROCESSED_GUIDED"
     echo ""
     echo "# ==========================================================================="
     echo "# Embedded setup.sh (unified install + recover)"
@@ -151,10 +175,10 @@ build_all() {
     printf "\nSETUP_EMBED_EOF\n"
     echo "}"
     echo ""
-    cat "$processed_footer"
+    cat "$_PROCESSED_FOOTER"
   } > "$DEPLOY_OUTPUT"
 
-  rm -f "$processed_shared" "$processed_guided" "$processed_footer" "$shared_backup"
+  rm -f "$_PROCESSED_SHARED" "$_PROCESSED_GUIDED" "$_PROCESSED_FOOTER" "$_SHARED_BACKUP"
   chmod +x "$DEPLOY_OUTPUT"
   ok "Generated seafile-deploy.sh ($(wc -l < "$DEPLOY_OUTPUT") lines)"
   echo ""; echo "Build complete!"

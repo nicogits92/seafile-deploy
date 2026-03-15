@@ -22,7 +22,7 @@ services:
       - "traefik.http.routers.seafile.rule=Host(`${SEAFILE_SERVER_HOSTNAME}`)"
       - "traefik.http.routers.seafile.entrypoints=${TRAEFIK_ENTRYPOINT:-websecure}"
       - "traefik.http.routers.seafile.tls.certresolver=${TRAEFIK_CERTRESOLVER:-letsencrypt}"
-      - "traefik.http.services.seafile.loadbalancer.server.port=${CADDY_PORT:-7080}"
+      - "traefik.http.services.seafile.loadbalancer.server.port=80"
       - "traefik.http.middlewares.seafile-headers.headers.customrequestheaders.X-Forwarded-Proto=https"
       - "traefik.http.routers.seafile.middlewares=seafile-headers"
     networks:

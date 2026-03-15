@@ -21,8 +21,8 @@ ENV_FILE="/opt/seafile/.env"
 # Read port from .env
 PORT=9418
 if [ -f "$ENV_FILE" ]; then
-  _port=$(grep "^CONFIG_GIT_PORT=" "$ENV_FILE" | cut -d'=' -f2 | tr -d '[:space:]')
-  PORT="${_port:-9418}"
+  _port=$(grep "^CONFIG_GIT_PORT=" "$ENV_FILE" | cut -d'=' -f2 | tr -dc '0-9')
+  [[ "$_port" =~ ^[0-9]+$ ]] && PORT="$_port"
 fi
 
 # Ensure repo exists and server-info is current

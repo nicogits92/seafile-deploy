@@ -116,6 +116,8 @@ _commit_history
 log "Watching $LOCAL_ENV for changes..."
 while true; do
   inotifywait -e close_write,moved_to,create "$LOCAL_ENV" 2>/dev/null
+  # Brief settle — avoids catching intermediate state during rapid successive writes
+  sleep 0.5
   if [ -f "$LOCAL_ENV" ]; then
     # 1. Backup to storage share (DR)
     cp "$LOCAL_ENV" "$STORAGE_ENV"
