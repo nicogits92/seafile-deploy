@@ -40,6 +40,7 @@ NC='\033[0m'
 ok()      { echo -e "${GREEN}  ✓${NC}  $1"; }
 warn()    { echo -e "${YELLOW}  !${NC}  $1"; }
 err()     { echo -e "${RED}  ✗${NC}  $1"; }
+info()    { echo -e "  ${DIM}$1${NC}"; }
 heading() { echo -e "\n${BOLD}${CYAN}  $1${NC}\n"; }
 rule()    { echo -e "${DIM}  ────────────────────────────────────────────${NC}"; }
 
@@ -3126,12 +3127,12 @@ cmd_gc() {
   [[ ! "$confirm" =~ ^[yY] ]] && { echo "  Cancelled."; return; }
   echo ""
 
-  local gc_flags=""
-  [[ "${GC_REMOVE_DELETED:-true}" == "true" ]] && gc_flags="-r"
-  [[ "${GC_DRY_RUN:-false}"       == "true" ]] && gc_flags="${gc_flags} --dry-run"
+  local -a gc_flags=()
+  [[ "${GC_REMOVE_DELETED:-true}" == "true" ]] && gc_flags+=("-r")
+  [[ "${GC_DRY_RUN:-false}"       == "true" ]] && gc_flags+=("--dry-run")
 
   info "Running GC..."
-  docker exec seafile /scripts/gc.sh ${gc_flags}
+  docker exec seafile /scripts/gc.sh "${gc_flags[@]}"
   echo ""
   ok "GC complete."
   echo ""

@@ -296,9 +296,11 @@ fi
 
 # --- SMTP ---
 if [[ "${SMTP_ENABLED:-false}" == "true" ]]; then
+_email_tls="False"
+[[ "${SMTP_USE_TLS:-true}" == "true" ]] && _email_tls="True"
 cat << SMTPEOF
 # --- Email / SMTP ---
-EMAIL_USE_TLS = ${SMTP_USE_TLS:-true}
+EMAIL_USE_TLS = ${_email_tls}
 EMAIL_HOST = '${SMTP_HOST}'
 EMAIL_PORT = ${SMTP_PORT:-465}
 EMAIL_HOST_USER = '${SMTP_USER}'
@@ -882,13 +884,13 @@ SNIPPETEOF
       _DB_DUMP_SNIPPET=$(cat << 'SNIPPETEOF'
 # --- Database dump (external server via mysqldump client) ---
 log "Dumping databases from external server ${DB_HOST}..."
+_auth=$(mktemp /tmp/.seafile-backup-auth.XXXXXX)
+chmod 600 "$_auth"
+printf '[client]\nuser=%s\npassword=%s\n' "${DB_USER}" "${DB_PASS}" > "$_auth"
 for db in \
     "${SEAFILE_MYSQL_DB_CCNET_DB_NAME:-ccnet_db}" \
     "${SEAFILE_MYSQL_DB_SEAFILE_DB_NAME:-seafile_db}" \
     "${SEAFILE_MYSQL_DB_SEAHUB_DB_NAME:-seahub_db}"; do
-  _auth=$(mktemp /tmp/.seafile-backup-auth.XXXXXX)
-  chmod 600 "$_auth"
-  printf '[client]\nuser=%s\npassword=%s\n' "${DB_USER}" "${DB_PASS}" > "$_auth"
   mysqldump \
     --defaults-extra-file="$_auth" \
     -h "${DB_HOST}" -P "${DB_PORT}" \
@@ -899,7 +901,7 @@ for db in \
     && log "  Dumped ${db}" \
     || err "  Failed to dump ${db}"
 done
-  rm -f "$_auth" 2>/dev/null || true
+rm -f "$_auth" 2>/dev/null || true
 SNIPPETEOF
 )
     fi
