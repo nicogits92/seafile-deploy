@@ -95,7 +95,8 @@
         reverse_proxy seafile:80 {
             header_up Host {host}
             header_up X-Real-IP {remote_host}
-            header_up X-Forwarded-Proto https
+            # Generated version uses SEAFILE_SERVER_PROTOCOL from .env
+            header_up X-Forwarded-Proto {$SEAFILE_SERVER_PROTOCOL:https}
         }
     }
 }

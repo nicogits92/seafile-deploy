@@ -600,7 +600,6 @@ fi
 if [[ "${_SELECTED[4]}" == "true" ]]; then
 info "Writing seafdav.conf (SEAFDAV_ENABLED=${SEAFDAV_ENABLED:-false})..."
 cat > "${CONF_DIR}/seafdav.conf" << SEAFDAVEOF
-chmod 600 "${CONF_DIR}/seafdav.conf"
 [WEBDAV]
 enabled = ${SEAFDAV_ENABLED:-false}
 port = 8080
@@ -621,7 +620,6 @@ if [[ "${MAX_UPLOAD_SIZE_MB:-0}" != "0" ]]; then
   (( _timeout > 3600 )) && _timeout=3600
 fi
 cat > "${CONF_DIR}/gunicorn.conf.py" << GUNICORNEOF
-chmod 600 "${CONF_DIR}/gunicorn.conf.py"
 import os
 
 daemon = True
@@ -738,10 +736,16 @@ LOG="/var/log/seafile-db-snapshot.log"
 log() { echo "$(date '+%Y-%m-%d %H:%M:%S') [INFO]  $1" | tee -a "$LOG"; }
 err() { echo "$(date '+%Y-%m-%d %H:%M:%S') [ERROR] $1" | tee -a "$LOG"; exit 1; }
 
-# Source .env for volume path and credentials
+# Source .env for volume path and credentials (safe inline parser)
 ENV_FILE="/opt/seafile/.env"
 [[ -f "$ENV_FILE" ]] || err ".env not found at $ENV_FILE"
-_load_env "$ENV_FILE"
+while IFS='=' read -r key val; do
+  [[ -z "$key" || "$key" == \#* ]] && continue
+  key="${key%%[[:space:]]*}"
+  val="${val#\"}" ; val="${val%\"}"
+  val="${val#\'}" ; val="${val%\'}"
+  export "$key=$val"
+done < "$ENV_FILE"
 
 DEST="${SEAFILE_VOLUME}/db-backup"
 TIMESTAMP="$(date '+%Y%m%d_%H%M%S')"
@@ -824,7 +828,7 @@ if [[ "${BACKUP_ENABLED:-false}" == "true" ]]; then
           ;;
         smb)
           if [[ -n "${BACKUP_SMB_SERVER:-}" && -n "${BACKUP_SMB_SHARE:-}" ]]; then
-            local _bk_creds="/etc/seafile-backup-smb-credentials"
+            _bk_creds="/etc/seafile-backup-smb-credentials"
             if [[ ! -f "$_bk_creds" ]]; then
               printf 'username=%s\npassword=%s\n' "${BACKUP_SMB_USERNAME}" "${BACKUP_SMB_PASSWORD}" > "$_bk_creds"
               [[ -n "${BACKUP_SMB_DOMAIN:-}" ]] && echo "domain=${BACKUP_SMB_DOMAIN}" >> "$_bk_creds"

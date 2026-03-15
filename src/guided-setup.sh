@@ -160,7 +160,7 @@ _wiz_select() {
     if [[ "$choice" =~ ^[0-9]+$ ]] && (( choice >= 1 && choice <= count )); then
       local selected="${options[$((choice-1))]}"
       local selected_val="${selected%%|*}"
-      eval "$varname=\"$selected_val\""
+      printf -v "$varname" '%s' "$selected_val"
       echo ""
       return 0
     else
@@ -186,8 +186,8 @@ _wiz_yesno() {
     read -r answer
     answer="${answer:-$default}"
     case "${answer,,}" in
-      y|yes) eval "$varname=true"; echo ""; return 0 ;;
-      n|no)  eval "$varname=false"; echo ""; return 0 ;;
+      y|yes) printf -v "$varname" '%s' "true"; echo ""; return 0 ;;
+      n|no)  printf -v "$varname" '%s' "false"; echo ""; return 0 ;;
       *) echo -e "  ${DIM}Enter y or n.${NC}" ;;
     esac
   done
@@ -217,7 +217,7 @@ _wiz_input() {
     if [[ -z "$value" && "$required" == "true" ]]; then
       echo -e "  ${RED}Required.${NC}"
     else
-      eval "$varname=\"\$value\""
+      printf -v "$varname" '%s' "$value"
       return 0
     fi
   done
@@ -239,7 +239,7 @@ _wiz_password() {
     if [[ -z "$value" && "$required" == "true" ]]; then
       echo -e "  ${RED}Required.${NC}"
     else
-      eval "$varname=\"\$value\""
+      printf -v "$varname" '%s' "$value"
       return 0
     fi
   done
@@ -315,7 +315,7 @@ _wiz_checklist() {
 
       # Apply selections to variables
       for ((i=0; i<count; i++)); do
-        eval "${varnames[$i]}=\"${states[$i]}\""
+        printf -v "${varnames[$i]}" '%s' "${states[$i]}"
       done
       return 0
     fi
@@ -963,7 +963,12 @@ ENVTEMPLATE
   # Function to set a value in the env content
   _set_val() {
     local key="$1" val="$2"
-    template_content=$(echo "$template_content" | sed "s|^${key}=.*|${key}=${val}|")
+    template_content=$(python3 -c "
+import sys, re
+key, val = sys.argv[1], sys.argv[2]
+content = sys.stdin.read()
+print(re.sub(r'^' + re.escape(key) + r'=.*$', key + '=' + val, content, flags=re.MULTILINE), end='')
+" "$key" "$val" <<< "$template_content")
   }
 
   # Core settings
@@ -1352,7 +1357,11 @@ run_minimal_setup() {
   echo ""
   printf "  %-20s %s\n" "Access URL:" "$_access_url"
   printf "  %-20s %s\n" "Admin login:" "$_admin_email"
-  printf "  %-20s %s\n" "Admin password:" "changeme"
+  if [[ "$_admin_pass" == "changeme" ]]; then
+    printf "  %-20s %s\n" "Admin password:" "changeme (change after first login)"
+  else
+    printf "  %-20s %s\n" "Admin password:" "[set]"
+  fi
   printf "  %-20s %s\n" "Office editing:" "$_office_label"
   printf "  %-20s %s\n" "Storage:" "Local disk"
   printf "  %-20s %s\n" "Database:" "Bundled"
@@ -1395,13 +1404,18 @@ ENVTEMPLATE
 
   _mini_set() {
     local key="$1" val="$2"
-    template_content=$(echo "$template_content" | sed "s|^${key}=.*|${key}=${val}|")
+    template_content=$(python3 -c "
+import sys, re
+key, val = sys.argv[1], sys.argv[2]
+content = sys.stdin.read()
+print(re.sub(r'^' + re.escape(key) + r'=.*$', key + '=' + val, content, flags=re.MULTILINE), end='')
+" "$key" "$val" <<< "$template_content")
   }
 
   _mini_set "SEAFILE_SERVER_HOSTNAME" "$_hostname"
   _mini_set "SEAFILE_SERVER_PROTOCOL" "$_protocol"
   _mini_set "INIT_SEAFILE_ADMIN_EMAIL" "$_admin_email"
-  _mini_set "INIT_SEAFILE_ADMIN_PASSWORD" "changeme"
+  _mini_set "INIT_SEAFILE_ADMIN_PASSWORD" "$_admin_pass"
   _mini_set "STORAGE_TYPE" "local"
   _mini_set "SEAFILE_VOLUME" "/opt/seafile-data"
   _mini_set "DB_INTERNAL" "true"
@@ -1544,7 +1558,12 @@ ENVTEMPLATE
 
   _mini_set() {
     local key="$1" val="$2"
-    template_content=$(echo "$template_content" | sed "s|^${key}=.*|${key}=${val}|")
+    template_content=$(python3 -c "
+import sys, re
+key, val = sys.argv[1], sys.argv[2]
+content = sys.stdin.read()
+print(re.sub(r'^' + re.escape(key) + r'=.*$', key + '=' + val, content, flags=re.MULTILINE), end='')
+" "$key" "$val" <<< "$template_content")
   }
 
   _mini_set "SEAFILE_SERVER_HOSTNAME" "$_hostname"
@@ -1636,37 +1655,8 @@ check_env_and_configure() {
   fi
 
   # ── .env exists and is non-empty — check completeness ───────────────────
-  # Quick check: source it to see which critical fields are missing.
-  local _chk_missing=()
-  (
-    set -a
-    source "$env_file" 2>/dev/null
-    set +a
-    [[ -z "${SEAFILE_SERVER_HOSTNAME:-}" ]] && echo "SEAFILE_SERVER_HOSTNAME"
-    [[ -z "${INIT_SEAFILE_ADMIN_EMAIL:-}" ]] && echo "INIT_SEAFILE_ADMIN_EMAIL"
-    case "${STORAGE_TYPE:-nfs}" in
-      nfs)
-        [[ -z "${NFS_SERVER:-}" ]] && echo "NFS_SERVER"
-        [[ -z "${NFS_EXPORT:-}" ]] && echo "NFS_EXPORT"
-        ;;
-      smb)
-        [[ -z "${SMB_SERVER:-}" ]] && echo "SMB_SERVER"
-        [[ -z "${SMB_SHARE:-}" ]] && echo "SMB_SHARE"
-        ;;
-      glusterfs)
-        [[ -z "${GLUSTER_SERVER:-}" ]] && echo "GLUSTER_SERVER"
-        [[ -z "${GLUSTER_VOLUME:-}" ]] && echo "GLUSTER_VOLUME"
-        ;;
-      iscsi)
-        [[ -z "${ISCSI_PORTAL:-}" ]] && echo "ISCSI_PORTAL"
-        [[ -z "${ISCSI_TARGET_IQN:-}" ]] && echo "ISCSI_TARGET_IQN"
-        ;;
-    esac
-  ) | while IFS= read -r v; do _chk_missing+=("$v"); done
-
-  # Re-run the check in the current shell to populate the array
   _load_env "$env_file"
-  _chk_missing=()
+  local _chk_missing=()
   [[ -z "${SEAFILE_SERVER_HOSTNAME:-}" ]] && _chk_missing+=(SEAFILE_SERVER_HOSTNAME)
   [[ -z "${INIT_SEAFILE_ADMIN_EMAIL:-}" ]] && _chk_missing+=(INIT_SEAFILE_ADMIN_EMAIL)
   case "${STORAGE_TYPE:-nfs}" in

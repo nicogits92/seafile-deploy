@@ -601,8 +601,7 @@ fi
 # --- Disk usage ---
 echo ""
 echo -e "${BOLD}  Disk usage:${NC}"
-NFS_USAGE=$(df -h "$STORAGE_MOUNT" 2>/dev/null | awk 'NR==2 {print $3 " used of " $2 " (" $5 " full)"}' \
-  || df -h "$STORAGE_PATH" 2>/dev/null | awk 'NR==2 {print $3 " used of " $2 " (" $5 " full")"}' \
+NFS_USAGE=$(df -h "$STORAGE_PATH" 2>/dev/null | awk 'NR==2 {print $3 " used of " $2 " (" $5 " full)"}' \
   || echo "unavailable")
 LOCAL_USAGE=$(df -h /opt 2>/dev/null | awk 'NR==2 {print $3 " used of " $2 " (" $5 " full)"}' || echo "unavailable")
 THUMB_USAGE=$(du -sh "${THUMBNAIL_PATH:-/opt/seafile-thumbnails}" 2>/dev/null | cut -f1 || echo "0")
@@ -614,7 +613,7 @@ echo -e "    Thumbnail cache:                    ${THUMB_USAGE}"
 echo -e "    Metadata index:                     ${META_USAGE}"
 
 # --- Disk usage warnings ---
-_NFS_PCT=$(df "$STORAGE_MOUNT" 2>/dev/null | awk 'NR==2 {gsub(/%/,"",$5); print $5}' || echo "0")
+_NFS_PCT=$(df "$STORAGE_PATH" 2>/dev/null | awk 'NR==2 {gsub(/%/,"",$5); print $5}' || echo "0")
 _LOCAL_PCT=$(df /opt 2>/dev/null | awk 'NR==2 {gsub(/%/,"",$5); print $5}' || echo "0")
 if (( _NFS_PCT >= 90 )); then
   fail "Storage volume is ${_NFS_PCT}% full — consider freeing space immediately."
