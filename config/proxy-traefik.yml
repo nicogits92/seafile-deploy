@@ -1,0 +1,20 @@
+# Traefik reverse proxy configuration for Seafile
+# =============================================================================
+# Add these labels to the seafile-caddy service in deploy/docker-compose.yml.
+# Replace seafile.yourdomain.com with your actual domain.
+# Replace 8080 if you changed CADDY_PORT in .env.
+#
+# Requirements: Traefik must be on the same Docker network or have access to
+# port 8080 on the Docker host. WebSocket passthrough is handled automatically
+# by Traefik. Ensure your entrypoint (websecure) and certresolver are configured
+# in your Traefik static config.
+# =============================================================================
+
+labels:
+  - "traefik.enable=true"
+  - "traefik.http.routers.seafile.rule=Host(`seafile.yourdomain.com`)"
+  - "traefik.http.routers.seafile.entrypoints=websecure"
+  - "traefik.http.routers.seafile.tls.certresolver=letsencrypt"
+  - "traefik.http.services.seafile.loadbalancer.server.port=8080"
+  - "traefik.http.middlewares.seafile-headers.headers.customrequestheaders.X-Forwarded-Proto=https"
+  - "traefik.http.routers.seafile.middlewares=seafile-headers"

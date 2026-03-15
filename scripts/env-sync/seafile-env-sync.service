@@ -1,0 +1,31 @@
+# =============================================================================
+# seafile-env-sync.service — systemd unit for seafile-env-sync.sh
+# =============================================================================
+# Written by:  install-dependencies.sh (first install) / recover.sh (VM rebuild)
+# Deployed to: /etc/systemd/system/seafile-env-sync.service
+#
+# Waits for network-online.target rather than remote-fs.target because the NFS
+# share uses x-systemd.automount, which triggers on access rather than at boot.
+# remote-fs.target may report complete before the share is actually reachable.
+# The sync script handles NFS availability with its own retry loop.
+# =============================================================================
+
+[Unit]
+Description=Seafile .env Sync — mirrors /opt/seafile/.env to NFS and restores on boot
+# We wait for network-online but NOT remote-fs.target — the NFS share uses
+# x-systemd.automount which triggers on access rather than at boot, so
+# remote-fs.target may complete before the share is actually reachable.
+# The sync script handles this with its own retry loop instead.
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/opt/seafile/seafile-env-sync.sh
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

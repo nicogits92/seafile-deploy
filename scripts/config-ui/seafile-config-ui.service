@@ -1,0 +1,16 @@
+[Unit]
+Description=Seafile Configuration Panel — web-based .env editor
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /opt/seafile/seafile-config-ui.py
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=seafile-config-ui
+
+[Install]
+WantedBy=multi-user.target
