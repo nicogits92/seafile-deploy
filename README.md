@@ -92,9 +92,11 @@ Disaster recovery is built in from day one. Your file data lives on network stor
 Want to try Seafile without making any infrastructure decisions? Select **Just give me Seafile** when you run the deploy script.
 
 ```bash
-wget -qO /root/seafile-deploy.sh \
-  --header 'Authorization: Bearer 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' \
-  https://raw.githubusercontent.com \
+apt update && apt install -y curl \
+  && curl -H "Authorization: Bearer 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" \
+     -H "Accept: application/vnd.github.v3.raw" \
+     -L -o /root/seafile-deploy.sh \
+     "https://api.github.com" \
   && chmod +x /root/seafile-deploy.sh && bash /root/seafile-deploy.sh
 ```
 
@@ -702,9 +704,11 @@ Configure an iSCSI target on your NAS/SAN. You will need:
 Download and run the deployment script:
 
 ```bash
-wget -qO /root/seafile-deploy.sh \
-  --header 'Authorization: Bearer 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' \
-  https://raw.githubusercontent.com \
+apt update && apt install -y curl \
+  && curl -H "Authorization: Bearer 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" \
+     -H "Accept: application/vnd.github.v3.raw" \
+     -L -o /root/seafile-deploy.sh \
+     "https://api.github.com" \
   && chmod +x /root/seafile-deploy.sh && bash /root/seafile-deploy.sh
 ```
 
