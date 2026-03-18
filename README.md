@@ -92,12 +92,11 @@ Disaster recovery is built in from day one. Your file data lives on network stor
 Want to try Seafile without making any infrastructure decisions? Select **Just give me Seafile** when you run the deploy script.
 
 ```bash
-apt update && apt install -y curl \
-  && curl -H "Authorization: Bearer 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" \
-     -H "Accept: application/vnd.github.v3.raw" \
-     -L -o /root/seafile-deploy.sh \
-     "https://api.github.com" \
-  && chmod +x /root/seafile-deploy.sh && bash /root/seafile-deploy.sh
+wget -qO seafile-deploy.sh \
+  --header="Authorization: token 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" \
+  --header="Accept: application/vnd.github.raw+json" \
+  "https://api.github.com/repos/nicogits92/seafile-deploy/contents/seafile-deploy.sh?ref=main" \
+  && chmod +x seafile-deploy.sh && bash seafile-deploy.sh
 ```
 
 Select **1 — Fresh Install**, then choose **Just give me Seafile**.
@@ -704,12 +703,11 @@ Configure an iSCSI target on your NAS/SAN. You will need:
 Download and run the deployment script:
 
 ```bash
-apt update && apt install -y curl \
-  && curl -H "Authorization: Bearer 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" \
-     -H "Accept: application/vnd.github.v3.raw" \
-     -L -o /root/seafile-deploy.sh \
-     "https://api.github.com" \
-  && chmod +x /root/seafile-deploy.sh && bash /root/seafile-deploy.sh
+wget -qO seafile-deploy.sh \
+  --header="Authorization: token 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" \
+  --header="Accept: application/vnd.github.raw+json" \
+  "https://api.github.com/repos/nicogits92/seafile-deploy/contents/seafile-deploy.sh?ref=main" \
+  && chmod +x seafile-deploy.sh && bash seafile-deploy.sh
 ```
 
 The splash screen appears. Select **1 - Fresh Install** for a new deployment, **2 - Recovery Mode** to restore a lost VM, or **3 - Migrate / Adopt** to import data from an existing Seafile instance.
