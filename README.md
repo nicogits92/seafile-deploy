@@ -92,8 +92,10 @@ Disaster recovery is built in from day one. Your file data lives on network stor
 Want to try Seafile without making any infrastructure decisions? Select **Just give me Seafile** when you run the deploy script.
 
 ```bash
-wget -qO seafile-deploy.sh \
-  --header="Authorization: token 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" \
+chmod 600 ~/.github_token
+TOKEN=$(cat ~/.github_token)
+wget -O seafile-deploy.sh \
+  --header="Authorization: token $TOKEN" \
   --header="Accept: application/vnd.github.raw+json" \
   "https://api.github.com/repos/nicogits92/seafile-deploy/contents/seafile-deploy.sh?ref=main" \
   && chmod +x seafile-deploy.sh && bash seafile-deploy.sh
@@ -703,8 +705,10 @@ Configure an iSCSI target on your NAS/SAN. You will need:
 Download and run the deployment script:
 
 ```bash
-wget -qO seafile-deploy.sh \
-  --header="Authorization: token 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" \
+chmod 600 ~/.github_token
+TOKEN=$(cat ~/.github_token)
+wget -O seafile-deploy.sh \
+  --header="Authorization: token $TOKEN" \
   --header="Accept: application/vnd.github.raw+json" \
   "https://api.github.com/repos/nicogits92/seafile-deploy/contents/seafile-deploy.sh?ref=main" \
   && chmod +x seafile-deploy.sh && bash seafile-deploy.sh
