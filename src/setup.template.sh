@@ -1051,7 +1051,7 @@ COMPOSEEOF
 
       # Verify existing data
       if [[ -d "${_SF_VOL}/seafile-data" ]]; then
-        local _data_size=$(du -sh "${_SF_VOL}/seafile-data" 2>/dev/null | cut -f1)
+        _data_size=$(du -sh "${_SF_VOL}/seafile-data" 2>/dev/null | cut -f1)
         info "Existing seafile-data found (${_data_size})."
       else
         warn "No seafile-data directory found at ${_SF_VOL}/seafile-data."
@@ -1083,28 +1083,50 @@ COMPOSEEOF
     prepared)
       heading "Migration: Import from prepared backup"
 
-      # Stage 1: Start DB
-      if [[ "${DB_INTERNAL:-true}" == "true" ]]; then
-        info "Stage 1: Starting database container..."
-        COMPOSE_PROFILES="$COMPOSE_PROFILES" docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" up -d seafile-db 2>&1
-        info "Waiting for database to accept connections..."
-        _db_ready=false
-        for _attempt in {1..30}; do
-          if docker exec -e MYSQL_PWD="${INIT_SEAFILE_MYSQL_ROOT_PASSWORD:-}" seafile-db mysqladmin ping -u root --silent 2>/dev/null; then
-            _db_ready=true; break
-          fi
-          sleep 3
-        done
-        [[ "$_db_ready" != "true" ]] && warn "Database did not become ready in 90s."
+      # ── Same-database detection for prepared migration ────────────────────
+      _SKIP_DB_MIGRATE=false
+      if [[ "${DB_INTERNAL:-true}" == "false" ]]; then
+        _new_db_host="${SEAFILE_MYSQL_DB_HOST:-}"
+        echo ""
+        echo -e "  ${BOLD}Your new deployment uses an external database at ${_new_db_host}.${NC}"
+        echo ""
+        echo -ne "  Does this database already have the Seafile tables from your old instance? [y/N]: "
+        read -r _same_db_answer
+        if [[ "${_same_db_answer,,}" == "y" ]]; then
+          echo ""
+          echo -e "  ${GREEN}✓${NC} Same database confirmed — skipping database import."
+          echo -e "  ${DIM}  Your existing tables will be used as-is.${NC}"
+          echo ""
+          _SKIP_DB_MIGRATE=true
+        fi
       fi
 
-      # Stage 2: Import database dumps
-      if [[ -n "${MIGRATE_DUMP_DIR:-}" && -d "${MIGRATE_DUMP_DIR}" ]]; then
-        info "Stage 2: Importing database dumps from ${MIGRATE_DUMP_DIR}..."
-        _import_db_dumps "${MIGRATE_DUMP_DIR}" "${INIT_SEAFILE_MYSQL_ROOT_PASSWORD:-}" "internal"
+      if [[ "$_SKIP_DB_MIGRATE" != "true" ]]; then
+        # Stage 1: Start DB
+        if [[ "${DB_INTERNAL:-true}" == "true" ]]; then
+          info "Stage 1: Starting database container..."
+          COMPOSE_PROFILES="$COMPOSE_PROFILES" docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" up -d seafile-db 2>&1
+          info "Waiting for database to accept connections..."
+          _db_ready=false
+          for _attempt in {1..30}; do
+            if docker exec -e MYSQL_PWD="${INIT_SEAFILE_MYSQL_ROOT_PASSWORD:-}" seafile-db mysqladmin ping -u root --silent 2>/dev/null; then
+              _db_ready=true; break
+            fi
+            sleep 3
+          done
+          [[ "$_db_ready" != "true" ]] && warn "Database did not become ready in 90s."
+        fi
+
+        # Stage 2: Import database dumps
+        if [[ -n "${MIGRATE_DUMP_DIR:-}" && -d "${MIGRATE_DUMP_DIR}" ]]; then
+          info "Stage 2: Importing database dumps from ${MIGRATE_DUMP_DIR}..."
+          _import_db_dumps "${MIGRATE_DUMP_DIR}" "${INIT_SEAFILE_MYSQL_ROOT_PASSWORD:-}" "internal"
+        else
+          warn "No dump directory specified — database will be empty."
+          warn "Seafile's first-boot init will create tables on startup."
+        fi
       else
-        warn "No dump directory specified — database will be empty."
-        warn "Seafile's first-boot init will create tables on startup."
+        info "Stage 1-2: Skipped — reusing existing external database."
       fi
 
       # Stage 3: Copy file data
@@ -1172,80 +1194,125 @@ COMPOSEEOF
       _REMOTE_DB_PASS="${MIGRATE_REMOTE_DB_PASS:-}"
       _REMOTE_DB_HOST="${MIGRATE_REMOTE_DB_HOST:-}"
 
-      # Stage 1: Start local DB
-      if [[ "${DB_INTERNAL:-true}" == "true" ]]; then
-        info "Stage 1: Starting local database container..."
-        COMPOSE_PROFILES="$COMPOSE_PROFILES" docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" up -d seafile-db 2>&1
-        info "Waiting for local database to accept connections..."
-        _db_ready=false
-        for _attempt in {1..30}; do
-          if docker exec -e MYSQL_PWD="${INIT_SEAFILE_MYSQL_ROOT_PASSWORD:-}" seafile-db mysqladmin ping -u root --silent 2>/dev/null; then
-            _db_ready=true; break
+      # ── Same-database detection ─────────────────────────────────────────────
+      # If the new deployment uses an external DB and the source also uses an
+      # external DB at the same host, the dump/import is redundant and risky.
+      # Detect this and skip the DB migration stages.
+      # ──────────────────────────────────────────────────────────────────────
+      _SKIP_DB_MIGRATE=false
+      if [[ "${DB_INTERNAL:-true}" == "false" ]]; then
+        _new_db_host="${SEAFILE_MYSQL_DB_HOST:-}"
+        _src_db_host="${_REMOTE_DB_HOST:-}"
+
+        # For Docker source, resolve the actual DB host from the remote config
+        if [[ "$_REMOTE_DB_TYPE" == "docker" ]]; then
+          # Docker source uses an internal container DB — different from any external host
+          _src_db_host="__docker_internal__"
+        fi
+
+        if [[ -n "$_new_db_host" && -n "$_src_db_host" && "$_new_db_host" == "$_src_db_host" ]]; then
+          echo ""
+          echo -e "  ${GREEN}${BOLD}Same database detected${NC}"
+          echo -e "  ${DIM}Your new deployment uses external database at ${BOLD}${_new_db_host}${NC}"
+          echo -e "  ${DIM}The source Seafile instance also uses a database at ${BOLD}${_src_db_host}${NC}"
+          echo ""
+          echo -e "  ${GREEN}✓${NC} Skipping database dump/import — your existing tables will be used as-is."
+          echo ""
+          _SKIP_DB_MIGRATE=true
+        elif [[ -n "$_new_db_host" && "$_REMOTE_DB_TYPE" != "docker" ]]; then
+          # Can't auto-detect (different hostnames, or hostname vs IP)
+          echo ""
+          echo -e "  ${BOLD}Your new deployment uses external database at ${_new_db_host}.${NC}"
+          echo ""
+          echo -ne "  Is this the same database your old Seafile instance uses? [y/N]: "
+          read -r _same_db_answer
+          if [[ "${_same_db_answer,,}" == "y" ]]; then
+            echo ""
+            echo -e "  ${GREEN}✓${NC} Same database confirmed — skipping database dump/import."
+            echo ""
+            _SKIP_DB_MIGRATE=true
           fi
-          sleep 3
-        done
-        [[ "$_db_ready" != "true" ]] && warn "Local database did not become ready in 90s."
+        fi
       fi
 
-      # Stage 2: Dump remote databases and import locally
-      info "Stage 2: Dumping databases from remote server..."
-
-      # Create temporary dump directory (secured, cleaned up on exit)
-      _LOCAL_DUMP_DIR=$(mktemp -d /tmp/seafile-migrate-dumps.XXXXXX)
-      chmod 700 "$_LOCAL_DUMP_DIR"
-      trap 'rm -rf "$_LOCAL_DUMP_DIR" 2>/dev/null' EXIT
-
-      for _rdb in \
-          "${SEAFILE_MYSQL_DB_CCNET_DB_NAME:-ccnet_db}" \
-          "${SEAFILE_MYSQL_DB_SEAFILE_DB_NAME:-seafile_db}" \
-          "${SEAFILE_MYSQL_DB_SEAHUB_DB_NAME:-seahub_db}"; do
-
-        info "  Dumping ${_rdb}..."
-
-        case "$_REMOTE_DB_TYPE" in
-          docker)
-            # Source is Docker — mysqldump via docker exec on remote
-            $_SSH_CMD "docker exec -e MYSQL_PWD='${_REMOTE_DB_PASS}' seafile-db mysqldump \
-              -u '${_REMOTE_DB_USER}' \
-              --single-transaction --quick '${_rdb}'" \
-              2>/dev/null | gzip > "${_LOCAL_DUMP_DIR}/${_rdb}.sql.gz"
-            ;;
-          local)
-            # Source is manual install — mysqldump directly on remote
-            $_SSH_CMD "MYSQL_PWD='${_REMOTE_DB_PASS}' mysqldump \
-              -u '${_REMOTE_DB_USER}' \
-              --single-transaction --quick '${_rdb}'" \
-              2>/dev/null | gzip > "${_LOCAL_DUMP_DIR}/${_rdb}.sql.gz"
-            ;;
-          external)
-            # Source uses an external DB — mysqldump with -h flag on remote
-            $_SSH_CMD "MYSQL_PWD='${_REMOTE_DB_PASS}' mysqldump \
-              -h '${_REMOTE_DB_HOST}' \
-              -u '${_REMOTE_DB_USER}' \
-              --single-transaction --quick '${_rdb}'" \
-              2>/dev/null | gzip > "${_LOCAL_DUMP_DIR}/${_rdb}.sql.gz"
-            ;;
-        esac
-
-        # Verify dump is not empty
-        local _dump_size=$(stat -c%s "${_LOCAL_DUMP_DIR}/${_rdb}.sql.gz" 2>/dev/null || echo "0")
-        if [[ "$_dump_size" -gt 100 ]]; then
-          info "  ✓ ${_rdb} dumped ($(du -h "${_LOCAL_DUMP_DIR}/${_rdb}.sql.gz" | cut -f1))"
-        else
-          warn "  ✗ ${_rdb} dump appears empty or failed — check remote DB access."
+      # Stage 1: Start local DB (only if internal DB and not skipping)
+      if [[ "$_SKIP_DB_MIGRATE" != "true" ]]; then
+        if [[ "${DB_INTERNAL:-true}" == "true" ]]; then
+          info "Stage 1: Starting local database container..."
+          COMPOSE_PROFILES="$COMPOSE_PROFILES" docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" up -d seafile-db 2>&1
+          info "Waiting for local database to accept connections..."
+          _db_ready=false
+          for _attempt in {1..30}; do
+            if docker exec -e MYSQL_PWD="${INIT_SEAFILE_MYSQL_ROOT_PASSWORD:-}" seafile-db mysqladmin ping -u root --silent 2>/dev/null; then
+              _db_ready=true; break
+            fi
+            sleep 3
+          done
+          [[ "$_db_ready" != "true" ]] && warn "Local database did not become ready in 90s."
         fi
-      done
 
-      info "Importing database dumps into local database..."
-      _import_db_dumps "${_LOCAL_DUMP_DIR}" "${INIT_SEAFILE_MYSQL_ROOT_PASSWORD:-}" "internal"
-      rm -rf "${_LOCAL_DUMP_DIR}"
+        # Stage 2: Dump remote databases and import locally
+        info "Stage 2: Dumping databases from remote server..."
+
+        # Create temporary dump directory (secured, cleaned up on exit)
+        _LOCAL_DUMP_DIR=$(mktemp -d /tmp/seafile-migrate-dumps.XXXXXX)
+        chmod 700 "$_LOCAL_DUMP_DIR"
+        trap 'rm -rf "$_LOCAL_DUMP_DIR" 2>/dev/null' EXIT
+
+        for _rdb in \
+            "${SEAFILE_MYSQL_DB_CCNET_DB_NAME:-ccnet_db}" \
+            "${SEAFILE_MYSQL_DB_SEAFILE_DB_NAME:-seafile_db}" \
+            "${SEAFILE_MYSQL_DB_SEAHUB_DB_NAME:-seahub_db}"; do
+
+          info "  Dumping ${_rdb}..."
+
+          case "$_REMOTE_DB_TYPE" in
+            docker)
+              # Source is Docker — mysqldump via docker exec on remote
+              $_SSH_CMD "docker exec -e MYSQL_PWD='${_REMOTE_DB_PASS}' seafile-db mysqldump \
+                -u '${_REMOTE_DB_USER}' \
+                --single-transaction --quick '${_rdb}'" \
+                2>/dev/null | gzip > "${_LOCAL_DUMP_DIR}/${_rdb}.sql.gz"
+              ;;
+            local)
+              # Source is manual install — mysqldump directly on remote
+              $_SSH_CMD "MYSQL_PWD='${_REMOTE_DB_PASS}' mysqldump \
+                -u '${_REMOTE_DB_USER}' \
+                --single-transaction --quick '${_rdb}'" \
+                2>/dev/null | gzip > "${_LOCAL_DUMP_DIR}/${_rdb}.sql.gz"
+              ;;
+            external)
+              # Source uses an external DB — mysqldump with -h flag on remote
+              $_SSH_CMD "MYSQL_PWD='${_REMOTE_DB_PASS}' mysqldump \
+                -h '${_REMOTE_DB_HOST}' \
+                -u '${_REMOTE_DB_USER}' \
+                --single-transaction --quick '${_rdb}'" \
+                2>/dev/null | gzip > "${_LOCAL_DUMP_DIR}/${_rdb}.sql.gz"
+              ;;
+          esac
+
+          # Verify dump is not empty
+          _dump_size=$(stat -c%s "${_LOCAL_DUMP_DIR}/${_rdb}.sql.gz" 2>/dev/null || echo "0")
+          if [[ "$_dump_size" -gt 100 ]]; then
+            info "  ✓ ${_rdb} dumped ($(du -h "${_LOCAL_DUMP_DIR}/${_rdb}.sql.gz" | cut -f1))"
+          else
+            warn "  ✗ ${_rdb} dump appears empty or failed — check remote DB access."
+          fi
+        done
+
+        info "Importing database dumps into local database..."
+        _import_db_dumps "${_LOCAL_DUMP_DIR}" "${INIT_SEAFILE_MYSQL_ROOT_PASSWORD:-}" "internal"
+        rm -rf "${_LOCAL_DUMP_DIR}"
+      else
+        info "Stage 1-2: Skipped — reusing existing external database."
+      fi
 
       # Stage 3: Rsync file data from remote
       info "Stage 3: Copying file data from remote server (this may take a while)..."
       mkdir -p "${_SF_VOL}/seafile-data"
 
       # Determine remote seafile-data path
-      local _remote_data_path="${_REMOTE_DATA}/seafile-data/"
+      _remote_data_path="${_REMOTE_DATA}/seafile-data/"
       if $_SSH_CMD "test -d '${_remote_data_path}'" 2>/dev/null; then
         rsync -avz --info=progress2 \
           -e "ssh -o ConnectTimeout=30 -o ServerAliveInterval=60 -p ${MIGRATE_SSH_PORT:-22}" \
@@ -1259,7 +1326,7 @@ COMPOSEEOF
 
       # Stage 4: Copy avatars from remote
       info "Stage 4: Copying avatars..."
-      local _remote_avatar_path=""
+      _remote_avatar_path=""
       for _try_avatar in \
           "${_REMOTE_DATA}/seafile/seahub-data/avatars" \
           "${_REMOTE_DATA}/seahub-data/avatars"; do
