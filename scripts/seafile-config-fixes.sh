@@ -104,7 +104,16 @@ SEAFILE_PROTO="${SEAFILE_SERVER_PROTOCOL:-https}"
 SEAFILE_TIMEZONE="${TIME_ZONE:-America/New_York}"
 CONF_DIR="${SEAFILE_VOLUME}/seafile/conf"
 
-[[ "$1" != "--yes" ]] && _show_splash
+_NO_RESTART=false
+_AUTO_YES=false
+for _arg in "$@"; do
+  case "$_arg" in
+    --yes) _AUTO_YES=true ;;
+    --no-restart) _NO_RESTART=true ;;
+  esac
+done
+
+[[ "$_AUTO_YES" != "true" ]] && _show_splash
 
 info "Reading configuration from $ENV_FILE"
 info "  SEAFILE_VOLUME   = $SEAFILE_VOLUME"
@@ -202,7 +211,7 @@ _run_menu() {
   done
 }
 
-[[ "$1" != "--yes" ]] && _run_menu
+[[ "$_AUTO_YES" != "true" ]] && _run_menu
 _START_TIME=$SECONDS
 
 # =============================================================================
@@ -1118,9 +1127,12 @@ info "Caddyfile written to $CADDYFILE_PATH (site: ${_CADDY_SITE_ADDR})"
 fi  # _SELECTED[9]
 
 # =============================================================================
-# Step 11 — Restart containers
+# Step 11 — Restart containers (skipped with --no-restart for Portainer mode)
 # =============================================================================
 if [[ "${_SELECTED[10]}" == "true" ]]; then
+if [[ "$_NO_RESTART" == "true" ]]; then
+  info "Skipping container restart (--no-restart mode). Portainer will handle lifecycle."
+else
 info "Restarting containers..."
 
 # Always restart the core set
@@ -1140,7 +1152,8 @@ docker inspect seafile-clamav &>/dev/null && _to_restart+=(seafile-clamav)
 
 docker restart "${_to_restart[@]}"
 info "Containers restarted."
-fi
+fi  # end --no-restart else
+fi  # end _SELECTED[10]
 
 # =============================================================================
 # Step 12 — Back up this script to storage

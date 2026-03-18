@@ -668,7 +668,12 @@ echo -e "  ${DIM}To re-check at any time:  seafile status${NC}"
 if [[ "${PORTAINER_MANAGED,,}" == "true" ]] && [[ "$RUN_APPLY" == "true" ]]; then
   echo ""
   if [[ -n "${PORTAINER_STACK_WEBHOOK:-}" ]]; then
-    echo -e "  ${DIM}  PORTAINER_MANAGED=true — Portainer notified via webhook.${NC}"
+    if curl -sf -X POST "${PORTAINER_STACK_WEBHOOK}" --max-time 15 >/dev/null 2>&1; then
+      echo -e "  ${DIM}  PORTAINER_MANAGED=true — Portainer notified via webhook.${NC}"
+    else
+      echo -e "  ${YELLOW}[WARN]${NC}  PORTAINER_MANAGED=true — webhook call failed."
+      echo -e "  ${DIM}         Portainer may not redeploy automatically. Trigger manually.${NC}"
+    fi
   else
     echo -e "  ${YELLOW}[WARN]${NC}  PORTAINER_MANAGED=true but PORTAINER_STACK_WEBHOOK is blank."
     echo -e "  ${DIM}         Set the webhook URL so Portainer redeploys automatically.${NC}"

@@ -3773,6 +3773,7 @@ print(re.sub(r'^' + re.escape(key) + r'=.*$', lambda m: key + '=' + val, content
   _set_val "SHARE_LINK_FORCE_USE_PASSWORD" "${WIZ_SHARE_LINK_PW:-false}"
   _set_val "LOGIN_ATTEMPT_LIMIT" "$([ "${WIZ_LOGIN_LIMIT:-true}" == "true" ] && echo "5" || echo "0")"
   _set_val "GITOPS_INTEGRATION" "$WIZ_GITOPS_ENABLED"
+  _set_val "PORTAINER_MANAGED" "${WIZ_PORTAINER_MANAGED:-false}"
 
   # Multi-backend storage classes
   if [[ "${WIZ_MULTI_BACKEND:-false}" == "true" ]]; then
@@ -5371,6 +5372,15 @@ _show_deployment_modes() {
   echo -e "     ${DIM}Same as standard, plus manage .env through a git${NC}"
   echo -e "     ${DIM}repository — config changes without SSH${NC}"
   echo ""
+  if [[ "${SETUP_MODE:-install}" == "migrate" ]]; then
+    echo -e "  ${DIM}  4  Portainer deployment (not available during migration)${NC}"
+  else
+    echo -e "  ${YELLOW}${BOLD}  4  ${NC}${BOLD}Portainer deployment${NC}"
+    echo -e "     ${DIM}Machine setup only — you deploy the stack from${NC}"
+    echo -e "     ${DIM}your Portainer dashboard. Requires an existing${NC}"
+    echo -e "     ${DIM}Portainer instance.${NC}"
+  fi
+  echo ""
   echo -e "  ${DIM}  0  Back${NC}"
   echo ""
   echo -e "  ${DIM}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
@@ -5378,16 +5388,23 @@ _show_deployment_modes() {
 
   local choice=""
   while true; do
-    echo -ne "  ${BOLD}Select [1/2/3/0]:${NC} "
+    echo -ne "  ${BOLD}Select [1/2/3/4/0]:${NC} "
     read -r choice
     case "$choice" in
       1) run_minimal_setup "$env_file"; return 0 ;;
-      2) export WIZ_DEPLOYMENT_MODE="native"; export WIZ_GITOPS_ENABLED="false"
+      2) export WIZ_DEPLOYMENT_MODE="native"; export WIZ_GITOPS_ENABLED="false"; export WIZ_PORTAINER_MANAGED="false"
          run_guided_setup "$env_file"; return 0 ;;
-      3) export WIZ_DEPLOYMENT_MODE="native"; export WIZ_GITOPS_ENABLED="true"
+      3) export WIZ_DEPLOYMENT_MODE="native"; export WIZ_GITOPS_ENABLED="true"; export WIZ_PORTAINER_MANAGED="false"
          run_guided_setup "$env_file"; return 0 ;;
+      4) if [[ "${SETUP_MODE:-install}" == "migrate" ]]; then
+           echo -e "  ${DIM}Portainer deployment is not available during migration.${NC}"
+           echo -e "  ${DIM}Migrate with standard mode first, then reinstall with Portainer.${NC}"
+         else
+           export WIZ_DEPLOYMENT_MODE="native"; export WIZ_GITOPS_ENABLED="false"; export WIZ_PORTAINER_MANAGED="true"
+           run_guided_setup "$env_file"; return 0
+         fi ;;
       0) check_env_and_configure; return $? ;;
-      *) echo -e "  ${DIM}Enter 1, 2, 3, or 0.${NC}" ;;
+      *) echo -e "  ${DIM}Enter 1, 2, 3, 4, or 0.${NC}" ;;
     esac
   done
 }
@@ -6097,6 +6114,7 @@ check_env_and_configure() {
     echo -e "  ${CYAN}${BOLD}  2  ${NC}${BOLD}Configure later${NC}"
     echo -e "     ${DIM}Get a basic server running now — configure${NC}"
     echo -e "     ${DIM}everything else in the browser or CLI after${NC}"
+    echo -e "     ${DIM}(not compatible with Portainer-managed deployment)${NC}"
     echo ""
     echo -e "  ${DIM}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo ""
@@ -8360,10 +8378,13 @@ _commit_history() {
   [[ ! -d "$HISTORY_DIR/.git" ]] && return 0
 
   cp "$LOCAL_ENV" "$HISTORY_DIR/.env" 2>/dev/null || return 0
+  # Also sync docker-compose.yml for Portainer mode (git server serves this repo)
+  local _compose="/opt/seafile/docker-compose.yml"
+  [[ -f "$_compose" ]] && cp "$_compose" "$HISTORY_DIR/docker-compose.yml" 2>/dev/null || true
   cd "$HISTORY_DIR" || return 0
   git add -A 2>/dev/null || return 0
   git diff --cached --quiet 2>/dev/null && return 0
-  git commit -m "$(date '+%Y-%m-%d %H:%M:%S') .env changed" --quiet 2>/dev/null || true
+  git commit -m "$(date '+%Y-%m-%d %H:%M:%S') config changed" --quiet 2>/dev/null || true
   git update-server-info 2>/dev/null || true
   log "Config history updated"
 }
@@ -9015,6 +9036,12 @@ cmd_logs() {
 # --- Command: restart --------------------------------------------------------
 cmd_restart() {
   local target="${1:-}"
+  if [[ "${PORTAINER_MANAGED:-false}" == "true" ]]; then
+    warn "This stack is managed by Portainer."
+    warn "Restarting containers directly may be reverted by Portainer."
+    warn "Use the Portainer UI to restart, or proceed with caution."
+    echo ""
+  fi
   if [[ -z "$target" ]]; then
     pick_container "Which container to restart?" "true" || return 0
     target="$PICKED"
@@ -12045,10 +12072,11 @@ CONFIGSERVICEOF
 if [[ "${PORTAINER_MANAGED:-false}" == "true" ]]; then
   systemctl daemon-reload
   systemctl enable seafile-config-server
-  systemctl start seafile-config-server
-  info "Config git server installed and started (port ${CONFIG_GIT_PORT:-9418})."
+  # Don't start yet — config-history repo is initialized later in the Portainer
+  # deploy block. The git server will be started there after the repo exists.
+  info "Config git server installed (will start after repo initialization)."
 else
-  info "Config git server installed (inactive — enable via PORTAINER_MANAGED=true)."
+  info "Config git server installed (inactive — Portainer deployment only)."
 fi
 
 # --- Web configuration panel ---
@@ -12217,23 +12245,77 @@ def get_container_status():
 _apply_lock = threading.Lock()
 _apply_status = {'running': False, 'last_result': None, 'last_time': None}
 
+# Operations runner — shared state for background operations
+_ops_status = {}
+
+
+def _notify_portainer():
+    """Ping Portainer stack webhook to trigger a redeploy."""
+    env = load_env()
+    webhook = env.get('PORTAINER_STACK_WEBHOOK', '')
+    if not webhook:
+        return 'no_webhook'
+    try:
+        import urllib.request
+        req = urllib.request.Request(webhook, method='POST', data=b'')
+        urllib.request.urlopen(req, timeout=15)
+        return 'ok'
+    except Exception as e:
+        return f'error: {e}'
+
 
 def apply_config():
     """Run config-fixes in background thread."""
     if _apply_status['running']:
         return False
+    env = load_env()
+    portainer_managed = env.get('PORTAINER_MANAGED', 'false') == 'true'
+
     def _run():
         _apply_status['running'] = True
         try:
-            result = subprocess.run(
-                ['bash', '/opt/seafile-config-fixes.sh', '--yes'],
-                capture_output=True, text=True, timeout=300
-            )
-            _apply_status['last_result'] = 'success' if result.returncode == 0 else 'error'
+            # In Portainer mode: write config files but skip restart
+            # Then ping Portainer to handle the lifecycle
+            cmd = ['bash', '/opt/seafile-config-fixes.sh', '--yes']
+            if portainer_managed:
+                cmd.append('--no-restart')
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+            if result.returncode == 0:
+                if portainer_managed:
+                    pw = _notify_portainer()
+                    _apply_status['last_result'] = f'success (portainer: {pw})'
+                else:
+                    _apply_status['last_result'] = 'success'
+            else:
+                _apply_status['last_result'] = 'error'
         except Exception as e:
             _apply_status['last_result'] = f'error: {e}'
         _apply_status['last_time'] = time.strftime('%Y-%m-%d %H:%M:%S')
         _apply_status['running'] = False
+    threading.Thread(target=_run, daemon=True).start()
+    return True
+
+
+def run_operation(op_name, cmd, timeout=600):
+    """Run an operation (update, gc, backup, apt) in background."""
+    key = op_name
+    if key in _ops_status and _ops_status[key].get('running'):
+        return False
+    _ops_status[key] = {'running': True, 'result': None, 'time': None, 'log': ''}
+
+    def _run():
+        try:
+            result = subprocess.run(
+                cmd, capture_output=True, text=True, timeout=timeout
+            )
+            _ops_status[key]['log'] = (result.stdout or '') + (result.stderr or '')
+            _ops_status[key]['result'] = 'success' if result.returncode == 0 else 'error'
+        except subprocess.TimeoutExpired:
+            _ops_status[key]['result'] = 'timeout'
+        except Exception as e:
+            _ops_status[key]['result'] = f'error: {e}'
+        _ops_status[key]['time'] = time.strftime('%Y-%m-%d %H:%M:%S')
+        _ops_status[key]['running'] = False
     threading.Thread(target=_run, daemon=True).start()
     return True
 
@@ -12357,6 +12439,8 @@ class ConfigHandler(http.server.BaseHTTPRequestHandler):
                 'backup': cron_to_human(env.get('BACKUP_SCHEDULE', '0 2 * * *')),
                 'gc': cron_to_human(env.get('GC_SCHEDULE', '0 3 * * 0')),
             })
+        elif self.path == '/api/operations':
+            self._json_response(_ops_status)
         else:
             self.send_error(404)
 
@@ -12409,6 +12493,29 @@ class ConfigHandler(http.server.BaseHTTPRequestHandler):
                 self._json_response({'status': 'started'})
             else:
                 self._json_response({'status': 'already_running'}, 409)
+
+        elif self.path == '/api/operations':
+            try:
+                data = json.loads(body)
+                op = data.get('operation', '')
+                env = load_env()
+                ops_map = {
+                    'update': ['bash', '/opt/update.sh', '--yes'],
+                    'gc': ['docker', 'exec', 'seafile', '/scripts/gc.sh'] +
+                          (['-r'] if env.get('GC_REMOVE_DELETED', 'true') == 'true' else []),
+                    'backup': ['bash', '/opt/seafile-backup.sh'],
+                    'apt': ['bash', '-c', 'apt-get update -qq && apt-get upgrade -y -qq'],
+                }
+                if op not in ops_map:
+                    self._json_response({'error': f'Unknown operation: {op}'}, 400)
+                    return
+                if run_operation(op, ops_map[op]):
+                    self._json_response({'status': 'started', 'operation': op})
+                else:
+                    self._json_response({'status': 'already_running', 'operation': op}, 409)
+            except json.JSONDecodeError:
+                self._json_response({'error': 'Invalid JSON'}, 400)
+
         else:
             self.send_error(404)
 
@@ -12521,6 +12628,8 @@ nav button.on{border-color:#999;color:#1a1a1a;font-weight:500}
 .code .cp:hover{color:#333}
 .warn{background:#faeeda;border:1px solid #fac775;border-radius:6px;padding:8px 12px;margin-top:8px}
 .warn p{font-size:12px;color:#854f0b;margin:0}
+.op-card .btn-p{flex-shrink:0;align-self:center}
+.op-meta{min-height:16px}
 .welcome{text-align:center;padding:3rem 1rem}
 .welcome h2{font-size:22px;font-weight:500;margin-bottom:8px}
 .welcome p{font-size:14px;color:#666;max-width:500px;margin:0 auto 2rem}
@@ -12560,7 +12669,8 @@ var TABS = [
   {id:'ldap',label:'LDAP'},
   {id:'features',label:'Features'},
   {id:'backup',label:'Backup'},
-  {id:'advanced',label:'Advanced'}
+  {id:'advanced',label:'Advanced'},
+  {id:'operations',label:'Operations'}
 ];
 var NAMES = {
   'seafile-caddy':'caddy','seafile-redis':'redis','seafile':'seafile','seadoc':'seadoc',
@@ -12796,6 +12906,15 @@ function renderSections(schedules){
           + field('DB_INTERNAL_IMAGE','MariaDB',null)
           + field('CADDY_IMAGE','Caddy',null)
           + field('SEAFILE_REDIS_IMAGE','Redis',null)));
+
+  // Operations tab is built separately (not from .env fields)
+  var opsHtml = sec('operations','Operations','Run these from your browser instead of the command line.',
+    opCard('update','Server update','Pull latest images, apply config, restart containers. Same as: seafile update')
+    + opCard('gc','Garbage collection','Reclaim storage from deleted files. Next scheduled run follows GC schedule.')
+    + opCard('backup','Backup now','Database dump + file data rsync to backup destination. Same as: seafile backup')
+    + opCard('apt','System packages','Update Debian packages (apt-get upgrade). Security patches are applied daily by unattended-upgrades.'));
+  el.innerHTML += opsHtml;
+  loadOpsStatus();
 }
 
 function sec(id, title, desc, content){
@@ -12804,6 +12923,73 @@ function sec(id, title, desc, content){
 function grp(content){return '<div class="grp">'+content+'</div>';}
 function esc(s){return String(s).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;')}
 
+function opCard(op, title, desc){
+  return '<div class="grp op-card" id="op-'+op+'">'
+    +'<div style="display:flex;justify-content:space-between;align-items:flex-start">'
+    +'<div><div class="grp-t">'+esc(title)+'</div>'
+    +'<p class="desc" style="margin-bottom:8px">'+esc(desc)+'</p>'
+    +'<div class="op-meta" id="op-'+op+'-meta" style="font-size:12px;color:#888"></div></div>'
+    +'<button class="btn btn-p" id="op-'+op+'-btn" onclick="runOp(\''+op+'\')">Run</button>'
+    +'</div></div>';
+}
+
+function runOp(op){
+  var btn = document.getElementById('op-'+op+'-btn');
+  btn.textContent = 'Running...';
+  btn.disabled = true;
+  api('POST','/api/operations',{operation:op}).then(function(r){
+    if(r.error){
+      btn.textContent = 'Run';
+      btn.disabled = false;
+      alert('Error: '+r.error);
+      return;
+    }
+    pollOp(op);
+  });
+}
+
+function pollOp(op){
+  setTimeout(function(){
+    api('GET','/api/operations').then(function(r){
+      var s = r[op];
+      if(!s) return;
+      var meta = document.getElementById('op-'+op+'-meta');
+      var btn = document.getElementById('op-'+op+'-btn');
+      if(s.running){
+        meta.textContent = 'Running...';
+        pollOp(op);
+      } else {
+        btn.textContent = 'Run';
+        btn.disabled = false;
+        var status = s.result === 'success' ? 'Completed' : 'Failed';
+        meta.textContent = status + (s.time ? ' · '+s.time : '');
+        meta.style.color = s.result === 'success' ? '#1d9e75' : '#e24b4a';
+      }
+    });
+  }, 2000);
+}
+
+function loadOpsStatus(){
+  api('GET','/api/operations').then(function(r){
+    if(r.error) return;
+    for(var op in r){
+      var s = r[op];
+      var meta = document.getElementById('op-'+op+'-meta');
+      var btn = document.getElementById('op-'+op+'-btn');
+      if(!meta || !btn) continue;
+      if(s.running){
+        btn.textContent = 'Running...';
+        btn.disabled = true;
+        meta.textContent = 'Running...';
+        pollOp(op);
+      } else if(s.time){
+        var status = s.result === 'success' ? 'Completed' : 'Failed';
+        meta.textContent = status + ' · ' + s.time;
+        meta.style.color = s.result === 'success' ? '#1d9e75' : '#e24b4a';
+      }
+    }
+  });
+}
 function envSet(key, val){
   ENV[key] = val;
 }
@@ -13062,7 +13248,16 @@ SEAFILE_PROTO="${SEAFILE_SERVER_PROTOCOL:-https}"
 SEAFILE_TIMEZONE="${TIME_ZONE:-America/New_York}"
 CONF_DIR="${SEAFILE_VOLUME}/seafile/conf"
 
-[[ "$1" != "--yes" ]] && _show_splash
+_NO_RESTART=false
+_AUTO_YES=false
+for _arg in "$@"; do
+  case "$_arg" in
+    --yes) _AUTO_YES=true ;;
+    --no-restart) _NO_RESTART=true ;;
+  esac
+done
+
+[[ "$_AUTO_YES" != "true" ]] && _show_splash
 
 info "Reading configuration from $ENV_FILE"
 info "  SEAFILE_VOLUME   = $SEAFILE_VOLUME"
@@ -13160,7 +13355,7 @@ _run_menu() {
   done
 }
 
-[[ "$1" != "--yes" ]] && _run_menu
+[[ "$_AUTO_YES" != "true" ]] && _run_menu
 _START_TIME=$SECONDS
 
 # =============================================================================
@@ -14076,9 +14271,12 @@ info "Caddyfile written to $CADDYFILE_PATH (site: ${_CADDY_SITE_ADDR})"
 fi  # _SELECTED[9]
 
 # =============================================================================
-# Step 11 — Restart containers
+# Step 11 — Restart containers (skipped with --no-restart for Portainer mode)
 # =============================================================================
 if [[ "${_SELECTED[10]}" == "true" ]]; then
+if [[ "$_NO_RESTART" == "true" ]]; then
+  info "Skipping container restart (--no-restart mode). Portainer will handle lifecycle."
+else
 info "Restarting containers..."
 
 # Always restart the core set
@@ -14098,7 +14296,8 @@ docker inspect seafile-clamav &>/dev/null && _to_restart+=(seafile-clamav)
 
 docker restart "${_to_restart[@]}"
 info "Containers restarted."
-fi
+fi  # end --no-restart else
+fi  # end _SELECTED[10]
 
 # =============================================================================
 # Step 12 — Back up this script to storage
@@ -16516,7 +16715,12 @@ echo -e "  ${DIM}To re-check at any time:  seafile status${NC}"
 if [[ "${PORTAINER_MANAGED,,}" == "true" ]] && [[ "$RUN_APPLY" == "true" ]]; then
   echo ""
   if [[ -n "${PORTAINER_STACK_WEBHOOK:-}" ]]; then
-    echo -e "  ${DIM}  PORTAINER_MANAGED=true — Portainer notified via webhook.${NC}"
+    if curl -sf -X POST "${PORTAINER_STACK_WEBHOOK}" --max-time 15 >/dev/null 2>&1; then
+      echo -e "  ${DIM}  PORTAINER_MANAGED=true — Portainer notified via webhook.${NC}"
+    else
+      echo -e "  ${YELLOW}[WARN]${NC}  PORTAINER_MANAGED=true — webhook call failed."
+      echo -e "  ${DIM}         Portainer may not redeploy automatically. Trigger manually.${NC}"
+    fi
   else
     echo -e "  ${YELLOW}[WARN]${NC}  PORTAINER_MANAGED=true but PORTAINER_STACK_WEBHOOK is blank."
     echo -e "  ${DIM}         Set the webhook URL so Portainer redeploys automatically.${NC}"
@@ -16548,8 +16752,757 @@ heading "Deploying stack"
 [[ -f "$ENV_FILE" ]] && _load_env "$ENV_FILE" 2>/dev/null || true
 
 if [[ "${PORTAINER_MANAGED:-false}" == "true" ]]; then
-  info "PORTAINER_MANAGED=true — skipping native deploy. Deploy the stack via Portainer."
-  info "See README — Portainer-Managed Deployment for instructions."
+  # Portainer mode is not compatible with migration — migration requires
+  # controlling container startup order (start DB → import → start rest),
+  # which Portainer can't do. Migrate with standard mode first, then
+  # reinstall with Portainer mode.
+  if [[ "$SETUP_MODE" == "migrate" ]]; then
+    warn "PORTAINER_MANAGED=true is not compatible with migration mode."
+    warn "Migration requires controlling container startup order."
+    warn "Please run migration with standard deployment mode, then"
+    warn "reinstall with Portainer deployment (option 4) afterward."
+    error "Cannot proceed with PORTAINER_MANAGED=true in migrate mode."
+  fi
+
+  # Portainer-managed mode: write compose file and config, but don't start containers.
+  # The user deploys the stack from their Portainer dashboard.
+  mkdir -p /opt/seafile
+  COMPOSE_FILE="/opt/seafile/docker-compose.yml"
+  cat > "$COMPOSE_FILE" << 'COMPOSEEOF'
+services:
+
+  # --- Reverse Proxy ---
+  # Caddy handles internal routing between all Seafile services.
+  # SSL termination is handled upstream by your external reverse proxy.
+  # Caddy listens on ${CADDY_PORT:-7080}; your proxy forwards plain HTTP to this port.
+  #
+  # Traefik labels are controlled by TRAEFIK_ENABLED in .env.
+  caddy:
+    image: ${CADDY_IMAGE:-caddy:2.11.1-alpine}
+    restart: always
+    container_name: seafile-caddy
+    ports:
+      - "${CADDY_PORT:-7080}:80"
+      - "${CADDY_HTTPS_PORT:-7443}:443"
+    volumes:
+      - ${CADDY_CONFIG_PATH:-/opt/seafile-caddy}/Caddyfile:/etc/caddy/Caddyfile
+      - ${CADDY_CONFIG_PATH:-/opt/seafile-caddy}/data:/data
+      - ${CADDY_CONFIG_PATH:-/opt/seafile-caddy}/config:/config
+    labels:
+      - "traefik.enable=${TRAEFIK_ENABLED:-false}"
+      - "traefik.http.routers.seafile.rule=Host(`${SEAFILE_SERVER_HOSTNAME}`)"
+      - "traefik.http.routers.seafile.entrypoints=${TRAEFIK_ENTRYPOINT:-websecure}"
+      - "traefik.http.routers.seafile.tls.certresolver=${TRAEFIK_CERTRESOLVER:-letsencrypt}"
+      - "traefik.http.services.seafile.loadbalancer.server.port=80"
+      - "traefik.http.middlewares.seafile-headers.headers.customrequestheaders.X-Forwarded-Proto=https"
+      - "traefik.http.routers.seafile.middlewares=seafile-headers"
+    networks:
+      - seafile-net
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  # --- Cache ---
+  redis:
+    image: ${SEAFILE_REDIS_IMAGE:-redis:7-alpine}
+    container_name: seafile-redis
+    restart: always
+    command:
+      - /bin/sh
+      - -c
+      - redis-server --requirepass "$$REDIS_PASSWORD"
+    environment:
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-}
+    networks:
+      - seafile-net
+
+  # --- Core Seafile ---
+  seafile:
+    image: ${SEAFILE_IMAGE:-seafileltd/seafile-mc:13.0.18}
+    container_name: seafile
+    restart: always
+    volumes:
+      - ${SEAFILE_VOLUME:-/opt/seafile-data}:/shared
+    environment:
+      - SEAFILE_MYSQL_DB_HOST=${SEAFILE_MYSQL_DB_HOST}
+      - SEAFILE_MYSQL_DB_PORT=${SEAFILE_MYSQL_DB_PORT:-3306}
+      - SEAFILE_MYSQL_DB_USER=${SEAFILE_MYSQL_DB_USER:-seafile}
+      - SEAFILE_MYSQL_DB_PASSWORD=${SEAFILE_MYSQL_DB_PASSWORD}
+      - INIT_SEAFILE_MYSQL_ROOT_PASSWORD=${INIT_SEAFILE_MYSQL_ROOT_PASSWORD}
+      - SEAFILE_MYSQL_DB_CCNET_DB_NAME=${SEAFILE_MYSQL_DB_CCNET_DB_NAME:-ccnet_db}
+      - SEAFILE_MYSQL_DB_SEAFILE_DB_NAME=${SEAFILE_MYSQL_DB_SEAFILE_DB_NAME:-seafile_db}
+      - SEAFILE_MYSQL_DB_SEAHUB_DB_NAME=${SEAFILE_MYSQL_DB_SEAHUB_DB_NAME:-seahub_db}
+      - TIME_ZONE=${TIME_ZONE:-America/New_York}
+      - SEAFILE_SERVER_HOSTNAME=${SEAFILE_SERVER_HOSTNAME}
+      - SEAFILE_SERVER_PROTOCOL=${SEAFILE_SERVER_PROTOCOL:-https}
+      - SEAFILE_CSRF_TRUSTED_ORIGINS=${SEAFILE_SERVER_PROTOCOL:-https}://${SEAFILE_SERVER_HOSTNAME}
+      - SITE_ROOT=${SITE_ROOT:-/}
+      - NON_ROOT=${NON_ROOT:-false}
+      - JWT_PRIVATE_KEY=${JWT_PRIVATE_KEY}
+      - SEAFILE_LOG_TO_STDOUT=${SEAFILE_LOG_TO_STDOUT:-true}
+      - CACHE_PROVIDER=redis
+      - REDIS_HOST=seafile-redis
+      - REDIS_PORT=${REDIS_PORT:-6379}
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-}
+      - ENABLE_GO_FILESERVER=${ENABLE_GO_FILESERVER:-true}
+      - ENABLE_SEADOC=${ENABLE_SEADOC:-true}
+      - SEADOC_SERVER_URL=${SEAFILE_SERVER_PROTOCOL:-https}://${SEAFILE_SERVER_HOSTNAME}/sdoc-server
+      - ENABLE_NOTIFICATION_SERVER=${ENABLE_NOTIFICATION_SERVER:-true}
+      - INNER_NOTIFICATION_SERVER_URL=http://notification-server:8083
+      - NOTIFICATION_SERVER_URL=${SEAFILE_SERVER_PROTOCOL:-https}://${SEAFILE_SERVER_HOSTNAME}/notification
+      - ENABLE_METADATA_SERVER=${ENABLE_METADATA_SERVER:-true}
+      - METADATA_SERVER_URL=${SEAFILE_SERVER_PROTOCOL:-https}://${SEAFILE_SERVER_HOSTNAME}/metadata
+      - MD_FILE_COUNT_LIMIT=${MD_FILE_COUNT_LIMIT:-100000}
+      - ENABLE_THUMBNAIL_SERVER=${ENABLE_THUMBNAIL_SERVER:-true}
+      - THUMBNAIL_SERVER_URL=${SEAFILE_SERVER_PROTOCOL:-https}://${SEAFILE_SERVER_HOSTNAME}/thumbnail-server/
+      - ENABLE_SEAFILE_AI=${ENABLE_SEAFILE_AI:-false}
+      - ENABLE_FACE_RECOGNITION=${ENABLE_FACE_RECOGNITION:-false}
+      - INIT_SEAFILE_ADMIN_EMAIL=${INIT_SEAFILE_ADMIN_EMAIL}
+      - INIT_SEAFILE_ADMIN_PASSWORD=${INIT_SEAFILE_ADMIN_PASSWORD}
+    depends_on:
+      - redis
+    networks:
+      - seafile-net
+
+  # --- SeaDoc (collaborative .sdoc editing) ---
+  seadoc:
+    image: ${SEADOC_IMAGE:-seafileltd/sdoc-server:2.0-latest}
+    container_name: seadoc
+    restart: always
+    volumes:
+      - ${SEADOC_DATA_PATH:-/opt/seadoc-data}:/shared
+    environment:
+      - DB_HOST=${SEAFILE_MYSQL_DB_HOST}
+      - DB_PORT=${SEAFILE_MYSQL_DB_PORT:-3306}
+      - DB_USER=${SEAFILE_MYSQL_DB_USER:-seafile}
+      - DB_PASSWORD=${SEAFILE_MYSQL_DB_PASSWORD}
+      - DB_NAME=${SEAFILE_MYSQL_DB_SEAHUB_DB_NAME:-seahub_db}
+      - TIME_ZONE=${TIME_ZONE:-America/New_York}
+      - NON_ROOT=${NON_ROOT:-false}
+      - JWT_PRIVATE_KEY=${JWT_PRIVATE_KEY}
+      - SEAHUB_SERVICE_URL=${SEAFILE_SERVER_PROTOCOL:-https}://${SEAFILE_SERVER_HOSTNAME}
+    networks:
+      - seafile-net
+
+  # --- Notification Server ---
+  notification-server:
+    image: ${NOTIFICATION_SERVER_IMAGE:-seafileltd/notification-server:13.0.10}
+    container_name: notification-server
+    restart: always
+    volumes:
+      - ${SEAFILE_VOLUME:-/opt/seafile-data}/seafile/logs:/shared/seafile/logs
+    environment:
+      - SEAFILE_MYSQL_DB_HOST=${SEAFILE_MYSQL_DB_HOST}
+      - SEAFILE_MYSQL_DB_PORT=${SEAFILE_MYSQL_DB_PORT:-3306}
+      - SEAFILE_MYSQL_DB_USER=${SEAFILE_MYSQL_DB_USER:-seafile}
+      - SEAFILE_MYSQL_DB_PASSWORD=${SEAFILE_MYSQL_DB_PASSWORD}
+      - SEAFILE_MYSQL_DB_CCNET_DB_NAME=${SEAFILE_MYSQL_DB_CCNET_DB_NAME:-ccnet_db}
+      - SEAFILE_MYSQL_DB_SEAFILE_DB_NAME=${SEAFILE_MYSQL_DB_SEAFILE_DB_NAME:-seafile_db}
+      - JWT_PRIVATE_KEY=${JWT_PRIVATE_KEY}
+      - SEAFILE_LOG_TO_STDOUT=${SEAFILE_LOG_TO_STDOUT:-true}
+      - NOTIFICATION_SERVER_LOG_LEVEL=${NOTIFICATION_SERVER_LOG_LEVEL:-info}
+    networks:
+      - seafile-net
+
+  # --- Thumbnail Server ---
+  thumbnail-server:
+    image: ${THUMBNAIL_SERVER_IMAGE:-seafileltd/thumbnail-server:13.0-latest}
+    container_name: thumbnail-server
+    restart: always
+    volumes:
+      - ${SEAFILE_VOLUME:-/opt/seafile-data}:/shared/seafile-data:ro
+      - ${SEAFILE_VOLUME:-/opt/seafile-data}/seafile/conf:/shared/seafile/conf:ro
+      - ${SEAFILE_VOLUME:-/opt/seafile-data}/seafile/seafile-data:/shared/seafile/seafile-data:ro
+      - ${THUMBNAIL_PATH:-/opt/seafile-thumbnails}:/shared/seafile/seahub-data/thumbnail
+    environment:
+      - TIME_ZONE=${TIME_ZONE:-America/New_York}
+      - SEAFILE_MYSQL_DB_HOST=${SEAFILE_MYSQL_DB_HOST}
+      - SEAFILE_MYSQL_DB_PORT=${SEAFILE_MYSQL_DB_PORT:-3306}
+      - SEAFILE_MYSQL_DB_USER=${SEAFILE_MYSQL_DB_USER:-seafile}
+      - SEAFILE_MYSQL_DB_PASSWORD=${SEAFILE_MYSQL_DB_PASSWORD}
+      - SEAFILE_MYSQL_DB_CCNET_DB_NAME=${SEAFILE_MYSQL_DB_CCNET_DB_NAME:-ccnet_db}
+      - SEAFILE_MYSQL_DB_SEAFILE_DB_NAME=${SEAFILE_MYSQL_DB_SEAFILE_DB_NAME:-seafile_db}
+      - NON_ROOT=${NON_ROOT:-false}
+      - JWT_PRIVATE_KEY=${JWT_PRIVATE_KEY}
+      - SEAFILE_LOG_TO_STDOUT=${SEAFILE_LOG_TO_STDOUT:-true}
+      - SITE_ROOT=${SITE_ROOT:-/}
+      - INNER_SEAHUB_SERVICE_URL=http://seafile
+      - SEAFILE_CONF_DIR=/shared/seafile-data/seafile/conf
+    networks:
+      - seafile-net
+
+  # --- Metadata Server ---
+  metadata-server:
+    image: ${MD_IMAGE:-seafileltd/seafile-md-server:13.0-latest}
+    container_name: seafile-metadata
+    restart: unless-stopped
+    volumes:
+      - ${SEAFILE_VOLUME:-/opt/seafile-data}:/shared/seafile-data:ro
+      - ${SEAFILE_VOLUME:-/opt/seafile-data}/seafile/conf:/shared/seafile/conf:ro
+      - ${SEAFILE_VOLUME:-/opt/seafile-data}/seafile/seafile-data:/shared/seafile/seafile-data:ro
+      - ${METADATA_PATH:-/opt/seafile-metadata}:/shared/seafile-metadata
+    environment:
+      - JWT_PRIVATE_KEY=${JWT_PRIVATE_KEY}
+      - SEAFILE_MYSQL_DB_HOST=${SEAFILE_MYSQL_DB_HOST}
+      - SEAFILE_MYSQL_DB_PORT=${SEAFILE_MYSQL_DB_PORT:-3306}
+      - SEAFILE_MYSQL_DB_USER=${SEAFILE_MYSQL_DB_USER:-seafile}
+      - SEAFILE_MYSQL_DB_PASSWORD=${SEAFILE_MYSQL_DB_PASSWORD}
+      - SEAFILE_MYSQL_DB_SEAFILE_DB_NAME=${SEAFILE_MYSQL_DB_SEAFILE_DB_NAME:-seafile_db}
+      - SEAFILE_LOG_TO_STDOUT=${SEAFILE_LOG_TO_STDOUT:-true}
+      - MD_FILE_COUNT_LIMIT=${MD_FILE_COUNT_LIMIT:-100000}
+      - CACHE_PROVIDER=redis
+      - REDIS_HOST=seafile-redis
+      - REDIS_PORT=${REDIS_PORT:-6379}
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-}
+      - SEAFILE_CONF_DIR=/shared/seafile-data/seafile/conf
+    networks:
+      - seafile-net
+
+  # --- Collabora Online ---
+  # Active when OFFICE_SUITE=collabora (profile: collabora).
+  # ssl.enable=false and ssl.termination=true required — SSL is handled upstream.
+  # aliasgroup1 = your domain with dots escaped: seafile\.yourdomain\.com
+  collabora:
+    image: ${COLLABORA_IMAGE:-collabora/code:25.04.8.1.1}
+    container_name: seafile-collabora
+    restart: always
+    profiles:
+      - collabora
+    cap_add:
+      - MKNOD
+    environment:
+      - aliasgroup1=${COLLABORA_ALIAS_GROUP}
+      - "extra_params=--o:ssl.enable=false --o:ssl.termination=true --o:admin_console.enable=true"
+      - server_name=${SEAFILE_SERVER_HOSTNAME}
+      - username=${COLLABORA_ADMIN_USER}
+      - password=${COLLABORA_ADMIN_PASSWORD}
+      - DONT_GEN_SSL_CERT=true
+    networks:
+      - seafile-net
+
+  # --- OnlyOffice Document Server ---
+  # Active when OFFICE_SUITE=onlyoffice (profile: onlyoffice).
+  # Requires 4–8 GB RAM. Exposes ONLYOFFICE_PORT on the host for your reverse proxy.
+  # JWT_SECRET must match the value written to seahub_settings.py.
+  onlyoffice:
+    image: ${ONLYOFFICE_IMAGE:-onlyoffice/documentserver:8.1.0.1}
+    container_name: seafile-onlyoffice
+    restart: always
+    profiles:
+      - onlyoffice
+    ports:
+      - "${ONLYOFFICE_PORT:-6233}:80"
+    volumes:
+      - ${ONLYOFFICE_VOLUME:-/opt/onlyoffice}/logs:/var/log/onlyoffice
+      - ${ONLYOFFICE_VOLUME:-/opt/onlyoffice}/data:/var/www/onlyoffice/Data
+      - ${ONLYOFFICE_VOLUME:-/opt/onlyoffice}/lib:/var/lib/onlyoffice
+      - ${ONLYOFFICE_VOLUME:-/opt/onlyoffice}/db:/var/lib/postgresql
+    environment:
+      - JWT_ENABLED=true
+      - JWT_SECRET=${ONLYOFFICE_JWT_SECRET}
+      - JWT_HEADER=AuthorizationJwt
+    networks:
+      - seafile-net
+
+  # --- ClamAV Antivirus ---
+  # Active when CLAMAV_ENABLED=true (profile: clamav).
+  # First start takes 5–15 minutes downloading virus definitions (~300 MB).
+  # Requires ~1 GB RAM for the signature database.
+  clamav:
+    image: ${CLAMAV_IMAGE:-clamav/clamav:stable}
+    container_name: seafile-clamav
+    restart: always
+    profiles:
+      - clamav
+    networks:
+      - seafile-net
+
+  # --- MariaDB (bundled database) ---
+  # Active when DB_INTERNAL=true (profile: internal-db).
+  # Seafile's own init creates the three databases on first boot using
+  # INIT_SEAFILE_MYSQL_ROOT_PASSWORD. No separate init script is needed.
+  #
+  # Data lives at DB_INTERNAL_VOLUME (default: /opt/seafile-db on local disk).
+  # For full disaster recovery, set DB_INTERNAL_VOLUME to a subdirectory of
+  # SEAFILE_VOLUME so the database lives on your network share.
+  # Example: DB_INTERNAL_VOLUME=/mnt/seafile_nfs/db
+  seafile-db:
+    image: ${DB_INTERNAL_IMAGE:-mariadb:10.11}
+    container_name: seafile-db
+    restart: always
+    profiles:
+      - internal-db
+    environment:
+      - MYSQL_ROOT_PASSWORD=${INIT_SEAFILE_MYSQL_ROOT_PASSWORD}
+      - MYSQL_LOG_CONSOLE=true
+      - MARIADB_AUTO_UPGRADE=1
+    volumes:
+      - ${DB_INTERNAL_VOLUME:-/opt/seafile-db}:/var/lib/mysql
+    networks:
+      - seafile-net
+
+networks:
+  seafile-net:
+    name: ${SEAFILE_NETWORK:-seafile-net}
+COMPOSEEOF
+  info "docker-compose.yml written to $COMPOSE_FILE."
+
+  # Initialize config-history repo before starting git server
+  # (shared-lib's _config_history_init normally runs later in setup, but the
+  # git server needs the repo to exist NOW for Portainer to pull from it)
+  _config_history_init
+
+  # Ensure the internal git server has initial content committed
+  if [[ -d "/opt/seafile/.config-history/.git" ]]; then
+    cd /opt/seafile/.config-history
+    cp "$COMPOSE_FILE" docker-compose.yml 2>/dev/null || true
+    cp "$ENV_FILE" .env 2>/dev/null || true
+    git add -A && git commit -m "Initial commit for Portainer deployment" 2>/dev/null || true
+    git update-server-info 2>/dev/null || true
+    cd /
+  fi
+
+  # Start the internal git server so Portainer can pull immediately
+  systemctl daemon-reload
+  systemctl enable seafile-config-server 2>/dev/null || true
+  systemctl start seafile-config-server 2>/dev/null || true
+  info "Internal git server started for Portainer stack sync."
+
+  # Run config-fixes to pre-generate Caddyfile and Seafile config files
+  # Use --no-restart since containers aren't running yet
+  if [[ -f "/opt/seafile-config-fixes.sh" ]]; then
+    bash /opt/seafile-config-fixes.sh --yes --no-restart 2>&1 || true
+    info "Config files pre-generated for first boot."
+  fi
+
+  # Install the finalizer service — it waits for the user to deploy from
+  # Portainer, then automatically runs config-fixes after Seafile's init
+  # completes. This is critical because Seafile's first-boot init overwrites
+  # our pre-generated config files with its own defaults.
+  FINALIZE_SCRIPT="/opt/seafile/seafile-recovery-finalize.sh"
+  FINALIZE_SERVICE="/etc/systemd/system/seafile-recovery-finalize.service"
+  if [[ ! -f "$FINALIZE_SCRIPT" ]]; then
+    cat > "$FINALIZE_SCRIPT" << 'FINALIZEEOF'
+#!/bin/bash
+# =============================================================================
+# seafile-recovery-finalize.sh — Post-recovery config applier
+# =============================================================================
+# Written by:  recover.sh (embedded as a heredoc — edit THAT file, not this one)
+# Deployed to: /opt/seafile/seafile-recovery-finalize.sh on the Docker host
+# Managed by:  seafile-recovery-finalize.service (systemd) — do not run directly
+#
+# Installed by recover.sh to complete the stack restore automatically after
+# the stack is started on a rebuilt VM.
+#
+# What it does:
+#   1. If DB_INTERNAL=true and DB snapshots exist on the share:
+#      - Generates a temp root password (INIT_SEAFILE_MYSQL_ROOT_PASSWORD may
+#        have been cleared from .env after original deploy)
+#      - Starts seafile-db standalone, waits for it to be ready
+#      - Restores the latest snapshot for each database
+#   2. In native mode (PORTAINER_MANAGED=false): starts the full stack via
+#      docker compose up -d
+#      In Portainer-managed mode: waits for Portainer to deploy the stack
+#   3. Waits for all active containers to reach 'running' status
+#   4. Waits for Seafile's first-run init to complete
+#   5. Runs seafile-config-fixes.sh --yes
+#   6. Disables itself
+# =============================================================================
+
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+RED='\033[0;31m'
+NC='\033[0m'
+info()  { echo -e "$(date '+%Y-%m-%d %H:%M:%S') ${GREEN}[FINALIZE]${NC}  $1"; }
+warn()  { echo -e "$(date '+%Y-%m-%d %H:%M:%S') ${YELLOW}[FINALIZE]${NC}  $1"; }
+error() { echo -e "$(date '+%Y-%m-%d %H:%M:%S') ${RED}[FINALIZE]${NC} $1"; exit 1; }
+
+# --- Safe .env loader ---
+_load_env() {
+  local env_file="${1:-/opt/seafile/.env}"
+  [[ ! -f "$env_file" ]] && return 1
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    [[ "$line" =~ ^[[:space:]]*# ]] && continue
+    [[ -z "${line// }" ]] && continue
+    [[ "$line" != *=* ]] && continue
+    local key="${line%%=*}" value="${line#*=}"
+    if [[ "$value" == \"*\" ]]; then value="${value#\"}"; value="${value%\"}";
+    elif [[ "$value" == \'*\' ]]; then value="${value#\'}"; value="${value%\'}"; fi
+    export "$key=$value"
+  done < "$env_file"
+}
+
+ENV_FILE="/opt/seafile/.env"
+COMPOSE_FILE="/opt/seafile/docker-compose.yml"
+FIXES_FILE="/opt/seafile-config-fixes.sh"
+
+# Load .env — gives us PORTAINER_MANAGED, DB_INTERNAL, SEAFILE_VOLUME, etc.
+if [ -f "$ENV_FILE" ]; then
+  _load_env "$ENV_FILE"
+else
+  error ".env not found at $ENV_FILE — recovery cannot continue."
+fi
+
+# ---------------------------------------------------------------------------
+# Compute COMPOSE_PROFILES from .env — same logic as install/update scripts
+# ---------------------------------------------------------------------------
+_compute_profiles() {
+  local _profiles=()
+  case "${OFFICE_SUITE:-collabora}" in
+    onlyoffice) _profiles+=(onlyoffice) ;;
+    none)       ;;  # No office suite container
+    *)          _profiles+=(collabora)  ;;
+  esac
+  [[ "${CLAMAV_ENABLED:-false}" == "true" ]] && _profiles+=(clamav)
+  [[ "${DB_INTERNAL:-true}"    == "true" ]] && _profiles+=(internal-db)
+  export COMPOSE_PROFILES
+  COMPOSE_PROFILES=$(IFS=','; echo "${_profiles[*]}")
+}
+_compute_profiles
+
+# ---------------------------------------------------------------------------
+# Build active container list — used for health-wait loop
+# ---------------------------------------------------------------------------
+EXPECTED_CONTAINERS=(
+  seafile-caddy
+  seafile-redis
+  seafile
+  seadoc
+  notification-server
+  thumbnail-server
+  seafile-metadata
+)
+case "${OFFICE_SUITE:-collabora}" in
+  onlyoffice) EXPECTED_CONTAINERS+=(seafile-onlyoffice) ;;
+  none)       ;;
+  *)          EXPECTED_CONTAINERS+=(seafile-collabora)  ;;
+esac
+[[ "${CLAMAV_ENABLED:-false}" == "true" ]] && EXPECTED_CONTAINERS+=(seafile-clamav)
+[[ "${DB_INTERNAL:-true}"    == "true" ]] && EXPECTED_CONTAINERS+=(seafile-db)
+
+info "Active containers for this deployment: ${EXPECTED_CONTAINERS[*]}"
+
+# ---------------------------------------------------------------------------
+# DB restore — only when DB_INTERNAL=true and snapshots exist on the share
+# ---------------------------------------------------------------------------
+_RESTORE_DB=false
+_DB_BACKUP_DIR="${SEAFILE_VOLUME}/db-backup"
+
+if [[ "${DB_INTERNAL:-true}" == "true" && "${STORAGE_TYPE:-nfs}" != "local" ]]; then
+  if ls "${_DB_BACKUP_DIR}"/*.sql.gz 2>/dev/null | head -1 | grep -q .; then
+    info "Found DB snapshots in ${_DB_BACKUP_DIR}/ — database will be restored."
+    _RESTORE_DB=true
+
+    # INIT_SEAFILE_MYSQL_ROOT_PASSWORD is blank in the recovered .env
+    # (it was cleared by config-fixes after the original deploy).
+    # Generate a temp root password so the fresh seafile-db container starts
+    # with a known credential we can use for the restore.
+    # config-fixes will clear it again at the end of recovery.
+    if [[ -z "${INIT_SEAFILE_MYSQL_ROOT_PASSWORD:-}" ]]; then
+      _TMP_ROOT=$(openssl rand -hex 16)
+      sed -i "s/^INIT_SEAFILE_MYSQL_ROOT_PASSWORD=$/INIT_SEAFILE_MYSQL_ROOT_PASSWORD=${_TMP_ROOT}/" "$ENV_FILE"
+      export INIT_SEAFILE_MYSQL_ROOT_PASSWORD="$_TMP_ROOT"
+      info "Generated temp root password for DB restore (will be cleared by config-fixes)."
+    fi
+  else
+    warn "DB_INTERNAL=true but no snapshots found in ${_DB_BACKUP_DIR}/"
+    warn "Database will initialize empty — file data is intact on the share."
+    warn "Worst case: up to 1 day of metadata changes (library names, shares,"
+    warn "permissions) may be missing. File content is unaffected."
+  fi
+fi
+
+# ---------------------------------------------------------------------------
+# DB restore (native mode only) — start seafile-db first, import, then full stack
+# ---------------------------------------------------------------------------
+if [[ "${_RESTORE_DB}" == "true" && "${PORTAINER_MANAGED,,}" != "true" ]]; then
+  info "Starting seafile-db container for DB restore..."
+  COMPOSE_PROFILES="$COMPOSE_PROFILES" \
+    docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" up -d seafile-db \
+    || error "Failed to start seafile-db — check: docker logs seafile-db"
+
+  info "Waiting for seafile-db to accept connections (up to 60s)..."
+  _READY=false
+  for i in $(seq 1 30); do
+    if docker exec -e MYSQL_PWD="${INIT_SEAFILE_MYSQL_ROOT_PASSWORD}" seafile-db mysqladmin \
+        ping -u root --silent 2>/dev/null; then
+      _READY=true
+      break
+    fi
+    sleep 2
+  done
+  [[ "$_READY" != "true" ]] && error "seafile-db did not become ready in 60s — check: docker logs seafile-db"
+  info "seafile-db is ready. Restoring snapshots..."
+
+  for db in \
+      "${SEAFILE_MYSQL_DB_CCNET_DB_NAME:-ccnet_db}" \
+      "${SEAFILE_MYSQL_DB_SEAFILE_DB_NAME:-seafile_db}" \
+      "${SEAFILE_MYSQL_DB_SEAHUB_DB_NAME:-seahub_db}"; do
+    LATEST=$(ls -t "${_DB_BACKUP_DIR}/${db}_"*.sql.gz 2>/dev/null | head -1 || true)
+    if [[ -n "$LATEST" ]]; then
+      SNAP_DATE=$(basename "$LATEST" | grep -oP '\d{8}_\d{6}' || echo "unknown date")
+      info "  Restoring ${db} from snapshot ${SNAP_DATE}..."
+      docker exec -i -e MYSQL_PWD="${INIT_SEAFILE_MYSQL_ROOT_PASSWORD}" seafile-db \
+        mysql -u root -e "CREATE DATABASE IF NOT EXISTS \`${db}\` CHARACTER SET utf8mb4;" 2>/dev/null || true
+      gunzip -c "$LATEST" | docker exec -i -e MYSQL_PWD="${INIT_SEAFILE_MYSQL_ROOT_PASSWORD}" seafile-db \
+        mysql -u root "$db" \
+        && info "  ✓ ${db} restored" \
+        || warn "  ✗ Failed to restore ${db} — database will initialize empty"
+    else
+      warn "  No snapshot found for ${db} — will initialize empty"
+    fi
+  done
+  info "DB restore complete. Starting remaining stack..."
+
+elif [[ "${_RESTORE_DB}" == "true" && "${PORTAINER_MANAGED,,}" == "true" ]]; then
+  warn "DB_INTERNAL=true with Portainer-managed mode — automated DB restore is not"
+  warn "supported in Portainer mode because stack startup order cannot be controlled."
+  warn ""
+  warn "To restore your database manually before deploying the stack:"
+  warn "  1. In Portainer, deploy ONLY the seafile-db service first"
+  warn "  2. SSH to this host and run:"
+  warn "       /opt/seafile-db-restore.sh"
+  warn "  3. Then deploy the full stack in Portainer"
+  warn ""
+  warn "A restore helper script has been written to /opt/seafile-db-restore.sh"
+
+  # Write a manual restore helper for the Portainer case
+  cat > /opt/seafile-db-restore.sh << RESTOREEOF
+#!/bin/bash
+# Manual DB restore helper for Portainer-managed recovery
+# Run this AFTER seafile-db is running but BEFORE deploying the full stack.
+set -euo pipefail
+# Safe .env parser (avoids command injection from unquoted values)
+while IFS= read -r line || [[ -n "$line" ]]; do
+  [[ "$line" =~ ^[[:space:]]*# ]] && continue
+  [[ -z "${line// }" ]] && continue
+  [[ "$line" != *=* ]] && continue
+  key="${line%%=*}"; value="${line#*=}"
+  if [[ "$value" == \"*\" ]]; then value="${value#\"}"; value="${value%\"}"; fi
+  export "$key=$value"
+done < /opt/seafile/.env
+DB_BACKUP_DIR="\${SEAFILE_VOLUME}/db-backup"
+for db in "\${SEAFILE_MYSQL_DB_CCNET_DB_NAME:-ccnet_db}" \
+           "\${SEAFILE_MYSQL_DB_SEAFILE_DB_NAME:-seafile_db}" \
+           "\${SEAFILE_MYSQL_DB_SEAHUB_DB_NAME:-seahub_db}"; do
+  LATEST=\$(ls -t "\${DB_BACKUP_DIR}/\${db}_"*.sql.gz 2>/dev/null | head -1 || true)
+  if [[ -n "\$LATEST" ]]; then
+    echo "Restoring \${db} from \$(basename \$LATEST)..."
+    docker exec -i -e MYSQL_PWD="\${INIT_SEAFILE_MYSQL_ROOT_PASSWORD}" seafile-db \
+      mysql -u root -e "CREATE DATABASE IF NOT EXISTS \\\`\${db}\\\` CHARACTER SET utf8mb4;" 2>/dev/null || true
+    gunzip -c "\$LATEST" | docker exec -i -e MYSQL_PWD="\${INIT_SEAFILE_MYSQL_ROOT_PASSWORD}" seafile-db \
+      mysql -u root "\${db}" \
+      && echo "  ✓ \${db} restored" || echo "  ✗ Failed to restore \${db}"
+  else
+    echo "No snapshot for \${db} — skipping"
+  fi
+done
+RESTOREEOF
+  chmod +x /opt/seafile-db-restore.sh
+fi
+
+# ---------------------------------------------------------------------------
+# Start stack (native mode)
+# ---------------------------------------------------------------------------
+if [[ "${PORTAINER_MANAGED,,}" != "true" ]]; then
+  if [ ! -f "$COMPOSE_FILE" ]; then
+    error "docker-compose.yml not found at $COMPOSE_FILE"
+  fi
+  info "PORTAINER_MANAGED=false — starting stack via docker compose..."
+  COMPOSE_PROFILES="$COMPOSE_PROFILES" \
+    docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" up -d \
+    || error "docker compose up failed — check: docker ps && docker logs seafile"
+  info "Stack started. Waiting for containers to reach running status..."
+else
+  info "PORTAINER_MANAGED=true — waiting for Portainer to deploy the stack..."
+  info "Redeploy the stack in Portainer now if you have not already done so."
+fi
+
+# ---------------------------------------------------------------------------
+# Wait for all active containers
+# ---------------------------------------------------------------------------
+info "Waiting for all containers: ${EXPECTED_CONTAINERS[*]}"
+while true; do
+  ALL_UP=true
+  for CONTAINER in "${EXPECTED_CONTAINERS[@]}"; do
+    STATUS=$(docker inspect --format='{{.State.Status}}' "$CONTAINER" 2>/dev/null || echo "missing")
+    if [ "$STATUS" != "running" ]; then
+      ALL_UP=false
+      break
+    fi
+  done
+  if $ALL_UP; then
+    info "All containers are running."
+    break
+  fi
+  warn "Containers not yet up — retrying in 5 seconds..."
+  sleep 5
+done
+
+# ---------------------------------------------------------------------------
+# Wait for Seafile init
+# ---------------------------------------------------------------------------
+info "Waiting for Seafile init to complete (conf directory on storage share)..."
+CONF_DIR="${SEAFILE_VOLUME}/seafile/conf"
+until [ -d "$CONF_DIR" ]; do
+  warn "Conf directory not yet present — retrying in 5 seconds..."
+  sleep 5
+done
+info "Conf directory found. Waiting for database tables..."
+
+# Wait for tables to exist in seahub_db before running config-fixes.
+# In recovery, tables come from the DB restore. In fresh-DB recovery,
+# Seafile creates them during init.
+_ROOT_PASS="${INIT_SEAFILE_MYSQL_ROOT_PASSWORD:-}"
+if [[ -n "$_ROOT_PASS" && "${DB_INTERNAL:-true}" == "true" ]]; then
+  _tables_ready=false
+  for _t in {1..60}; do
+    _tcount=$(docker exec -e MYSQL_PWD="${_ROOT_PASS}" seafile-db mysql -u root -N \
+      -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='${SEAFILE_MYSQL_DB_SEAHUB_DB_NAME:-seahub_db}';" 2>/dev/null || echo "0")
+    if [[ "$_tcount" -gt 10 ]]; then
+      info "Database tables verified (${_tcount} tables in seahub_db)."
+      _tables_ready=true
+      break
+    fi
+    if (( _t % 6 == 0 )); then
+      info "  Still waiting for tables... (${_tcount} so far)"
+    fi
+    sleep 5
+  done
+  if [[ "$_tables_ready" != "true" ]]; then
+    warn "Timed out waiting for tables. Config-fixes will proceed anyway."
+  fi
+else
+  info "No DB root access — waiting 60 seconds for migrations to finish..."
+  sleep 60
+fi
+
+# ---------------------------------------------------------------------------
+# Run config fixes
+# ---------------------------------------------------------------------------
+info "Running seafile-config-fixes.sh..."
+bash "$FIXES_FILE" --yes || error "seafile-config-fixes.sh failed — check: journalctl -u seafile-recovery-finalize"
+
+# --- Initialize config history repo ---
+HISTORY_DIR="/opt/seafile/.config-history"
+if [[ "${CONFIG_HISTORY_ENABLED:-true}" == "true" ]]; then
+  if [[ ! -d "$HISTORY_DIR/.git" ]]; then
+    mkdir -p "$HISTORY_DIR"
+    cd "$HISTORY_DIR"
+    git init --quiet 2>/dev/null
+    git config user.email "seafile-deploy@localhost"
+    git config user.name "seafile-deploy"
+  fi
+  cp /opt/seafile/.env "$HISTORY_DIR/.env" 2>/dev/null || true
+  [[ -f /opt/seafile/docker-compose.yml ]] && cp /opt/seafile/docker-compose.yml "$HISTORY_DIR/docker-compose.yml" 2>/dev/null || true
+  [[ -f "$FIXES_FILE" ]] && cp "$FIXES_FILE" "$HISTORY_DIR/seafile-config-fixes.sh" 2>/dev/null || true
+  [[ -f /opt/update.sh ]] && cp /opt/update.sh "$HISTORY_DIR/update.sh" 2>/dev/null || true
+  cd "$HISTORY_DIR" && git add -A 2>/dev/null && \
+    git commit -m "Recovery completed — initial state" --quiet 2>/dev/null || true
+  git update-server-info 2>/dev/null || true
+  info "Config history initialized"
+fi
+
+# --- Start config git server if Portainer-managed ---
+if [[ "${PORTAINER_MANAGED:-false}" == "true" ]]; then
+  if [[ -f /etc/systemd/system/seafile-config-server.service ]]; then
+    systemctl daemon-reload
+    systemctl enable seafile-config-server 2>/dev/null || true
+    systemctl start seafile-config-server 2>/dev/null || true
+    info "Config git server started for Portainer integration"
+  fi
+fi
+
+info "Recovery complete. Disabling seafile-recovery-finalize service."
+systemctl disable seafile-recovery-finalize.service
+
+echo ""
+echo -e "${GREEN}============================================================${NC}"
+echo -e "${GREEN} Disaster recovery complete!${NC}"
+echo -e "${GREEN}============================================================${NC}"
+echo ""
+if [[ "${_RESTORE_DB}" == "true" ]]; then
+  echo "  Database restored from snapshot on the storage share."
+else
+  echo "  Database initialized fresh (no snapshot was found on the share)."
+  echo "  File content is intact. Library names, shares, and permissions"
+  echo "  may reflect state from up to 1 day before the VM was lost."
+fi
+echo ""
+echo "  Final step — enabling Extended Properties on all libraries..."
+echo ""
+
+# Source shared-lib functions (available in the recovered setup.sh)
+# The _enable_metadata_all function needs admin creds from .env
+if [[ -n "${INIT_SEAFILE_ADMIN_EMAIL:-}" && -n "${INIT_SEAFILE_ADMIN_PASSWORD:-}" ]]; then
+  CADDY_PORT="${CADDY_PORT:-7080}"
+  HOST_HDR="${SEAFILE_SERVER_HOSTNAME:-localhost}"
+  API_BASE="http://localhost:${CADDY_PORT}"
+
+  # Wait for Seafile API to be ready after config-fixes restart
+  sleep 15
+
+  TOKEN_RESP=$(curl -sf -H "Host: ${HOST_HDR}" \
+    -d "username=${INIT_SEAFILE_ADMIN_EMAIL}&password=${INIT_SEAFILE_ADMIN_PASSWORD}" \
+    "${API_BASE}/api2/auth-token/" 2>/dev/null || true)
+
+  if [[ -n "$TOKEN_RESP" ]]; then
+    TOKEN=$(echo "$TOKEN_RESP" | python3 -c "import sys,json; print(json.load(sys.stdin).get('token',''))" 2>/dev/null || true)
+    if [[ -n "$TOKEN" ]]; then
+      REPOS=$(curl -sf -H "Host: ${HOST_HDR}" -H "Authorization: Token ${TOKEN}" \
+        "${API_BASE}/api/v2.1/repos/?type=mine" 2>/dev/null || true)
+      if [[ -n "$REPOS" ]]; then
+        echo "$REPOS" | python3 -c "
+import sys, json
+data = json.load(sys.stdin)
+repos = data.get('repos', data) if isinstance(data, dict) else data
+for r in repos:
+    print(r['id'])
+" 2>/dev/null | while IFS= read -r rid; do
+          [[ -z "$rid" ]] && continue
+          curl -sf -X PUT -H "Host: ${HOST_HDR}" \
+            -H "Authorization: Token ${TOKEN}" \
+            -H "Content-Type: application/json" \
+            -d '{"enabled": true}' \
+            "${API_BASE}/api/v2.1/repos/${rid}/metadata/" >/dev/null 2>&1 || true
+        done
+        info "Extended Properties enabled on all libraries."
+      fi
+    else
+      warn "Could not authenticate — enable manually: seafile metadata --enable-all"
+    fi
+  else
+    warn "Seafile API not ready — enable manually: seafile metadata --enable-all"
+  fi
+else
+  echo "  Admin credentials not available in .env."
+  echo "  Enable manually: seafile metadata --enable-all"
+fi
+echo ""
+FINALIZEEOF
+    chmod +x "$FINALIZE_SCRIPT"
+  fi
+  cat > "$FINALIZE_SERVICE" << SERVICEOF
+[Unit]
+Description=Seafile Post-Deploy Finalize — waits for Portainer stack deploy, then applies config
+After=network-online.target docker.service
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/seafile/seafile-recovery-finalize.sh
+RemainAfterExit=yes
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+SERVICEOF
+  systemctl daemon-reload
+  systemctl enable seafile-recovery-finalize.service
+  systemctl start seafile-recovery-finalize.service
+  info "Post-deploy finalizer started — waiting for Portainer stack deployment."
+  info "Follow progress: journalctl -u seafile-recovery-finalize -f"
 else
   mkdir -p /opt/seafile
   COMPOSE_FILE="/opt/seafile/docker-compose.yml"
@@ -17634,15 +18587,52 @@ fi
 
   # ── Install complete message ──────────────────────────────────────────────
   if [[ "${PORTAINER_MANAGED:-false}" == "true" ]]; then
+    _host_ip=$(hostname -I 2>/dev/null | awk '{print $1}')
+    _git_port="${CONFIG_GIT_PORT:-9418}"
+    _cui_pw=""
+    _cui_pw=$(grep "^CONFIG_UI_PASSWORD=" "$ENV_FILE" 2>/dev/null | cut -d= -f2-)
+
     echo ""
-    echo -e "  ${GREEN}${BOLD}Machine setup complete!${NC}"
+    echo -e "  ${GREEN}${BOLD}  ✓ Machine ready for Portainer deployment!${NC}"
     echo ""
-    echo "  Next steps:"
-    echo "  1. Open your Portainer instance"
-    echo "  2. Deploy the stack in Portainer:"
-    echo "       - Environment → local → Stacks → Add stack"
-    echo "       - Click Deploy the stack"
-    echo "       - See README.md (Portainer-Managed Deployment) for details"
+    echo -e "  ${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo ""
+    echo -e "  ${BOLD}Step 1: Connect Portainer to this machine${NC}"
+    echo ""
+    echo -e "    In Portainer: ${DIM}Environments → Add Environment → Agent${NC}"
+    echo -e "    Agent URL:    ${BOLD}${_host_ip}:9001${NC}"
+    echo ""
+    echo -e "  ${BOLD}Step 2: Create the Seafile stack${NC}"
+    echo ""
+    echo -e "    In Portainer: ${DIM}Stacks → Add Stack${NC}"
+    echo -e "    Name:           ${BOLD}seafile${NC}"
+    echo -e "    Build method:   ${BOLD}Repository${NC}"
+    echo -e "    Repository URL: ${BOLD}http://${_host_ip}:${_git_port}/${NC}"
+    echo -e "    Compose path:   ${BOLD}docker-compose.yml${NC}"
+    echo ""
+    echo -e "    ${DIM}Enable GitOps updates, enable Webhook, then${NC}"
+    echo -e "    ${DIM}copy the webhook URL before clicking Deploy.${NC}"
+    echo ""
+    echo -e "  ${BOLD}Step 3: Set the webhook URL${NC}"
+    echo ""
+    echo -e "    Open the web configuration panel and paste"
+    echo -e "    the Portainer webhook URL into Settings."
+    echo ""
+    echo -e "    ${BOLD}Web panel:${NC}  ${BOLD}http://${_host_ip}:9443${NC}"
+    if [[ -n "$_cui_pw" ]]; then
+      echo -e "    ${DIM}Password:   ${_cui_pw}${NC}"
+    fi
+    echo ""
+    echo -e "  ${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo ""
+    echo -e "  ${DIM}After you deploy the stack in Portainer, this machine${NC}"
+    echo -e "  ${DIM}will automatically detect the running containers and${NC}"
+    echo -e "  ${DIM}apply your .env configuration. Follow progress with:${NC}"
+    echo -e "    ${BOLD}journalctl -u seafile-recovery-finalize -f${NC}"
+    echo ""
+    echo -e "  ${DIM}Once that completes, all management is browser-based:${NC}"
+    echo -e "    ${DIM}Config + operations → Web panel (http://${_host_ip}:9443)${NC}"
+    echo -e "    ${DIM}Containers + logs   → Portainer${NC}"
     echo ""
   else
     echo ""
@@ -18225,6 +19215,8 @@ if [[ "${_RESTORE_DB}" == "true" && "${PORTAINER_MANAGED,,}" != "true" ]]; then
     if [[ -n "$LATEST" ]]; then
       SNAP_DATE=$(basename "$LATEST" | grep -oP '\d{8}_\d{6}' || echo "unknown date")
       info "  Restoring ${db} from snapshot ${SNAP_DATE}..."
+      docker exec -i -e MYSQL_PWD="${INIT_SEAFILE_MYSQL_ROOT_PASSWORD}" seafile-db \
+        mysql -u root -e "CREATE DATABASE IF NOT EXISTS \`${db}\` CHARACTER SET utf8mb4;" 2>/dev/null || true
       gunzip -c "$LATEST" | docker exec -i -e MYSQL_PWD="${INIT_SEAFILE_MYSQL_ROOT_PASSWORD}" seafile-db \
         mysql -u root "$db" \
         && info "  ✓ ${db} restored" \
@@ -18269,6 +19261,8 @@ for db in "\${SEAFILE_MYSQL_DB_CCNET_DB_NAME:-ccnet_db}" \
   LATEST=\$(ls -t "\${DB_BACKUP_DIR}/\${db}_"*.sql.gz 2>/dev/null | head -1 || true)
   if [[ -n "\$LATEST" ]]; then
     echo "Restoring \${db} from \$(basename \$LATEST)..."
+    docker exec -i -e MYSQL_PWD="\${INIT_SEAFILE_MYSQL_ROOT_PASSWORD}" seafile-db \
+      mysql -u root -e "CREATE DATABASE IF NOT EXISTS \\\`\${db}\\\` CHARACTER SET utf8mb4;" 2>/dev/null || true
     gunzip -c "\$LATEST" | docker exec -i -e MYSQL_PWD="\${INIT_SEAFILE_MYSQL_ROOT_PASSWORD}" seafile-db \
       mysql -u root "\${db}" \
       && echo "  ✓ \${db} restored" || echo "  ✗ Failed to restore \${db}"

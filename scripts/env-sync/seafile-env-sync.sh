@@ -53,10 +53,13 @@ _commit_history() {
   [[ ! -d "$HISTORY_DIR/.git" ]] && return 0
 
   cp "$LOCAL_ENV" "$HISTORY_DIR/.env" 2>/dev/null || return 0
+  # Also sync docker-compose.yml for Portainer mode (git server serves this repo)
+  local _compose="/opt/seafile/docker-compose.yml"
+  [[ -f "$_compose" ]] && cp "$_compose" "$HISTORY_DIR/docker-compose.yml" 2>/dev/null || true
   cd "$HISTORY_DIR" || return 0
   git add -A 2>/dev/null || return 0
   git diff --cached --quiet 2>/dev/null && return 0
-  git commit -m "$(date '+%Y-%m-%d %H:%M:%S') .env changed" --quiet 2>/dev/null || true
+  git commit -m "$(date '+%Y-%m-%d %H:%M:%S') config changed" --quiet 2>/dev/null || true
   git update-server-info 2>/dev/null || true
   log "Config history updated"
 }

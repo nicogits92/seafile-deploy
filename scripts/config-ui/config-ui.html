@@ -65,6 +65,8 @@ nav button.on{border-color:#999;color:#1a1a1a;font-weight:500}
 .code .cp:hover{color:#333}
 .warn{background:#faeeda;border:1px solid #fac775;border-radius:6px;padding:8px 12px;margin-top:8px}
 .warn p{font-size:12px;color:#854f0b;margin:0}
+.op-card .btn-p{flex-shrink:0;align-self:center}
+.op-meta{min-height:16px}
 .welcome{text-align:center;padding:3rem 1rem}
 .welcome h2{font-size:22px;font-weight:500;margin-bottom:8px}
 .welcome p{font-size:14px;color:#666;max-width:500px;margin:0 auto 2rem}
@@ -104,7 +106,8 @@ var TABS = [
   {id:'ldap',label:'LDAP'},
   {id:'features',label:'Features'},
   {id:'backup',label:'Backup'},
-  {id:'advanced',label:'Advanced'}
+  {id:'advanced',label:'Advanced'},
+  {id:'operations',label:'Operations'}
 ];
 var NAMES = {
   'seafile-caddy':'caddy','seafile-redis':'redis','seafile':'seafile','seadoc':'seadoc',
@@ -340,6 +343,15 @@ function renderSections(schedules){
           + field('DB_INTERNAL_IMAGE','MariaDB',null)
           + field('CADDY_IMAGE','Caddy',null)
           + field('SEAFILE_REDIS_IMAGE','Redis',null)));
+
+  // Operations tab is built separately (not from .env fields)
+  var opsHtml = sec('operations','Operations','Run these from your browser instead of the command line.',
+    opCard('update','Server update','Pull latest images, apply config, restart containers. Same as: seafile update')
+    + opCard('gc','Garbage collection','Reclaim storage from deleted files. Next scheduled run follows GC schedule.')
+    + opCard('backup','Backup now','Database dump + file data rsync to backup destination. Same as: seafile backup')
+    + opCard('apt','System packages','Update Debian packages (apt-get upgrade). Security patches are applied daily by unattended-upgrades.'));
+  el.innerHTML += opsHtml;
+  loadOpsStatus();
 }
 
 function sec(id, title, desc, content){
@@ -348,6 +360,73 @@ function sec(id, title, desc, content){
 function grp(content){return '<div class="grp">'+content+'</div>';}
 function esc(s){return String(s).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;')}
 
+function opCard(op, title, desc){
+  return '<div class="grp op-card" id="op-'+op+'">'
+    +'<div style="display:flex;justify-content:space-between;align-items:flex-start">'
+    +'<div><div class="grp-t">'+esc(title)+'</div>'
+    +'<p class="desc" style="margin-bottom:8px">'+esc(desc)+'</p>'
+    +'<div class="op-meta" id="op-'+op+'-meta" style="font-size:12px;color:#888"></div></div>'
+    +'<button class="btn btn-p" id="op-'+op+'-btn" onclick="runOp(\''+op+'\')">Run</button>'
+    +'</div></div>';
+}
+
+function runOp(op){
+  var btn = document.getElementById('op-'+op+'-btn');
+  btn.textContent = 'Running...';
+  btn.disabled = true;
+  api('POST','/api/operations',{operation:op}).then(function(r){
+    if(r.error){
+      btn.textContent = 'Run';
+      btn.disabled = false;
+      alert('Error: '+r.error);
+      return;
+    }
+    pollOp(op);
+  });
+}
+
+function pollOp(op){
+  setTimeout(function(){
+    api('GET','/api/operations').then(function(r){
+      var s = r[op];
+      if(!s) return;
+      var meta = document.getElementById('op-'+op+'-meta');
+      var btn = document.getElementById('op-'+op+'-btn');
+      if(s.running){
+        meta.textContent = 'Running...';
+        pollOp(op);
+      } else {
+        btn.textContent = 'Run';
+        btn.disabled = false;
+        var status = s.result === 'success' ? 'Completed' : 'Failed';
+        meta.textContent = status + (s.time ? ' · '+s.time : '');
+        meta.style.color = s.result === 'success' ? '#1d9e75' : '#e24b4a';
+      }
+    });
+  }, 2000);
+}
+
+function loadOpsStatus(){
+  api('GET','/api/operations').then(function(r){
+    if(r.error) return;
+    for(var op in r){
+      var s = r[op];
+      var meta = document.getElementById('op-'+op+'-meta');
+      var btn = document.getElementById('op-'+op+'-btn');
+      if(!meta || !btn) continue;
+      if(s.running){
+        btn.textContent = 'Running...';
+        btn.disabled = true;
+        meta.textContent = 'Running...';
+        pollOp(op);
+      } else if(s.time){
+        var status = s.result === 'success' ? 'Completed' : 'Failed';
+        meta.textContent = status + ' · ' + s.time;
+        meta.style.color = s.result === 'success' ? '#1d9e75' : '#e24b4a';
+      }
+    }
+  });
+}
 function envSet(key, val){
   ENV[key] = val;
 }

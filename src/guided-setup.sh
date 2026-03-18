@@ -1034,6 +1034,7 @@ print(re.sub(r'^' + re.escape(key) + r'=.*$', lambda m: key + '=' + val, content
   _set_val "SHARE_LINK_FORCE_USE_PASSWORD" "${WIZ_SHARE_LINK_PW:-false}"
   _set_val "LOGIN_ATTEMPT_LIMIT" "$([ "${WIZ_LOGIN_LIMIT:-true}" == "true" ] && echo "5" || echo "0")"
   _set_val "GITOPS_INTEGRATION" "$WIZ_GITOPS_ENABLED"
+  _set_val "PORTAINER_MANAGED" "${WIZ_PORTAINER_MANAGED:-false}"
 
   # Multi-backend storage classes
   if [[ "${WIZ_MULTI_BACKEND:-false}" == "true" ]]; then
@@ -1484,6 +1485,15 @@ _show_deployment_modes() {
   echo -e "     ${DIM}Same as standard, plus manage .env through a git${NC}"
   echo -e "     ${DIM}repository — config changes without SSH${NC}"
   echo ""
+  if [[ "${SETUP_MODE:-install}" == "migrate" ]]; then
+    echo -e "  ${DIM}  4  Portainer deployment (not available during migration)${NC}"
+  else
+    echo -e "  ${YELLOW}${BOLD}  4  ${NC}${BOLD}Portainer deployment${NC}"
+    echo -e "     ${DIM}Machine setup only — you deploy the stack from${NC}"
+    echo -e "     ${DIM}your Portainer dashboard. Requires an existing${NC}"
+    echo -e "     ${DIM}Portainer instance.${NC}"
+  fi
+  echo ""
   echo -e "  ${DIM}  0  Back${NC}"
   echo ""
   echo -e "  ${DIM}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
@@ -1491,16 +1501,23 @@ _show_deployment_modes() {
 
   local choice=""
   while true; do
-    echo -ne "  ${BOLD}Select [1/2/3/0]:${NC} "
+    echo -ne "  ${BOLD}Select [1/2/3/4/0]:${NC} "
     read -r choice
     case "$choice" in
       1) run_minimal_setup "$env_file"; return 0 ;;
-      2) export WIZ_DEPLOYMENT_MODE="native"; export WIZ_GITOPS_ENABLED="false"
+      2) export WIZ_DEPLOYMENT_MODE="native"; export WIZ_GITOPS_ENABLED="false"; export WIZ_PORTAINER_MANAGED="false"
          run_guided_setup "$env_file"; return 0 ;;
-      3) export WIZ_DEPLOYMENT_MODE="native"; export WIZ_GITOPS_ENABLED="true"
+      3) export WIZ_DEPLOYMENT_MODE="native"; export WIZ_GITOPS_ENABLED="true"; export WIZ_PORTAINER_MANAGED="false"
          run_guided_setup "$env_file"; return 0 ;;
+      4) if [[ "${SETUP_MODE:-install}" == "migrate" ]]; then
+           echo -e "  ${DIM}Portainer deployment is not available during migration.${NC}"
+           echo -e "  ${DIM}Migrate with standard mode first, then reinstall with Portainer.${NC}"
+         else
+           export WIZ_DEPLOYMENT_MODE="native"; export WIZ_GITOPS_ENABLED="false"; export WIZ_PORTAINER_MANAGED="true"
+           run_guided_setup "$env_file"; return 0
+         fi ;;
       0) check_env_and_configure; return $? ;;
-      *) echo -e "  ${DIM}Enter 1, 2, 3, or 0.${NC}" ;;
+      *) echo -e "  ${DIM}Enter 1, 2, 3, 4, or 0.${NC}" ;;
     esac
   done
 }
@@ -1636,6 +1653,7 @@ check_env_and_configure() {
     echo -e "  ${CYAN}${BOLD}  2  ${NC}${BOLD}Configure later${NC}"
     echo -e "     ${DIM}Get a basic server running now — configure${NC}"
     echo -e "     ${DIM}everything else in the browser or CLI after${NC}"
+    echo -e "     ${DIM}(not compatible with Portainer-managed deployment)${NC}"
     echo ""
     echo -e "  ${DIM}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo ""

@@ -698,10 +698,11 @@ CONFIGSERVICEOF
 if [[ "${PORTAINER_MANAGED:-false}" == "true" ]]; then
   systemctl daemon-reload
   systemctl enable seafile-config-server
-  systemctl start seafile-config-server
-  info "Config git server installed and started (port ${CONFIG_GIT_PORT:-9418})."
+  # Don't start yet — config-history repo is initialized later in the Portainer
+  # deploy block. The git server will be started there after the repo exists.
+  info "Config git server installed (will start after repo initialization)."
 else
-  info "Config git server installed (inactive — enable via PORTAINER_MANAGED=true)."
+  info "Config git server installed (inactive — Portainer deployment only)."
 fi
 
 # --- Web configuration panel ---
@@ -788,8 +789,89 @@ heading "Deploying stack"
 [[ -f "$ENV_FILE" ]] && _load_env "$ENV_FILE" 2>/dev/null || true
 
 if [[ "${PORTAINER_MANAGED:-false}" == "true" ]]; then
-  info "PORTAINER_MANAGED=true — skipping native deploy. Deploy the stack via Portainer."
-  info "See README — Portainer-Managed Deployment for instructions."
+  # Portainer mode is not compatible with migration — migration requires
+  # controlling container startup order (start DB → import → start rest),
+  # which Portainer can't do. Migrate with standard mode first, then
+  # reinstall with Portainer mode.
+  if [[ "$SETUP_MODE" == "migrate" ]]; then
+    warn "PORTAINER_MANAGED=true is not compatible with migration mode."
+    warn "Migration requires controlling container startup order."
+    warn "Please run migration with standard deployment mode, then"
+    warn "reinstall with Portainer deployment (option 4) afterward."
+    error "Cannot proceed with PORTAINER_MANAGED=true in migrate mode."
+  fi
+
+  # Portainer-managed mode: write compose file and config, but don't start containers.
+  # The user deploys the stack from their Portainer dashboard.
+  mkdir -p /opt/seafile
+  COMPOSE_FILE="/opt/seafile/docker-compose.yml"
+  cat > "$COMPOSE_FILE" << 'COMPOSEEOF'
+{{EMBED:src/docker-compose.yml}}
+COMPOSEEOF
+  info "docker-compose.yml written to $COMPOSE_FILE."
+
+  # Initialize config-history repo before starting git server
+  # (shared-lib's _config_history_init normally runs later in setup, but the
+  # git server needs the repo to exist NOW for Portainer to pull from it)
+  _config_history_init
+
+  # Ensure the internal git server has initial content committed
+  if [[ -d "/opt/seafile/.config-history/.git" ]]; then
+    cd /opt/seafile/.config-history
+    cp "$COMPOSE_FILE" docker-compose.yml 2>/dev/null || true
+    cp "$ENV_FILE" .env 2>/dev/null || true
+    git add -A && git commit -m "Initial commit for Portainer deployment" 2>/dev/null || true
+    git update-server-info 2>/dev/null || true
+    cd /
+  fi
+
+  # Start the internal git server so Portainer can pull immediately
+  systemctl daemon-reload
+  systemctl enable seafile-config-server 2>/dev/null || true
+  systemctl start seafile-config-server 2>/dev/null || true
+  info "Internal git server started for Portainer stack sync."
+
+  # Run config-fixes to pre-generate Caddyfile and Seafile config files
+  # Use --no-restart since containers aren't running yet
+  if [[ -f "/opt/seafile-config-fixes.sh" ]]; then
+    bash /opt/seafile-config-fixes.sh --yes --no-restart 2>&1 || true
+    info "Config files pre-generated for first boot."
+  fi
+
+  # Install the finalizer service — it waits for the user to deploy from
+  # Portainer, then automatically runs config-fixes after Seafile's init
+  # completes. This is critical because Seafile's first-boot init overwrites
+  # our pre-generated config files with its own defaults.
+  FINALIZE_SCRIPT="/opt/seafile/seafile-recovery-finalize.sh"
+  FINALIZE_SERVICE="/etc/systemd/system/seafile-recovery-finalize.service"
+  if [[ ! -f "$FINALIZE_SCRIPT" ]]; then
+    cat > "$FINALIZE_SCRIPT" << 'FINALIZEEOF'
+{{EMBED:scripts/recovery-finalize/seafile-recovery-finalize.sh}}
+FINALIZEEOF
+    chmod +x "$FINALIZE_SCRIPT"
+  fi
+  cat > "$FINALIZE_SERVICE" << SERVICEOF
+[Unit]
+Description=Seafile Post-Deploy Finalize — waits for Portainer stack deploy, then applies config
+After=network-online.target docker.service
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/seafile/seafile-recovery-finalize.sh
+RemainAfterExit=yes
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+SERVICEOF
+  systemctl daemon-reload
+  systemctl enable seafile-recovery-finalize.service
+  systemctl start seafile-recovery-finalize.service
+  info "Post-deploy finalizer started — waiting for Portainer stack deployment."
+  info "Follow progress: journalctl -u seafile-recovery-finalize -f"
 else
   mkdir -p /opt/seafile
   COMPOSE_FILE="/opt/seafile/docker-compose.yml"
@@ -1371,15 +1453,52 @@ fi
 
   # ── Install complete message ──────────────────────────────────────────────
   if [[ "${PORTAINER_MANAGED:-false}" == "true" ]]; then
+    _host_ip=$(hostname -I 2>/dev/null | awk '{print $1}')
+    _git_port="${CONFIG_GIT_PORT:-9418}"
+    _cui_pw=""
+    _cui_pw=$(grep "^CONFIG_UI_PASSWORD=" "$ENV_FILE" 2>/dev/null | cut -d= -f2-)
+
     echo ""
-    echo -e "  ${GREEN}${BOLD}Machine setup complete!${NC}"
+    echo -e "  ${GREEN}${BOLD}  ✓ Machine ready for Portainer deployment!${NC}"
     echo ""
-    echo "  Next steps:"
-    echo "  1. Open your Portainer instance"
-    echo "  2. Deploy the stack in Portainer:"
-    echo "       - Environment → local → Stacks → Add stack"
-    echo "       - Click Deploy the stack"
-    echo "       - See README.md (Portainer-Managed Deployment) for details"
+    echo -e "  ${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo ""
+    echo -e "  ${BOLD}Step 1: Connect Portainer to this machine${NC}"
+    echo ""
+    echo -e "    In Portainer: ${DIM}Environments → Add Environment → Agent${NC}"
+    echo -e "    Agent URL:    ${BOLD}${_host_ip}:9001${NC}"
+    echo ""
+    echo -e "  ${BOLD}Step 2: Create the Seafile stack${NC}"
+    echo ""
+    echo -e "    In Portainer: ${DIM}Stacks → Add Stack${NC}"
+    echo -e "    Name:           ${BOLD}seafile${NC}"
+    echo -e "    Build method:   ${BOLD}Repository${NC}"
+    echo -e "    Repository URL: ${BOLD}http://${_host_ip}:${_git_port}/${NC}"
+    echo -e "    Compose path:   ${BOLD}docker-compose.yml${NC}"
+    echo ""
+    echo -e "    ${DIM}Enable GitOps updates, enable Webhook, then${NC}"
+    echo -e "    ${DIM}copy the webhook URL before clicking Deploy.${NC}"
+    echo ""
+    echo -e "  ${BOLD}Step 3: Set the webhook URL${NC}"
+    echo ""
+    echo -e "    Open the web configuration panel and paste"
+    echo -e "    the Portainer webhook URL into Settings."
+    echo ""
+    echo -e "    ${BOLD}Web panel:${NC}  ${BOLD}http://${_host_ip}:9443${NC}"
+    if [[ -n "$_cui_pw" ]]; then
+      echo -e "    ${DIM}Password:   ${_cui_pw}${NC}"
+    fi
+    echo ""
+    echo -e "  ${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo ""
+    echo -e "  ${DIM}After you deploy the stack in Portainer, this machine${NC}"
+    echo -e "  ${DIM}will automatically detect the running containers and${NC}"
+    echo -e "  ${DIM}apply your .env configuration. Follow progress with:${NC}"
+    echo -e "    ${BOLD}journalctl -u seafile-recovery-finalize -f${NC}"
+    echo ""
+    echo -e "  ${DIM}Once that completes, all management is browser-based:${NC}"
+    echo -e "    ${DIM}Config + operations → Web panel (http://${_host_ip}:9443)${NC}"
+    echo -e "    ${DIM}Containers + logs   → Portainer${NC}"
     echo ""
   else
     echo ""

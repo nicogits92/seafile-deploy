@@ -158,23 +158,77 @@ def get_container_status():
 _apply_lock = threading.Lock()
 _apply_status = {'running': False, 'last_result': None, 'last_time': None}
 
+# Operations runner — shared state for background operations
+_ops_status = {}
+
+
+def _notify_portainer():
+    """Ping Portainer stack webhook to trigger a redeploy."""
+    env = load_env()
+    webhook = env.get('PORTAINER_STACK_WEBHOOK', '')
+    if not webhook:
+        return 'no_webhook'
+    try:
+        import urllib.request
+        req = urllib.request.Request(webhook, method='POST', data=b'')
+        urllib.request.urlopen(req, timeout=15)
+        return 'ok'
+    except Exception as e:
+        return f'error: {e}'
+
 
 def apply_config():
     """Run config-fixes in background thread."""
     if _apply_status['running']:
         return False
+    env = load_env()
+    portainer_managed = env.get('PORTAINER_MANAGED', 'false') == 'true'
+
     def _run():
         _apply_status['running'] = True
         try:
-            result = subprocess.run(
-                ['bash', '/opt/seafile-config-fixes.sh', '--yes'],
-                capture_output=True, text=True, timeout=300
-            )
-            _apply_status['last_result'] = 'success' if result.returncode == 0 else 'error'
+            # In Portainer mode: write config files but skip restart
+            # Then ping Portainer to handle the lifecycle
+            cmd = ['bash', '/opt/seafile-config-fixes.sh', '--yes']
+            if portainer_managed:
+                cmd.append('--no-restart')
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+            if result.returncode == 0:
+                if portainer_managed:
+                    pw = _notify_portainer()
+                    _apply_status['last_result'] = f'success (portainer: {pw})'
+                else:
+                    _apply_status['last_result'] = 'success'
+            else:
+                _apply_status['last_result'] = 'error'
         except Exception as e:
             _apply_status['last_result'] = f'error: {e}'
         _apply_status['last_time'] = time.strftime('%Y-%m-%d %H:%M:%S')
         _apply_status['running'] = False
+    threading.Thread(target=_run, daemon=True).start()
+    return True
+
+
+def run_operation(op_name, cmd, timeout=600):
+    """Run an operation (update, gc, backup, apt) in background."""
+    key = op_name
+    if key in _ops_status and _ops_status[key].get('running'):
+        return False
+    _ops_status[key] = {'running': True, 'result': None, 'time': None, 'log': ''}
+
+    def _run():
+        try:
+            result = subprocess.run(
+                cmd, capture_output=True, text=True, timeout=timeout
+            )
+            _ops_status[key]['log'] = (result.stdout or '') + (result.stderr or '')
+            _ops_status[key]['result'] = 'success' if result.returncode == 0 else 'error'
+        except subprocess.TimeoutExpired:
+            _ops_status[key]['result'] = 'timeout'
+        except Exception as e:
+            _ops_status[key]['result'] = f'error: {e}'
+        _ops_status[key]['time'] = time.strftime('%Y-%m-%d %H:%M:%S')
+        _ops_status[key]['running'] = False
     threading.Thread(target=_run, daemon=True).start()
     return True
 
@@ -298,6 +352,8 @@ class ConfigHandler(http.server.BaseHTTPRequestHandler):
                 'backup': cron_to_human(env.get('BACKUP_SCHEDULE', '0 2 * * *')),
                 'gc': cron_to_human(env.get('GC_SCHEDULE', '0 3 * * 0')),
             })
+        elif self.path == '/api/operations':
+            self._json_response(_ops_status)
         else:
             self.send_error(404)
 
@@ -350,6 +406,29 @@ class ConfigHandler(http.server.BaseHTTPRequestHandler):
                 self._json_response({'status': 'started'})
             else:
                 self._json_response({'status': 'already_running'}, 409)
+
+        elif self.path == '/api/operations':
+            try:
+                data = json.loads(body)
+                op = data.get('operation', '')
+                env = load_env()
+                ops_map = {
+                    'update': ['bash', '/opt/update.sh', '--yes'],
+                    'gc': ['docker', 'exec', 'seafile', '/scripts/gc.sh'] +
+                          (['-r'] if env.get('GC_REMOVE_DELETED', 'true') == 'true' else []),
+                    'backup': ['bash', '/opt/seafile-backup.sh'],
+                    'apt': ['bash', '-c', 'apt-get update -qq && apt-get upgrade -y -qq'],
+                }
+                if op not in ops_map:
+                    self._json_response({'error': f'Unknown operation: {op}'}, 400)
+                    return
+                if run_operation(op, ops_map[op]):
+                    self._json_response({'status': 'started', 'operation': op})
+                else:
+                    self._json_response({'status': 'already_running', 'operation': op}, 409)
+            except json.JSONDecodeError:
+                self._json_response({'error': 'Invalid JSON'}, 400)
+
         else:
             self.send_error(404)
 

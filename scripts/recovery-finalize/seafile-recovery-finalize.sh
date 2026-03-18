@@ -157,6 +157,8 @@ if [[ "${_RESTORE_DB}" == "true" && "${PORTAINER_MANAGED,,}" != "true" ]]; then
     if [[ -n "$LATEST" ]]; then
       SNAP_DATE=$(basename "$LATEST" | grep -oP '\d{8}_\d{6}' || echo "unknown date")
       info "  Restoring ${db} from snapshot ${SNAP_DATE}..."
+      docker exec -i -e MYSQL_PWD="${INIT_SEAFILE_MYSQL_ROOT_PASSWORD}" seafile-db \
+        mysql -u root -e "CREATE DATABASE IF NOT EXISTS \`${db}\` CHARACTER SET utf8mb4;" 2>/dev/null || true
       gunzip -c "$LATEST" | docker exec -i -e MYSQL_PWD="${INIT_SEAFILE_MYSQL_ROOT_PASSWORD}" seafile-db \
         mysql -u root "$db" \
         && info "  ✓ ${db} restored" \
@@ -201,6 +203,8 @@ for db in "\${SEAFILE_MYSQL_DB_CCNET_DB_NAME:-ccnet_db}" \
   LATEST=\$(ls -t "\${DB_BACKUP_DIR}/\${db}_"*.sql.gz 2>/dev/null | head -1 || true)
   if [[ -n "\$LATEST" ]]; then
     echo "Restoring \${db} from \$(basename \$LATEST)..."
+    docker exec -i -e MYSQL_PWD="\${INIT_SEAFILE_MYSQL_ROOT_PASSWORD}" seafile-db \
+      mysql -u root -e "CREATE DATABASE IF NOT EXISTS \\\`\${db}\\\` CHARACTER SET utf8mb4;" 2>/dev/null || true
     gunzip -c "\$LATEST" | docker exec -i -e MYSQL_PWD="\${INIT_SEAFILE_MYSQL_ROOT_PASSWORD}" seafile-db \
       mysql -u root "\${db}" \
       && echo "  ✓ \${db} restored" || echo "  ✗ Failed to restore \${db}"

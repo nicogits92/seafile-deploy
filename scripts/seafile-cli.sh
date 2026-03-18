@@ -316,6 +316,12 @@ cmd_logs() {
 # --- Command: restart --------------------------------------------------------
 cmd_restart() {
   local target="${1:-}"
+  if [[ "${PORTAINER_MANAGED:-false}" == "true" ]]; then
+    warn "This stack is managed by Portainer."
+    warn "Restarting containers directly may be reverted by Portainer."
+    warn "Use the Portainer UI to restart, or proceed with caution."
+    echo ""
+  fi
   if [[ -z "$target" ]]; then
     pick_container "Which container to restart?" "true" || return 0
     target="$PICKED"
