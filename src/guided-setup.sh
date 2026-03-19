@@ -52,6 +52,7 @@ WIZ_ADMIN_EMAIL=""
 WIZ_DB_HOST=""
 WIZ_DB_USER=""
 WIZ_DB_PASSWORD=""
+WIZ_DB_ROOT_PASSWORD=""
 
 # Feature-specific values (populated if feature enabled)
 WIZ_SMTP_HOST=""
@@ -792,6 +793,12 @@ wizard_collect_external_db() {
     _wiz_input WIZ_DB_USER "Database user" "" "seafile" "false"
     WIZ_DB_USER="${WIZ_DB_USER:-seafile}"
     _wiz_password WIZ_DB_PASSWORD "Database password" "true"
+
+    echo ""
+    echo -e "  ${DIM}The MySQL/MariaDB root password is required for Seafile's${NC}"
+    echo -e "  ${DIM}initial setup to create databases and grant permissions.${NC}"
+    echo ""
+    _wiz_password WIZ_DB_ROOT_PASSWORD "MySQL root password" "true"
   fi
 }
 
@@ -1008,6 +1015,7 @@ print(re.sub(r'^' + re.escape(key) + r'=.*$', lambda m: key + '=' + val, content
     _set_val "SEAFILE_MYSQL_DB_HOST" "$WIZ_DB_HOST"
     _set_val "SEAFILE_MYSQL_DB_USER" "$WIZ_DB_USER"
     _set_val "SEAFILE_MYSQL_DB_PASSWORD" "$WIZ_DB_PASSWORD"
+    _set_val "INIT_SEAFILE_MYSQL_ROOT_PASSWORD" "$WIZ_DB_ROOT_PASSWORD"
   fi
 
   # Proxy

@@ -626,23 +626,63 @@ _collect_ssh_source() {
 
   export MIGRATE_SSH_HOST MIGRATE_SSH_USER MIGRATE_SSH_PORT
 
+  # Ensure an SSH key exists
+  if [[ ! -f ~/.ssh/id_ed25519 && ! -f ~/.ssh/id_rsa ]]; then
+    echo ""
+    echo -e "  ${DIM}No SSH key found — generating one...${NC}"
+    ssh-keygen -t ed25519 -N "" -f ~/.ssh/id_ed25519 -q
+    echo -e "  ${GREEN}✓${NC} SSH key generated"
+  fi
+
   # Test connection
   echo ""
   echo -e "  ${DIM}Testing SSH connection...${NC}"
-  if ssh -o ConnectTimeout=10 -o BatchMode=yes -p "$MIGRATE_SSH_PORT" \
-      "${MIGRATE_SSH_USER}@${MIGRATE_SSH_HOST}" "echo ok" &>/dev/null; then
+  if ssh -o ConnectTimeout=10 -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
+      -p "$MIGRATE_SSH_PORT" "${MIGRATE_SSH_USER}@${MIGRATE_SSH_HOST}" "echo ok" &>/dev/null; then
     echo -e "  ${GREEN}✓${NC} Connected to ${MIGRATE_SSH_USER}@${MIGRATE_SSH_HOST}"
   else
-    echo -e "  ${RED}✗${NC} Cannot connect. Ensure SSH key auth is configured:"
-    echo -e "    ${DIM}ssh-copy-id -p ${MIGRATE_SSH_PORT} ${MIGRATE_SSH_USER}@${MIGRATE_SSH_HOST}${NC}"
     echo ""
-    echo -ne "  ${DIM}Try again? [Y/n]:${NC} "
-    read -r _retry
-    if [[ "${_retry,,}" != "n" ]]; then
-      _collect_ssh_source
-      return $?
+    echo -e "  ${DIM}SSH key auth not set up yet. This will copy your public key${NC}"
+    echo -e "  ${DIM}to the remote server. You will be asked for the remote${NC}"
+    echo -e "  ${DIM}password once — after that, key auth will be used.${NC}"
+    echo ""
+    echo -ne "  ${BOLD}Copy SSH key to ${MIGRATE_SSH_USER}@${MIGRATE_SSH_HOST}? [Y/n]:${NC} "
+    read -r _do_copy
+    if [[ "${_do_copy,,}" != "n" ]]; then
+      ssh-copy-id -o StrictHostKeyChecking=accept-new \
+        -p "$MIGRATE_SSH_PORT" "${MIGRATE_SSH_USER}@${MIGRATE_SSH_HOST}"
+      echo ""
+      # Retry connection
+      echo -e "  ${DIM}Verifying connection...${NC}"
+      if ssh -o ConnectTimeout=10 -o BatchMode=yes \
+          -p "$MIGRATE_SSH_PORT" "${MIGRATE_SSH_USER}@${MIGRATE_SSH_HOST}" "echo ok" &>/dev/null; then
+        echo -e "  ${GREEN}✓${NC} Connected to ${MIGRATE_SSH_USER}@${MIGRATE_SSH_HOST}"
+      else
+        echo -e "  ${RED}✗${NC} Still cannot connect. Check that:"
+        echo -e "    ${DIM}• The password was correct${NC}"
+        echo -e "    ${DIM}• PermitRootLogin is set to 'yes' in /etc/ssh/sshd_config on the remote${NC}"
+        echo -e "    ${DIM}• SSH is running on the remote (systemctl status ssh)${NC}"
+        echo ""
+        echo -ne "  ${DIM}Try again? [Y/n]:${NC} "
+        read -r _retry
+        if [[ "${_retry,,}" != "n" ]]; then
+          _collect_ssh_source
+          return $?
+        fi
+        return 1
+      fi
+    else
+      echo -e "  ${DIM}Set up SSH key auth manually and try again:${NC}"
+      echo -e "    ${DIM}ssh-copy-id -p ${MIGRATE_SSH_PORT} ${MIGRATE_SSH_USER}@${MIGRATE_SSH_HOST}${NC}"
+      echo ""
+      echo -ne "  ${DIM}Try again? [Y/n]:${NC} "
+      read -r _retry
+      if [[ "${_retry,,}" != "n" ]]; then
+        _collect_ssh_source
+        return $?
+      fi
+      return 1
     fi
-    return 1
   fi
 
   # Auto-detect source Seafile
@@ -668,15 +708,35 @@ _detect_remote_seafile() {
     export MIGRATE_REMOTE_DATA_DIR="$_docker_volume"
     export MIGRATE_REMOTE_CONF_DIR="${_docker_volume}/seafile/conf"
 
-    # Get database info
-    local _db_host=$($_ssh "docker exec seafile grep -oP 'host\s*=\s*\K.*' /opt/seafile/conf/seafile.conf 2>/dev/null" || true)
-    if [[ "$_db_host" == "seafile-db" || "$_db_host" == "127.0.0.1" || -z "$_db_host" ]]; then
+    # Get database info — try docker exec first, fall back to reading config on disk
+    # (docker exec fails when containers are stopped)
+    local _db_host=""
+    _db_host=$($_ssh "docker exec seafile grep -oP 'host\s*=\s*\K.*' /opt/seafile/conf/seafile.conf 2>/dev/null" || true)
+    if [[ -z "$_db_host" ]]; then
+      # Containers may be stopped — read from the mounted volume on disk
+      _db_host=$($_ssh "grep -oP 'host\s*=\s*\K.*' '${_docker_volume}/seafile/conf/seafile.conf' 2>/dev/null | head -1" || true)
+      [[ -n "$_db_host" ]] && echo -e "  ${DIM}(read config from filesystem — containers may be stopped)${NC}"
+    fi
+    if [[ "$_db_host" == "seafile-db" || "$_db_host" == "127.0.0.1" ]]; then
       export MIGRATE_REMOTE_DB="docker"
       echo -e "  ${GREEN}✓${NC} Internal database (Docker container)"
-    else
+    elif [[ -n "$_db_host" ]]; then
       export MIGRATE_REMOTE_DB="external"
       export MIGRATE_REMOTE_DB_HOST="$_db_host"
       echo -e "  ${GREEN}✓${NC} External database at ${_db_host}"
+    else
+      # Can't determine — ask the user
+      echo -e "  ${YELLOW}!${NC} Could not detect database configuration."
+      echo -ne "  ${BOLD}Is the source database a Docker container or external? [docker/external]:${NC} "
+      read -r _db_type_answer
+      if [[ "${_db_type_answer,,}" == "external" ]]; then
+        echo -ne "  ${BOLD}External database host${NC} (IP or hostname): "
+        read -r _db_host_answer
+        export MIGRATE_REMOTE_DB="external"
+        export MIGRATE_REMOTE_DB_HOST="$_db_host_answer"
+      else
+        export MIGRATE_REMOTE_DB="docker"
+      fi
     fi
   else
     # Try manual install paths
@@ -714,8 +774,13 @@ _detect_remote_seafile() {
   # Extract remote DB credentials for dump
   local _remote_db_user="" _remote_db_pass=""
   if [[ "$MIGRATE_SOURCE_TYPE" == "docker" ]]; then
+    # Try docker exec first, fall back to filesystem if containers are stopped
     _remote_db_user=$($_ssh "docker exec seafile grep -oP 'user\s*=\s*\K.*' /opt/seafile/conf/seafile.conf 2>/dev/null | head -1" || true)
     _remote_db_pass=$($_ssh "docker exec seafile grep -oP 'password\s*=\s*\K.*' /opt/seafile/conf/seafile.conf 2>/dev/null | head -1" || true)
+    if [[ -z "$_remote_db_pass" && -n "${MIGRATE_REMOTE_CONF_DIR:-}" ]]; then
+      _remote_db_user=$($_ssh "grep -oP 'user\s*=\s*\K.*' '${MIGRATE_REMOTE_CONF_DIR}/seafile.conf' 2>/dev/null | head -1" || true)
+      _remote_db_pass=$($_ssh "grep -oP 'password\s*=\s*\K.*' '${MIGRATE_REMOTE_CONF_DIR}/seafile.conf' 2>/dev/null | head -1" || true)
+    fi
   else
     _remote_db_user=$($_ssh "grep -oP 'user\s*=\s*\K.*' ${MIGRATE_REMOTE_CONF_DIR}/seafile.conf 2>/dev/null | head -1" || true)
     _remote_db_pass=$($_ssh "grep -oP 'password\s*=\s*\K.*' ${MIGRATE_REMOTE_CONF_DIR}/seafile.conf 2>/dev/null | head -1" || true)
