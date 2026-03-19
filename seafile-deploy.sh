@@ -18317,6 +18317,14 @@ COMPOSEEOF
       info "Stage 3: Copying file data from remote server (this may take a while)..."
       mkdir -p "${_SF_VOL}/seafile-data"
 
+      # Ensure rsync is available on the remote server
+      if ! $_SSH_CMD "command -v rsync" &>/dev/null; then
+        info "Installing rsync on remote server..."
+        $_SSH_CMD "apt-get update -qq && apt-get install -y -qq rsync" 2>/dev/null \
+          || $_SSH_CMD "yum install -y rsync" 2>/dev/null \
+          || warn "Could not install rsync on remote — file transfer may fail."
+      fi
+
       # Determine remote seafile-data path — try common layouts
       _remote_data_path=""
       for _try_data in \
