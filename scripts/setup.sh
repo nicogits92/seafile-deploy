@@ -1699,7 +1699,7 @@ heading "Installing required packages"
 info "Installing required packages..."
 apt-get install -y -qq \
   curl wget gnupg lsb-release ca-certificates apt-transport-https \
-  openssl python3 jq bc git \
+  openssl python3 jq bc git rsync \
   inotify-tools fail2ban unattended-upgrades
 
 # Storage-type-specific package
@@ -11815,22 +11815,18 @@ COMPOSEEOF
       _REMOTE_DB_HOST="${MIGRATE_REMOTE_DB_HOST:-}"
 
       # ── Same-database detection ─────────────────────────────────────────────
-      # If the new deployment uses an external DB and the source also uses an
-      # external DB at the same host, the dump/import is redundant and risky.
-      # Detect this and skip the DB migration stages.
+      # If the new deployment uses an external DB, the source might be using
+      # the same database. Detect this and skip the DB migration stages.
+      # Auto-detection can be wrong (e.g. old Docker instance pointing to an
+      # external DB shows as "internal"), so always ask when unsure.
       # ──────────────────────────────────────────────────────────────────────
       _SKIP_DB_MIGRATE=false
       if [[ "${DB_INTERNAL:-true}" == "false" ]]; then
         _new_db_host="${SEAFILE_MYSQL_DB_HOST:-}"
         _src_db_host="${_REMOTE_DB_HOST:-}"
 
-        # For Docker source, resolve the actual DB host from the remote config
-        if [[ "$_REMOTE_DB_TYPE" == "docker" ]]; then
-          # Docker source uses an internal container DB — different from any external host
-          _src_db_host="__docker_internal__"
-        fi
-
-        if [[ -n "$_new_db_host" && -n "$_src_db_host" && "$_new_db_host" == "$_src_db_host" ]]; then
+        # If source is external and hosts match exactly → auto-skip
+        if [[ "$_REMOTE_DB_TYPE" == "external" && -n "$_new_db_host" && -n "$_src_db_host" && "$_new_db_host" == "$_src_db_host" ]]; then
           echo ""
           echo -e "  ${GREEN}${BOLD}Same database detected${NC}"
           echo -e "  ${DIM}Your new deployment uses external database at ${BOLD}${_new_db_host}${NC}"
@@ -11839,12 +11835,19 @@ COMPOSEEOF
           echo -e "  ${GREEN}✓${NC} Skipping database dump/import — your existing tables will be used as-is."
           echo ""
           _SKIP_DB_MIGRATE=true
-        elif [[ -n "$_new_db_host" && "$_REMOTE_DB_TYPE" != "docker" ]]; then
-          # Can't auto-detect (different hostnames, or hostname vs IP)
+        else
+          # Can't auto-detect — ask the user. This covers:
+          # - Source detected as Docker but actually using an external DB
+          # - Different hostnames/IPs for the same server
+          # - Any other ambiguous case
           echo ""
-          echo -e "  ${BOLD}Your new deployment uses external database at ${_new_db_host}.${NC}"
+          echo -e "  ${BOLD}Your new deployment uses an external database at ${_new_db_host}.${NC}"
           echo ""
-          echo -ne "  Is this the same database your old Seafile instance uses? [y/N]: "
+          echo -e "  ${DIM}Does your new database already contain the Seafile tables${NC}"
+          echo -e "  ${DIM}from your old instance? (e.g. you are reusing the same${NC}"
+          echo -e "  ${DIM}database server and have not wiped the tables)${NC}"
+          echo ""
+          echo -ne "  ${BOLD}Reuse existing database? [y/N]:${NC} "
           read -r _same_db_answer
           if [[ "${_same_db_answer,,}" == "y" ]]; then
             echo ""
@@ -11931,17 +11934,37 @@ COMPOSEEOF
       info "Stage 3: Copying file data from remote server (this may take a while)..."
       mkdir -p "${_SF_VOL}/seafile-data"
 
-      # Determine remote seafile-data path
-      _remote_data_path="${_REMOTE_DATA}/seafile-data/"
-      if $_SSH_CMD "test -d '${_remote_data_path}'" 2>/dev/null; then
+      # Determine remote seafile-data path — try common layouts
+      _remote_data_path=""
+      for _try_data in \
+          "${_REMOTE_DATA}/seafile-data" \
+          "${_REMOTE_DATA}/seafile/seafile-data" \
+          "${_REMOTE_DATA}/data/seafile-data"; do
+        if $_SSH_CMD "test -d '${_try_data}'" 2>/dev/null; then
+          _remote_data_path="${_try_data}/"
+          info "Found seafile-data at ${_try_data}"
+          break
+        fi
+      done
+
+      if [[ -z "$_remote_data_path" ]]; then
+        # Last resort — search for it
+        _remote_data_path=$($_SSH_CMD "find '${_REMOTE_DATA}' -maxdepth 3 -type d -name 'seafile-data' 2>/dev/null | head -1" || true)
+        if [[ -n "$_remote_data_path" ]]; then
+          info "Found seafile-data at ${_remote_data_path}"
+          _remote_data_path="${_remote_data_path}/"
+        fi
+      fi
+
+      if [[ -n "$_remote_data_path" ]]; then
         rsync -avz --info=progress2 \
           -e "ssh -o ConnectTimeout=30 -o ServerAliveInterval=60 -p ${MIGRATE_SSH_PORT:-22}" \
           "${MIGRATE_SSH_USER:-root}@${MIGRATE_SSH_HOST}:${_remote_data_path}" \
           "${_SF_VOL}/seafile-data/"
         info "File data transfer complete."
       else
-        warn "Remote seafile-data directory not found at ${_remote_data_path}."
-        warn "File storage will be empty."
+        warn "Remote seafile-data directory not found under ${_REMOTE_DATA}."
+        warn "File storage will be empty. Check the source data path manually."
       fi
 
       # Stage 4: Copy avatars from remote

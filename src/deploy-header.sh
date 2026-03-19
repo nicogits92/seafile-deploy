@@ -804,5 +804,31 @@ _detect_remote_seafile() {
   echo -e "  ${BOLD}Source summary:${NC}"
   [[ -n "$_version" ]] && echo -e "    Seafile version:  ${BOLD}${_version}${NC}"
   [[ -n "$_data_size" ]] && echo -e "    Data size:        ${BOLD}${_data_size}${NC}"
+  echo -e "    Source type:      ${BOLD}${MIGRATE_SOURCE_TYPE:-unknown}${NC}"
+  echo -e "    Data directory:   ${BOLD}${MIGRATE_REMOTE_DATA_DIR:-not detected}${NC}"
+  echo -e "    Config directory: ${BOLD}${MIGRATE_REMOTE_CONF_DIR:-not detected}${NC}"
+  echo -e "    Database type:    ${BOLD}${MIGRATE_REMOTE_DB:-unknown}${NC}"
+  [[ "${MIGRATE_REMOTE_DB:-}" == "external" ]] && \
+    echo -e "    Database host:    ${BOLD}${MIGRATE_REMOTE_DB_HOST:-unknown}${NC}"
   echo ""
+
+  # Let user verify and correct paths
+  echo -ne "  ${DIM}Do these paths look correct? [Y/n]:${NC} "
+  read -r _paths_ok
+  if [[ "${_paths_ok,,}" == "n" ]]; then
+    echo ""
+    echo -ne "  ${BOLD}Remote data directory${NC} [${MIGRATE_REMOTE_DATA_DIR:-}]: "
+    read -r _corrected_data
+    [[ -n "$_corrected_data" ]] && export MIGRATE_REMOTE_DATA_DIR="$_corrected_data"
+
+    echo -ne "  ${BOLD}Remote config directory${NC} [${MIGRATE_REMOTE_CONF_DIR:-}]: "
+    read -r _corrected_conf
+    [[ -n "$_corrected_conf" ]] && export MIGRATE_REMOTE_CONF_DIR="$_corrected_conf"
+
+    echo ""
+    echo -e "  ${GREEN}✓${NC} Paths updated"
+    echo -e "    Data directory:   ${BOLD}${MIGRATE_REMOTE_DATA_DIR}${NC}"
+    echo -e "    Config directory: ${BOLD}${MIGRATE_REMOTE_CONF_DIR}${NC}"
+    echo ""
+  fi
 }
