@@ -92,13 +92,8 @@ Disaster recovery is built in from day one. Your file data lives on network stor
 Want to try Seafile without making any infrastructure decisions? Select **Just give me Seafile** when you run the deploy script.
 
 ```bash
-chmod 600 ~/.github_token
-TOKEN=$(cat ~/.github_token)
-wget -O seafile-deploy.sh \
-  --header="Authorization: token $TOKEN" \
-  --header="Accept: application/vnd.github.raw+json" \
-  "https://api.github.com/repos/nicogits92/seafile-deploy/contents/seafile-deploy.sh?ref=main" \
-  && chmod +x seafile-deploy.sh && bash seafile-deploy.sh
+wget -qO /root/seafile-deploy.sh https://raw.githubusercontent.com/nicogits92/seafile-deploy/main/seafile-deploy.sh \
+  && chmod +x /root/seafile-deploy.sh && bash /root/seafile-deploy.sh
 ```
 
 Select **1 — Fresh Install**, then choose **Just give me Seafile**.
@@ -246,8 +241,8 @@ Caddy (bundled container, port 7080 by default)
 | `seafile-config-fixes.sh` | No | `/opt/seafile-config-fixes.sh` | Writes Seafile config files from `.env` values, sets up cron jobs |
 | `env-sync/seafile-env-sync.sh` | No | `/opt/seafile/seafile-env-sync.sh` | Mirrors `.env` and `.secrets` to network share, commits to config history, triggers Portainer webhook |
 | `env-sync/seafile-env-sync.service` | No | `/etc/systemd/system/` | Systemd unit for env sync (inotify watcher) |
-| `config-git-server/seafile-config-server.sh` | No | `/opt/seafile/seafile-config-server.sh` | Local git HTTP server for Portainer integration |
-| `config-git-server/seafile-config-server.service` | No | `/etc/systemd/system/` | Systemd unit for config git server (active when `PORTAINER_MANAGED=true`) |
+| `config-git-server/seafile-config-server.sh` | No | `/opt/seafile/seafile-config-server.sh` | Local git HTTP server for Portainer integration (starts automatically in Portainer deployment mode) |
+| `config-git-server/seafile-config-server.service` | No | `/etc/systemd/system/` | Systemd unit for config git server |
 | `storage-sync/seafile-storage-sync.sh` | No | `/opt/seafile/seafile-storage-sync.sh` | Background rsync for storage migration |
 | `storage-sync/seafile-storage-sync.service` | No | `/etc/systemd/system/` | Systemd unit for storage migration sync |
 | `recovery-finalize/seafile-recovery-finalize.sh` | No | `/opt/seafile/seafile-recovery-finalize.sh` | Waits for containers, restores DB, runs config fixes after recovery |
@@ -284,22 +279,25 @@ Work through these six decisions before touching any files. Everything else is c
 
 ### 1. Deployment mode
 
-| | **Minimal** | **Standard** (default) | **Git-managed** |
-|---|---|---|---|
-| **Best for** | Trying Seafile, personal use | Production homelabs | Remote management, teams |
-| **Storage** | Local disk | Network share (NFS, SMB, etc.) | Network share |
-| **Disaster recovery** | No | Yes | Yes |
-| **SSL** | Automatic via Let's Encrypt (internet mode) | Via your reverse proxy | Via your reverse proxy |
-| **Config management** | Local CLI | Local CLI | Git repo (no SSH needed for config) |
-| **Portainer support** | Via toggle after setup | Via toggle after setup | Via toggle after setup |
+| | **Minimal** | **Standard** (default) | **Git-managed** | **Portainer** |
+|---|---|---|---|---|
+| **Best for** | Trying Seafile, personal use | Production homelabs | Remote management, teams | Portainer-managed environments |
+| **Storage** | Local disk | Network share (NFS, SMB, etc.) | Network share | Network share |
+| **Disaster recovery** | No | Yes | Yes | Yes |
+| **SSL** | Automatic via Let's Encrypt (internet mode) | Via your reverse proxy | Via your reverse proxy | Via your reverse proxy |
+| **Config management** | Web panel or CLI | Web panel or CLI | Git repo (no SSH needed) | Web panel (no SSH needed) |
+| **Stack lifecycle** | Host-managed (docker compose) | Host-managed | Host-managed + GitOps | Portainer-managed |
+| **Portainer monitoring** | Yes (agent installed) | Yes (agent installed) | Yes (agent installed) | Yes (full stack management) |
 
-**Minimal mode** gets Seafile running with the fewest possible decisions. Select **Just give me Seafile** at the deployment mode prompt. It uses local storage and a bundled database. You can add network storage, backups, SSL, email, LDAP, and any other feature later by running `seafile config`. See [Quick Start](#quick-start) for the walkthrough.
+**Minimal mode** gets Seafile running with the fewest possible decisions. Select **Just give me Seafile** at the deployment mode prompt. It uses local storage and a bundled database. You can add network storage, backups, SSL, email, LDAP, and any other feature later by running `seafile config` or using the web configuration panel. See [Quick Start](#quick-start) for the walkthrough.
 
-**Standard mode** is the default for production use. Docker Compose reads `/opt/seafile/.env` directly. You manage configuration via `seafile config` on the host. Version history is tracked automatically via a local git repo.
+**Standard mode** is the default for production use. Docker Compose reads `/opt/seafile/.env` directly. You manage configuration via the web panel or `seafile config` on the host. Version history is tracked automatically via a local git repo.
 
 **Git-managed mode** stores your `.env` in an external git repository (GitHub, Gitea, GitLab, etc.). Push changes to the repo and they are applied to the server automatically via webhook. This eliminates the need to SSH into the host for routine configuration changes. Ideal for managing multiple Seafile instances from one repo.
 
-**Portainer integration** is available in all modes as an optional toggle. The Portainer Agent is always installed for container monitoring. Set `PORTAINER_MANAGED=true` (via `seafile config portainer`) to have Portainer manage the stack lifecycle. A built-in config git server keeps Portainer automatically in sync with your `.env`. See [Portainer Integration](#portainer-integration) under Alternate Deployment Methods.
+**Portainer mode** is for users who already manage their Docker environment through Portainer and want Seafile to fit into that workflow. The installer sets up the machine (packages, storage, services) but does not start containers — you deploy the stack from your Portainer dashboard. Configuration is managed through the web panel, which automatically syncs changes to Portainer via webhook. **This is an install-time decision** — Portainer can only manage stacks it deployed, so you cannot switch to Portainer-managed mode after a standard install. See [Portainer Integration](#portainer-integration) for the full setup guide.
+
+> **Portainer Agent** is installed in all deployment modes. In Standard, Git-managed, and Minimal modes, Portainer provides monitoring only (container status, logs, exec shell, resource graphs). In Portainer mode, it additionally manages the stack lifecycle (deploy, redeploy, image pulls).
 
 ### 2. Storage type
 
@@ -705,13 +703,8 @@ Configure an iSCSI target on your NAS/SAN. You will need:
 Download and run the deployment script:
 
 ```bash
-chmod 600 ~/.github_token
-TOKEN=$(cat ~/.github_token)
-wget -O seafile-deploy.sh \
-  --header="Authorization: token $TOKEN" \
-  --header="Accept: application/vnd.github.raw+json" \
-  "https://api.github.com/repos/nicogits92/seafile-deploy/contents/seafile-deploy.sh?ref=main" \
-  && chmod +x seafile-deploy.sh && bash seafile-deploy.sh
+wget -qO /root/seafile-deploy.sh https://raw.githubusercontent.com/nicogits92/seafile-deploy/main/seafile-deploy.sh \
+  && chmod +x /root/seafile-deploy.sh && bash /root/seafile-deploy.sh
 ```
 
 The splash screen appears. Select **1 - Fresh Install** for a new deployment, **2 - Recovery Mode** to restore a lost VM, or **3 - Migrate / Adopt** to import data from an existing Seafile instance.
@@ -728,8 +721,9 @@ If no configuration file exists, the script asks when you want to configure:
 1. **Just give me Seafile** — Minimal setup, two questions, done in minutes. See [Quick Start](#quick-start).
 2. **Standard deployment** — Interactive wizard walks you through every choice (described below)
 3. **Git-managed deployment** — Same as standard, plus manages .env through a git repository
+4. **Portainer deployment** — Machine setup only. You deploy the stack from your Portainer dashboard. Requires an existing Portainer instance.
 
-**Configure later** asks only for your admin email and password, installs with all defaults (local storage, bundled database, no office suite), and shows you the web configuration panel URL when it finishes. Open the panel in your browser to set up storage, email, LDAP, backups, and everything else — no SSH required.
+**Configure later** asks only for your admin email and password, installs with all defaults (local storage, bundled database, no office suite), and shows you the web configuration panel URL when it finishes. Open the panel in your browser to set up storage, email, LDAP, backups, and everything else — no SSH required. Note: this option is not compatible with Portainer-managed deployment (see [Portainer Integration](#portainer-integration) for why).
 
 ### Guided Setup (standard and git-managed deployment)
 
@@ -820,7 +814,7 @@ The installer will offer to generate these before running.
 
 ### Portainer integration
 
-The Portainer Agent is installed in all deployment modes for container monitoring. To have Portainer manage the stack lifecycle (deploy/redeploy), enable `PORTAINER_MANAGED=true` after setup via `seafile config portainer`. See [Portainer Integration](#portainer-integration) under Alternate Deployment Methods.
+The Portainer Agent is installed in all deployment modes for container monitoring. To have Portainer manage the stack lifecycle (deploy/redeploy), choose **Portainer deployment** (option 4) during the guided setup. This is an install-time decision — Portainer can only manage stacks it deployed itself. See [Portainer Integration](#portainer-integration) for the complete setup flow.
 
 ### Two copies of .env
 
@@ -984,9 +978,9 @@ This deployment uses several systemd services for background tasks. All are inst
 |---|---|---|
 | `seafile-env-sync` | Mirrors `.env` and `.secrets` to network share, commits config history, triggers Portainer webhook | Always (inotify watcher) |
 | `seafile-config-ui` | Web configuration panel — browser-based .env editor on port 9443 | Always |
-| `seafile-config-server` | Local git HTTP server for Portainer stack sync | Only when `PORTAINER_MANAGED=true` |
+| `seafile-config-server` | Local git HTTP server for Portainer stack sync | `PORTAINER_MANAGED=true` (starts automatically during Portainer deployment) |
 | `seafile-storage-sync` | Background rsync during storage migration | Only during migration |
-| `seafile-recovery-finalize` | Restores DB and starts stack after recovery | Once after recovery, then disables |
+| `seafile-recovery-finalize` | Waits for containers, applies config after first deploy or recovery | Once after Portainer deployment or recovery, then disables |
 | `seafile-gitops-sync` | Webhook listener for GitOps push events | Only when `GITOPS_INTEGRATION=true` |
 
 **Checking service status:**
@@ -1030,7 +1024,7 @@ seafile <command> [args]
 | `seafile config storage --cutover` | Finalize storage migration and switch to new backend |
 | `seafile config database` | Database configuration -- update settings or migrate between bundled/external |
 | `seafile config proxy` | Reverse proxy configuration -- nginx, caddy, traefik, haproxy |
-| `seafile config portainer` | Enable/disable Portainer stack management, set webhook URL |
+| `seafile config portainer` | View Portainer integration status and set webhook URL (Portainer deployment mode only) |
 | `seafile config show` | Display current configuration summary |
 | `seafile config show --secrets` | Display configuration including secret values |
 | `seafile config edit` | Open `/opt/seafile/.env` directly in `$EDITOR` (fallback: nano) |
@@ -1111,9 +1105,24 @@ The panel covers every setting in `.env`, organized into sections: Server, Stora
 
 The panel is a single Python script (`/opt/seafile/seafile-config-ui.py`) using only the Python standard library — no pip packages, no frameworks, no build step. It serves a single HTML file (`/opt/seafile/config-ui.html`) and exposes a JSON API for reading and writing `.env` sections.
 
-When you click "Save and apply", the backend writes the updated values to `/opt/seafile/.env` and runs `seafile-config-fixes.sh --yes` in a background thread. The existing env-sync service detects the change and handles propagation to the network share, config history, and Portainer (if enabled).
+When you click "Save and apply", the backend writes the updated values to `/opt/seafile/.env` and runs `seafile-config-fixes.sh` in a background thread. In standard mode, config-fixes regenerates config files and restarts containers directly. In Portainer mode, config-fixes writes the files but skips the restart — instead, the panel pings the Portainer stack webhook so Portainer handles the single restart.
+
+The existing env-sync service detects the `.env` change and handles propagation to the network share and config history.
 
 The service runs as `seafile-config-ui.service` under systemd and starts automatically on boot.
+
+### Operations
+
+The Operations tab provides browser-based access to maintenance tasks that would otherwise require SSH:
+
+| Operation | What it does | Equivalent CLI command |
+|-----------|-------------|----------------------|
+| **Server update** | Pull latest images, apply config, restart containers | `seafile update` |
+| **Garbage collection** | Reclaim storage from deleted file blocks | `seafile gc` |
+| **Backup now** | Database dump + file data rsync to backup destination | `seafile backup` |
+| **System packages** | Update Debian packages (apt-get upgrade) | `apt-get update && apt-get upgrade` |
+
+Each operation runs in the background. The panel shows progress and reports the result when complete. Long-running operations (like a large update or GC run) do not block the UI.
 
 ### Security
 
@@ -1344,9 +1353,9 @@ If the VM is lost but your network share data and database are intact, use Recov
 
    That is the only input required. The recovery script mounts the network share, restores `/opt/seafile/.env` and all scripts from the storage backup, completes full machine setup, then installs the `seafile-recovery-finalize` background service. **You can safely close the terminal at this point.**
 
-3. **Native mode (PORTAINER_MANAGED=false):** The recovery finalizer starts `seafile-db` first (if `DB_INTERNAL=true`), restores your databases from the latest nightly snapshot on the share, then brings up the full stack via `docker compose up -d`.
+3. **Standard/Git-managed mode (`PORTAINER_MANAGED=false`):** The recovery finalizer starts `seafile-db` first (if `DB_INTERNAL=true`), restores your databases from the latest nightly snapshot on the share, then brings up the full stack via `docker compose up -d`.
 
-   **Portainer management:** Redeploy the stack in Portainer. A manual DB restore helper is written to `/opt/seafile-db-restore.sh` — run it after `seafile-db` is running but before deploying the rest of the stack. See the on-screen instructions from the recovery script.
+   **Portainer deployment mode:** The recovery finalizer restores databases, then waits for you to redeploy the stack in Portainer. Once Portainer starts the containers, the finalizer detects them, waits for Seafile's init to complete, and runs config-fixes automatically. No manual intervention is needed beyond clicking "Redeploy" in Portainer.
 
 4. The `seafile-recovery-finalize` service handles the rest automatically — waits for all containers to come up, waits for Seafile's init to complete, then runs `seafile-config-fixes.sh`. Follow its progress at any time with:
    ```bash
@@ -1589,33 +1598,45 @@ Collabora releases frequently and does not guarantee backwards-compatible behavi
 
 ### Portainer Integration
 
-Portainer is available in all deployment modes as an optional configuration toggle. The Portainer Agent (installed by default in every mode) provides web-based container monitoring, logs, exec shell, and restart controls. Enabling `PORTAINER_MANAGED=true` additionally has Portainer manage the stack lifecycle — deploy, redeploy, and teardown are handled through the Portainer UI instead of Docker Compose on the host.
+Portainer deployment mode is for users who already manage their Docker environment through Portainer. Seafile appears as a stack in your Portainer dashboard alongside your other services. Portainer handles the stack lifecycle (deploy, redeploy, image pulls), the web configuration panel handles settings, and the Portainer Agent provides monitoring.
 
-Run `seafile config portainer` to enable or disable Portainer management at any time.
+**This is an install-time decision.** Portainer can only manage stacks it deployed itself. If you install Seafile with Standard or Git-managed mode, Portainer can still monitor the containers (logs, exec, restart, resource graphs via the agent) but cannot manage the stack lifecycle. To switch to Portainer-managed mode, you would need to reinstall.
 
-<details>
-<summary>Pros and cons vs host-managed</summary>
+#### How it works
 
-**Portainer management gives you:**
-- Central management of multiple stacks and multiple hosts through one UI
-- Visual container logs, exec shell, resource graphs, and restart controls without SSH
-- Stack-level deploy/rollback through the Portainer UI
+```
+seafile-deploy.sh → guided setup → option 4 (Portainer deployment)
+   │
+   ├── Installs packages, Docker, storage mount, background services
+   ├── Writes docker-compose.yml + .env
+   ├── Starts internal git server (serves compose + env to Portainer)
+   ├── Pre-generates config files
+   ├── Starts recovery-finalize service (waits for containers)
+   └── Does NOT start containers
+   
+User deploys stack from Portainer
+   │
+   ▼
+recovery-finalize detects containers running
+   ├── Waits for Seafile's first-boot init to complete
+   ├── Runs config-fixes (applies .env settings over Seafile's defaults)
+   └── Disables itself
 
-**The tradeoffs:**
-- Portainer pulls its stack definition from a local git server on the VM. This is automatic but adds one more service (`seafile-config-server`) running on the host
-- One more UI to keep open during deployments
-- Automated DB restore during disaster recovery is not supported (startup order can't be controlled). A manual restore helper is provided.
+Day-to-day: user changes settings via web panel
+   │
+   ├── Web panel writes .env
+   ├── Web panel runs config-fixes --no-restart (writes config files)
+   ├── Web panel pings Portainer stack webhook
+   └── Portainer redeploys with updated config (single restart)
+```
 
-If you are only managing Seafile and have no other Docker stacks, host-managed (default) is simpler. If Portainer is already central to how you manage other services, Portainer management keeps everything in one place.
+#### Setup — Step 1: Run the installer
 
-</details>
+Run `seafile-deploy.sh`, select **Configure now**, then **Portainer deployment** (option 4). Walk through the guided wizard (storage, database, proxy, features). The installer sets up the machine but stops short of starting containers.
 
-#### Enabling Portainer management
+The completion message shows the next steps with your actual IP and port filled in.
 
-1. Run `seafile config portainer` and select "Enable"
-2. The CLI will guide you through setting the webhook URL
-
-#### Connecting your Portainer server
+#### Setup — Step 2: Connect Portainer
 
 1. Open your Portainer server (e.g. `https://YOUR_PORTAINER_IP:9443`)
 2. Go to **Environments → Add Environment**
@@ -1623,7 +1644,7 @@ If you are only managing Seafile and have no other Docker stacks, host-managed (
 4. Set **Agent URL** to `YOUR_SEAFILE_VM_IP:9001`
 5. Give it a name (e.g. `seafile`) and click **Connect**
 
-#### Deploying the stack in Portainer
+#### Setup — Step 3: Create the Seafile stack
 
 1. In Portainer, select your **seafile** environment
 2. Go to **Stacks → Add Stack**, name it `seafile`
@@ -1631,45 +1652,78 @@ If you are only managing Seafile and have no other Docker stacks, host-managed (
 4. Set **Repository URL** to `http://YOUR_SEAFILE_VM_IP:9418/`
 5. Set **Compose path** to `docker-compose.yml`
 6. Check **Enable GitOps updates** and enable the **Webhook** toggle
-7. Copy the webhook URL that Portainer shows — you will need it in a moment
+7. Copy the webhook URL that Portainer shows
 8. Click **Deploy the stack**
 
-All containers should reach running status within about 60 seconds.
-
-Now add the webhook URL to your `.env` so changes are pushed to Portainer automatically:
+Containers will start reaching running status within about 60 seconds. Meanwhile, the `recovery-finalize` service on the VM detects the containers, waits for Seafile's init to complete, then applies your `.env` configuration. Follow its progress:
 
 ```bash
-seafile config edit
-# Add: PORTAINER_STACK_WEBHOOK=https://your-portainer:9443/api/stacks/webhooks/...
+journalctl -u seafile-recovery-finalize -f
 ```
 
-Run `seafile update` to apply. From now on, every `.env` change is automatically pushed to Portainer via the local config git server.
+#### Setup — Step 4: Set the webhook URL
+
+Open the web configuration panel and paste the Portainer webhook URL:
+
+```
+http://YOUR_SEAFILE_VM_IP:9443
+```
+
+Navigate to the **Server** section, or use the CLI:
+
+```bash
+seafile config portainer
+```
+
+This URL is how the web panel tells Portainer to redeploy after config changes. Without it, you would need to manually trigger a redeploy in Portainer after each change.
+
+#### Day-to-day management
+
+After setup, everything is browser-based:
+
+| Task | Where |
+|------|-------|
+| Change settings (storage, email, LDAP, features, etc.) | Web configuration panel |
+| Pull image updates, run GC, trigger backups | Web panel → Operations tab |
+| Monitor containers, view logs, exec shell | Portainer |
+| Restart individual containers | Portainer |
+| Redeploy stack (happens automatically on config changes) | Portainer (via webhook) |
+
+You never need to SSH into the server for routine management. The web panel handles configuration and operations, Portainer handles lifecycle and monitoring.
+
+#### How config changes propagate
+
+When you save a change in the web panel:
+
+1. Web panel writes the updated values to `/opt/seafile/.env`
+2. Web panel runs `config-fixes --no-restart` (regenerates config files without restarting containers)
+3. Web panel sends a POST to the Portainer stack webhook
+4. Portainer detects the updated `.env` in the git repo and redeploys the stack
+5. Containers restart with the new configuration
+
+This produces a single restart managed entirely by Portainer.
 
 #### How Portainer sync works
 
-A local git server runs on your Seafile VM (port 9418 by default, configurable via `CONFIG_GIT_PORT`). It serves a git repository containing your `docker-compose.yml` and `.env`. Portainer is configured to pull its stack definition from this repository.
+A local git server runs on the Seafile VM (port 9418 by default, configurable via `CONFIG_GIT_PORT`). It serves a git repository containing `docker-compose.yml` and `.env`. Portainer pulls its stack definition from this repository.
 
-When you edit `.env` (via `seafile config`, `nano`, or any other method):
+The `env-sync` service detects `.env` changes and commits them to the git repo automatically. Portainer's GitOps polling or the webhook trigger picks up the change and redeploys.
 
-1. **env-sync** detects the change and commits it to the local git repo
-2. **env-sync** pings Portainer's stack webhook URL
-3. **Portainer** pulls the updated repo and redeploys with the new values
+> **Always edit `/opt/seafile/.env` directly — never edit the NFS copy.** The NFS file at `$SEAFILE_VOLUME/.env` is a backup maintained by `seafile-env-sync`. It treats the local file as authoritative.
 
-This is fully automatic — no manual Portainer UI interaction required for `.env` changes. The GitOps integration (`GITOPS_INTEGRATION`) is not needed for this and remains available as a separate feature for multi-site or team-based workflows.
+<details>
+<summary>Portainer with external GitOps (advanced)</summary>
 
-> **`INIT_SEAFILE_MYSQL_ROOT_PASSWORD`:** `seafile-config-fixes.sh` and `update.sh` clear this from `/opt/seafile/.env` automatically after first boot. The change is synced to Portainer automatically via the mechanism above.
+If you want to combine Portainer deployment with git-managed configuration, you can enable `GITOPS_INTEGRATION=true` after the initial Portainer deployment. When you push to your GitOps repo, the VM webhook listener applies the change and then pings the Portainer stack webhook. Portainer pulls the updated stack from the local git server and redeploys.
 
-> **Always edit `/opt/seafile/.env` directly — never edit the NFS copy.** The NFS file at `$SEAFILE_VOLUME/.env` is a backup maintained by `seafile-env-sync`. It treats the local file as authoritative and overwrites the NFS copy whenever you save `/opt/seafile/.env`.
+No additional Portainer configuration is needed. The local git server already serves the latest `docker-compose.yml` and `.env` to Portainer.
 
-#### Portainer with external GitOps (advanced)
+</details>
 
-If you are using both Portainer management and git-managed configuration, the two work together automatically. When you push to your GitOps repo, the VM webhook listener applies the change and then pings the Portainer stack webhook. Portainer pulls the updated stack from the local git server and redeploys.
+<details>
+<summary>Portainer API upload (advanced)</summary>
 
-No additional Portainer configuration is needed beyond the standard setup described above. The local git server already serves the latest `docker-compose.yml` and `.env` to Portainer.
-
-#### Portainer API upload (advanced)
-
-You can also update Portainer's stored environment variables programmatically via the API -- useful for scripted deployments. Generate an API token under **Account Settings → Access Tokens** in Portainer, and note your stack's numeric ID from the URL when you open the stack:
+You can update Portainer's stored environment variables programmatically via the API — useful for scripted deployments. Generate an API token under **Account Settings → Access Tokens** in Portainer, and note your stack's numeric ID from the URL when you open the stack:
 
 ```bash
 curl -s -X PUT "https://YOUR_PORTAINER_IP:9443/api/stacks/STACK_ID/file" \
@@ -1679,6 +1733,8 @@ curl -s -X PUT "https://YOUR_PORTAINER_IP:9443/api/stacks/STACK_ID/file" \
 ```
 
 See the [Portainer API docs](https://app.swaggerhub.com/apis/portainer/portainer-ce) for the full reference.
+
+</details>
 
 ---
 
@@ -2551,13 +2607,9 @@ The thumbnail-server and metadata-server also need read access — add the same 
 
 **Estimated effort:** 300-400 lines of code across docker-compose.yml, setup.template.sh, config-fixes, CLI, and recovery-finalize. Requires thorough testing with actual multi-NAS setups. Recommend a dedicated implementation cycle rather than inclusion in a broader refactor.
 
-#### True Portainer-Managed Configuration
+#### Portainer-Managed Configuration (implemented)
 
-The current Portainer integration lets Portainer manage the stack lifecycle (deploy/redeploy) but not configuration. Editing env vars in Portainer's UI and clicking redeploy does not work because Seafile reads most settings from generated config files (`seahub_settings.py`, `seafile.conf`, etc.), not directly from environment variables. The config generation layer (`config-fixes`) must run after every `.env` change to regenerate these files.
-
-A bridge container approach was investigated: a sidecar that detects when Portainer injects new env vars, writes them back to `.env` on the host, and triggers config-fixes. This is technically possible but produces a degraded experience — every change triggers two full stack restarts (once by Portainer, once by config-fixes) with a confusing intermediate state where env vars and config files are mismatched.
-
-The [Web Configuration Panel](#web-configuration-panel) is the solution to this problem. It understands the config generation layer, writes to `.env` correctly, and triggers config-fixes directly for a single-restart experience. It provides genuine browser-based configuration management while Portainer continues to handle monitoring and stack lifecycle.
+Portainer deployment mode provides genuine browser-based management using the [Web Configuration Panel](#web-configuration-panel) for configuration and Portainer for stack lifecycle. The web panel writes `.env`, runs config-fixes with `--no-restart`, and pings the Portainer webhook for a single-restart experience. See [Portainer Integration](#portainer-integration) for the complete setup and architecture.
 
 </details>
 
@@ -2780,7 +2832,7 @@ All credentials for both office suites are generated on first boot, regardless o
 
 | Variable | Default | Notes |
 |---|---|---|
-| `PORTAINER_MANAGED` | `false` | `true` = Portainer manages the stack. See [Portainer Integration](#portainer-integration). |
+| `PORTAINER_MANAGED` | `false` | `true` = Portainer manages the stack lifecycle. Set automatically when choosing Portainer deployment (option 4) during install. This is an install-time decision — cannot be enabled after a standard install. See [Portainer Integration](#portainer-integration). |
 | `PORTAINER_STACK_WEBHOOK` | (blank) | Portainer stack webhook URL for automatic redeploy. |
 | `CONFIG_GIT_PORT` | `9418` | Port for the local config git server (used by Portainer). |
 

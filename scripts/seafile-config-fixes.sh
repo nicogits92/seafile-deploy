@@ -833,7 +833,7 @@ if [[ "${BACKUP_ENABLED:-false}" == "true" ]]; then
       case "$_BK_STYPE" in
         nfs)
           if [[ -n "${BACKUP_NFS_SERVER:-}" && -n "${BACKUP_NFS_EXPORT:-}" ]]; then
-            echo "${BACKUP_NFS_SERVER}:${BACKUP_NFS_EXPORT} ${_BK_DEST} nfs auto,x-systemd.automount,_netdev,nfsvers=4,rsize=1048576,wsize=1048576,hard,timeo=600,retrans=2,nofail 0 0" >> /etc/fstab
+            echo "${BACKUP_NFS_SERVER}:${BACKUP_NFS_EXPORT} ${_BK_DEST} nfs auto,_netdev,x-systemd.required-by=docker.service,x-systemd.before=docker.service,nfsvers=4,rsize=1048576,wsize=1048576,hard,timeo=600,retrans=2,nofail 0 0" >> /etc/fstab
             info "Added backup NFS entry to /etc/fstab."
           fi
           ;;
@@ -845,7 +845,7 @@ if [[ "${BACKUP_ENABLED:-false}" == "true" ]]; then
               [[ -n "${BACKUP_SMB_DOMAIN:-}" ]] && echo "domain=${BACKUP_SMB_DOMAIN}" >> "$_bk_creds"
               chmod 600 "$_bk_creds"
             fi
-            echo "//${BACKUP_SMB_SERVER}/${BACKUP_SMB_SHARE} ${_BK_DEST} cifs credentials=${_bk_creds},auto,x-systemd.automount,_netdev,nofail,uid=0,gid=0,file_mode=0700,dir_mode=0700 0 0" >> /etc/fstab
+            echo "//${BACKUP_SMB_SERVER}/${BACKUP_SMB_SHARE} ${_BK_DEST} cifs credentials=${_bk_creds},auto,_netdev,x-systemd.required-by=docker.service,x-systemd.before=docker.service,nofail,uid=0,gid=0,file_mode=0700,dir_mode=0700 0 0" >> /etc/fstab
             info "Added backup SMB entry to /etc/fstab."
           fi
           ;;

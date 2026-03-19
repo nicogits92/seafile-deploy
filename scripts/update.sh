@@ -683,10 +683,10 @@ METADATA_PATH=/opt/seafile-metadata
 SEADOC_DATA_PATH=/opt/seadoc-data
 
 # Mount options — only the options for your STORAGE_TYPE are used.
-NFS_OPTIONS=auto,x-systemd.automount,_netdev,nfsvers=4,rsize=1048576,wsize=1048576,hard,timeo=600,retrans=2,nofail
-SMB_OPTIONS=auto,x-systemd.automount,_netdev,nofail,uid=0,gid=0,file_mode=0700,dir_mode=0700
-GLUSTER_OPTIONS=defaults,_netdev,nofail
-ISCSI_OPTIONS=_netdev,auto,nofail
+NFS_OPTIONS=auto,_netdev,x-systemd.required-by=docker.service,x-systemd.before=docker.service,nfsvers=4,rsize=1048576,wsize=1048576,hard,timeo=600,retrans=2,nofail
+SMB_OPTIONS=auto,_netdev,x-systemd.required-by=docker.service,x-systemd.before=docker.service,nofail,uid=0,gid=0,file_mode=0700,dir_mode=0700
+GLUSTER_OPTIONS=defaults,_netdev,x-systemd.required-by=docker.service,x-systemd.before=docker.service,nofail
+ISCSI_OPTIONS=_netdev,auto,x-systemd.required-by=docker.service,x-systemd.before=docker.service,nofail
 
 
 # =============================================================================
@@ -1306,7 +1306,7 @@ _enable_metadata_all() {
   local repos_json
   repos_json=$(curl -sf -H "Host: ${host_hdr}" \
     -H "Authorization: Token ${token}" \
-    "${api_base}/api/v2.1/repos/?type=mine" 2>/dev/null || true)
+    "${api_base}/api2/repos/" 2>/dev/null || true)
 
   [[ -z "$repos_json" ]] && { info "No libraries found (fresh install — none exist yet)."; return 0; }
 
@@ -1329,6 +1329,65 @@ for r in repos:
 
   info "Extended Properties enabled on all existing libraries."
   info "New libraries will need Extended Properties enabled individually or via: seafile metadata --enable-all"
+}
+
+# ---------------------------------------------------------------------------
+# Reset metadata on all libraries (disable + re-enable) — used after migration
+# to rebuild indexes when the old DB has stale metadata flags.
+# ---------------------------------------------------------------------------
+_reset_metadata_all() {
+  local admin_email="${INIT_SEAFILE_ADMIN_EMAIL:-}"
+  local admin_pass="${INIT_SEAFILE_ADMIN_PASSWORD:-}"
+  local caddy_port="${CADDY_PORT:-7080}"
+  local host_hdr="${SEAFILE_SERVER_HOSTNAME:-localhost}"
+  local api_base="http://localhost:${caddy_port}"
+
+  [[ -z "$admin_email" || -z "$admin_pass" ]] && return 0
+
+  info "Resetting Extended Properties on all libraries (disable → re-enable)..."
+
+  local token_response
+  token_response=$(curl -sf -H "Host: ${host_hdr}" \
+    -d "username=${admin_email}&password=${admin_pass}" \
+    "${api_base}/api2/auth-token/" 2>/dev/null || true)
+
+  if [[ -z "$token_response" ]]; then
+    warn "Could not authenticate to Seafile API — metadata reset skipped."
+    warn "Fix manually: for each library, toggle Extended Properties off then on."
+    return 0
+  fi
+
+  local token
+  token=$(echo "$token_response" | python3 -c "import sys,json; print(json.load(sys.stdin).get('token',''))" 2>/dev/null || true)
+  [[ -z "$token" ]] && { warn "API auth failed — metadata reset skipped."; return 0; }
+
+  # Use admin list-all endpoint to get all repos
+  local repos_json
+  repos_json=$(curl -sf -H "Host: ${host_hdr}" \
+    -H "Authorization: Token ${token}" \
+    "${api_base}/api2/repos/" 2>/dev/null || true)
+
+  [[ -z "$repos_json" ]] && { info "No libraries found — nothing to reset."; return 0; }
+
+  echo "$repos_json" | python3 -c "
+import sys, json
+data = json.load(sys.stdin)
+repos = data.get('repos', data) if isinstance(data, dict) else data
+for r in repos:
+    print(r['id'])
+" 2>/dev/null | while IFS= read -r repo_id; do
+    [[ -z "$repo_id" ]] && continue
+    # Disable metadata
+    curl -sf -X DELETE -H "Host: ${host_hdr}" \
+      -H "Authorization: Token ${token}" \
+      "${api_base}/api/v2.1/repos/${repo_id}/metadata/" >/dev/null 2>&1 || true
+    # Re-enable metadata
+    curl -sf -X PUT -H "Host: ${host_hdr}" \
+      -H "Authorization: Token ${token}" \
+      "${api_base}/api/v2.1/repos/${repo_id}/metadata/" >/dev/null 2>&1 || true
+  done
+
+  info "Metadata reset complete — indexes will rebuild in the background."
 }
 
 # ---------------------------------------------------------------------------

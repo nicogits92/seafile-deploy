@@ -30,6 +30,8 @@
 
 set -euo pipefail
 
+DEPLOY_VERSION="v4.7-alpha"
+
 # ---------------------------------------------------------------------------
 # Colours (shared-lib provides these too, but header runs before it's loaded)
 # ---------------------------------------------------------------------------

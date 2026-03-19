@@ -654,10 +654,10 @@ METADATA_PATH=/opt/seafile-metadata
 SEADOC_DATA_PATH=/opt/seadoc-data
 
 # Mount options — only the options for your STORAGE_TYPE are used.
-NFS_OPTIONS=auto,x-systemd.automount,_netdev,nfsvers=4,rsize=1048576,wsize=1048576,hard,timeo=600,retrans=2,nofail
-SMB_OPTIONS=auto,x-systemd.automount,_netdev,nofail,uid=0,gid=0,file_mode=0700,dir_mode=0700
-GLUSTER_OPTIONS=defaults,_netdev,nofail
-ISCSI_OPTIONS=_netdev,auto,nofail
+NFS_OPTIONS=auto,_netdev,x-systemd.required-by=docker.service,x-systemd.before=docker.service,nfsvers=4,rsize=1048576,wsize=1048576,hard,timeo=600,retrans=2,nofail
+SMB_OPTIONS=auto,_netdev,x-systemd.required-by=docker.service,x-systemd.before=docker.service,nofail,uid=0,gid=0,file_mode=0700,dir_mode=0700
+GLUSTER_OPTIONS=defaults,_netdev,x-systemd.required-by=docker.service,x-systemd.before=docker.service,nofail
+ISCSI_OPTIONS=_netdev,auto,x-systemd.required-by=docker.service,x-systemd.before=docker.service,nofail
 
 
 # =============================================================================
@@ -1277,7 +1277,7 @@ _enable_metadata_all() {
   local repos_json
   repos_json=$(curl -sf -H "Host: ${host_hdr}" \
     -H "Authorization: Token ${token}" \
-    "${api_base}/api/v2.1/repos/?type=mine" 2>/dev/null || true)
+    "${api_base}/api2/repos/" 2>/dev/null || true)
 
   [[ -z "$repos_json" ]] && { info "No libraries found (fresh install — none exist yet)."; return 0; }
 
@@ -1300,6 +1300,65 @@ for r in repos:
 
   info "Extended Properties enabled on all existing libraries."
   info "New libraries will need Extended Properties enabled individually or via: seafile metadata --enable-all"
+}
+
+# ---------------------------------------------------------------------------
+# Reset metadata on all libraries (disable + re-enable) — used after migration
+# to rebuild indexes when the old DB has stale metadata flags.
+# ---------------------------------------------------------------------------
+_reset_metadata_all() {
+  local admin_email="${INIT_SEAFILE_ADMIN_EMAIL:-}"
+  local admin_pass="${INIT_SEAFILE_ADMIN_PASSWORD:-}"
+  local caddy_port="${CADDY_PORT:-7080}"
+  local host_hdr="${SEAFILE_SERVER_HOSTNAME:-localhost}"
+  local api_base="http://localhost:${caddy_port}"
+
+  [[ -z "$admin_email" || -z "$admin_pass" ]] && return 0
+
+  info "Resetting Extended Properties on all libraries (disable → re-enable)..."
+
+  local token_response
+  token_response=$(curl -sf -H "Host: ${host_hdr}" \
+    -d "username=${admin_email}&password=${admin_pass}" \
+    "${api_base}/api2/auth-token/" 2>/dev/null || true)
+
+  if [[ -z "$token_response" ]]; then
+    warn "Could not authenticate to Seafile API — metadata reset skipped."
+    warn "Fix manually: for each library, toggle Extended Properties off then on."
+    return 0
+  fi
+
+  local token
+  token=$(echo "$token_response" | python3 -c "import sys,json; print(json.load(sys.stdin).get('token',''))" 2>/dev/null || true)
+  [[ -z "$token" ]] && { warn "API auth failed — metadata reset skipped."; return 0; }
+
+  # Use admin list-all endpoint to get all repos
+  local repos_json
+  repos_json=$(curl -sf -H "Host: ${host_hdr}" \
+    -H "Authorization: Token ${token}" \
+    "${api_base}/api2/repos/" 2>/dev/null || true)
+
+  [[ -z "$repos_json" ]] && { info "No libraries found — nothing to reset."; return 0; }
+
+  echo "$repos_json" | python3 -c "
+import sys, json
+data = json.load(sys.stdin)
+repos = data.get('repos', data) if isinstance(data, dict) else data
+for r in repos:
+    print(r['id'])
+" 2>/dev/null | while IFS= read -r repo_id; do
+    [[ -z "$repo_id" ]] && continue
+    # Disable metadata
+    curl -sf -X DELETE -H "Host: ${host_hdr}" \
+      -H "Authorization: Token ${token}" \
+      "${api_base}/api/v2.1/repos/${repo_id}/metadata/" >/dev/null 2>&1 || true
+    # Re-enable metadata
+    curl -sf -X PUT -H "Host: ${host_hdr}" \
+      -H "Authorization: Token ${token}" \
+      "${api_base}/api/v2.1/repos/${repo_id}/metadata/" >/dev/null 2>&1 || true
+  done
+
+  info "Metadata reset complete — indexes will rebuild in the background."
 }
 
 # ---------------------------------------------------------------------------
@@ -1736,9 +1795,18 @@ else
 fi
 fi
 
-# =============================================================================
-# PHASE 2: Automatic security updates
-# =============================================================================
+# Ensure Docker waits for network mounts before starting containers
+if [[ "${STORAGE_TYPE:-nfs}" != "local" ]]; then
+  _mount_path="${STORAGE_PATH:-/mnt/seafile_nfs}"
+  mkdir -p /etc/systemd/system/docker.service.d
+  cat > /etc/systemd/system/docker.service.d/wait-for-storage.conf << DOCKEROVERRIDEOF
+[Unit]
+RequiresMountsFor=${_mount_path}
+After=remote-fs.target
+DOCKEROVERRIDEOF
+  systemctl daemon-reload
+  info "Docker configured to wait for storage mount at ${_mount_path}."
+fi
 if [[ "${_SELECTED[2]}" == "true" ]]; then
 heading "Automatic security updates"
 info "Enabling unattended security upgrades..."
@@ -1812,7 +1880,7 @@ _mount_storage() {
   else
     case "$stype" in
       nfs)
-        opts="${NFS_OPTIONS:-auto,x-systemd.automount,_netdev,nfsvers=4,rsize=1048576,wsize=1048576,hard,timeo=600,retrans=2,nofail}"
+        opts="${NFS_OPTIONS:-auto,_netdev,x-systemd.required-by=docker.service,x-systemd.before=docker.service,nfsvers=4,rsize=1048576,wsize=1048576,hard,timeo=600,retrans=2,nofail}"
         info "Mounting NFS share ${NFS_SERVER}:${NFS_EXPORT} at ${mount_point}..."
         if ! grep -qF "$mount_point" /etc/fstab; then
           echo "${NFS_SERVER}:${NFS_EXPORT} ${mount_point} nfs ${opts} 0 0" >> /etc/fstab
@@ -1827,7 +1895,7 @@ _mount_storage() {
         ;;
 
       smb)
-        opts="${SMB_OPTIONS:-auto,x-systemd.automount,_netdev,nofail,uid=0,gid=0,file_mode=0700,dir_mode=0700}"
+        opts="${SMB_OPTIONS:-auto,_netdev,x-systemd.required-by=docker.service,x-systemd.before=docker.service,nofail,uid=0,gid=0,file_mode=0700,dir_mode=0700}"
         local creds_file="/etc/seafile-smb-credentials"
         if [[ ! -f "$creds_file" ]]; then
           printf 'username=%s\npassword=%s\n' "$SMB_USERNAME" "$SMB_PASSWORD" > "$creds_file"
@@ -1849,7 +1917,7 @@ _mount_storage() {
         ;;
 
       glusterfs)
-        opts="${GLUSTER_OPTIONS:-defaults,_netdev,nofail}"
+        opts="${GLUSTER_OPTIONS:-defaults,_netdev,x-systemd.required-by=docker.service,x-systemd.before=docker.service,nofail}"
         info "Mounting GlusterFS volume ${GLUSTER_SERVER}:/${GLUSTER_VOLUME} at ${mount_point}..."
         if ! grep -qF "$mount_point" /etc/fstab; then
           echo "${GLUSTER_SERVER}:/${GLUSTER_VOLUME} ${mount_point} glusterfs ${opts} 0 0" >> /etc/fstab
@@ -1864,7 +1932,7 @@ _mount_storage() {
         ;;
 
       iscsi)
-        opts="${ISCSI_OPTIONS:-_netdev,auto,nofail}"
+        opts="${ISCSI_OPTIONS:-_netdev,auto,x-systemd.required-by=docker.service,x-systemd.before=docker.service,nofail}"
         local _fs="${ISCSI_FILESYSTEM:-ext4}"
         info "Discovering iSCSI targets at ${ISCSI_PORTAL}..."
         iscsiadm -m discovery -t sendtargets -p "$ISCSI_PORTAL" \
@@ -1928,19 +1996,19 @@ _mount_storage() {
     info "Storage mounted — writing fstab entry..."
     case "${STORAGE_TYPE:-nfs}" in
       nfs)
-        local _opts="${NFS_OPTIONS:-auto,x-systemd.automount,_netdev,nfsvers=4,rsize=1048576,wsize=1048576,hard,timeo=600,retrans=2,nofail}"
+        local _opts="${NFS_OPTIONS:-auto,_netdev,x-systemd.required-by=docker.service,x-systemd.before=docker.service,nfsvers=4,rsize=1048576,wsize=1048576,hard,timeo=600,retrans=2,nofail}"
         echo "${NFS_SERVER}:${NFS_EXPORT} ${mount_point} nfs ${_opts} 0 0" >> /etc/fstab
         ;;
       smb)
-        local _opts="${SMB_OPTIONS:-auto,x-systemd.automount,_netdev,nofail,uid=0,gid=0,file_mode=0700,dir_mode=0700}"
+        local _opts="${SMB_OPTIONS:-auto,_netdev,x-systemd.required-by=docker.service,x-systemd.before=docker.service,nofail,uid=0,gid=0,file_mode=0700,dir_mode=0700}"
         echo "//${SMB_SERVER}/${SMB_SHARE} ${mount_point} cifs credentials=/etc/seafile-smb-credentials,${_opts} 0 0" >> /etc/fstab
         ;;
       glusterfs)
-        local _opts="${GLUSTER_OPTIONS:-defaults,_netdev,nofail}"
+        local _opts="${GLUSTER_OPTIONS:-defaults,_netdev,x-systemd.required-by=docker.service,x-systemd.before=docker.service,nofail}"
         echo "${GLUSTER_SERVER}:/${GLUSTER_VOLUME} ${mount_point} glusterfs ${_opts} 0 0" >> /etc/fstab
         ;;
       iscsi)
-        local _dev _uuid _opts="${ISCSI_OPTIONS:-_netdev,auto,nofail}" _fs="${ISCSI_FILESYSTEM:-ext4}"
+        local _dev _uuid _opts="${ISCSI_OPTIONS:-_netdev,auto,x-systemd.required-by=docker.service,x-systemd.before=docker.service,nofail}" _fs="${ISCSI_FILESYSTEM:-ext4}"
         _dev=$(iscsiadm -m session -P 3 2>/dev/null | grep "Attached scsi disk" | awk '{print $NF}' | head -1 || true)
         _uuid=$(blkid -s UUID -o value "/dev/${_dev}" 2>/dev/null || true)
         [[ -n "$_uuid" ]] && echo "UUID=${_uuid} ${mount_point} ${_fs} ${_opts} 0 2" >> /etc/fstab
@@ -1971,7 +2039,7 @@ if [[ "${BACKUP_ENABLED:-false}" == "true" ]]; then
   else
     case "$_BACKUP_STYPE" in
       nfs)
-        _bk_opts="auto,x-systemd.automount,_netdev,nfsvers=4,rsize=1048576,wsize=1048576,hard,timeo=600,retrans=2,nofail"
+        _bk_opts="auto,_netdev,x-systemd.required-by=docker.service,x-systemd.before=docker.service,nfsvers=4,rsize=1048576,wsize=1048576,hard,timeo=600,retrans=2,nofail"
         info "Mounting backup NFS share ${BACKUP_NFS_SERVER}:${BACKUP_NFS_EXPORT} at ${_BACKUP_MOUNT}..."
         if ! grep -qF "$_BACKUP_MOUNT" /etc/fstab; then
           echo "${BACKUP_NFS_SERVER}:${BACKUP_NFS_EXPORT} ${_BACKUP_MOUNT} nfs ${_bk_opts} 0 0" >> /etc/fstab
@@ -1982,7 +2050,7 @@ if [[ "${BACKUP_ENABLED:-false}" == "true" ]]; then
           || warn "Failed to mount backup NFS share — backups will not work until mount is fixed."
         ;;
       smb)
-        _bk_opts="auto,x-systemd.automount,_netdev,nofail,uid=0,gid=0,file_mode=0700,dir_mode=0700"
+        _bk_opts="auto,_netdev,x-systemd.required-by=docker.service,x-systemd.before=docker.service,nofail,uid=0,gid=0,file_mode=0700,dir_mode=0700"
         _bk_creds="/etc/seafile-backup-smb-credentials"
         if [[ ! -f "$_bk_creds" ]]; then
           printf 'username=%s\npassword=%s\n' "${BACKUP_SMB_USERNAME}" "${BACKUP_SMB_PASSWORD}" > "$_bk_creds"
@@ -4804,7 +4872,7 @@ cmd_metadata() {
   local repos_json
   repos_json=$(curl -sf -H "Host: ${host_hdr}" \
     -H "Authorization: Token ${token}" \
-    "${api_base}/api/v2.1/repos/?type=mine" 2>/dev/null || true)
+    "${api_base}/api2/repos/" 2>/dev/null || true)
 
   if [[ -z "$repos_json" ]]; then
     # Try admin endpoint
@@ -5653,6 +5721,7 @@ cmd_help() {
   printf "  ${BOLD}%-24s${NC} %s\n" "gc"                  "Run garbage collection"
   printf "  ${BOLD}%-24s${NC} %s\n" "gc --status"         "Show GC schedule, last run, and log tail"
   printf "  ${BOLD}%-24s${NC} %s\n" "gitops"              "GitOps listener status and recent activity"
+  printf "  ${BOLD}%-24s${NC} %s\n" "self-update"          "Update management scripts from /opt/seafile-deploy.sh"
   printf "  ${BOLD}%-24s${NC} %s\n" "help"                "Show this help"
   echo ""
   rule
@@ -5661,6 +5730,132 @@ cmd_help() {
   echo -e "  ${DIM}  seafile config smtp${NC}"
   echo -e "  ${DIM}  seafile config storage --status${NC}"
   echo -e "  ${DIM}  seafile logs seafile${NC}\n"
+}
+
+# ===========================================================================
+# SELF-UPDATE — extract updated scripts from local seafile-deploy.sh
+# ===========================================================================
+cmd_self_update() {
+  heading "Self-Update"
+
+  local deploy_script="/opt/seafile-deploy.sh"
+
+  if [[ ! -f "$deploy_script" ]]; then
+    err "seafile-deploy.sh not found at ${deploy_script}"
+    echo ""
+    echo -e "  ${DIM}To update, copy the new seafile-deploy.sh to /opt/:${NC}"
+    echo -e "    ${BOLD}scp seafile-deploy.sh root@this-server:/opt/seafile-deploy.sh${NC}"
+    echo -e "  ${DIM}Then run: seafile self-update${NC}"
+    return 1
+  fi
+
+  # Check version
+  local new_version
+  new_version=$(grep "^DEPLOY_VERSION=" "$deploy_script" 2>/dev/null | head -1 | cut -d'"' -f2 || echo "unknown")
+  local cur_installed
+  cur_installed=$(grep "^DEPLOY_VERSION=" /usr/local/bin/seafile 2>/dev/null | head -1 | cut -d'"' -f2 || echo "unknown")
+
+  echo -e "  Installed version:    ${BOLD}${cur_installed}${NC}"
+  echo -e "  Deploy script version: ${BOLD}${new_version}${NC}"
+  echo ""
+
+  # Extract scripts to staging
+  info "Extracting scripts from ${deploy_script}..."
+  local _staging_dir
+  _staging_dir=$(mktemp -d /tmp/seafile-update-staging.XXXXXX)
+  chmod 700 "$_staging_dir"
+  trap 'rm -rf "$_staging_dir" 2>/dev/null' EXIT
+
+  if ! bash "$deploy_script" --extract-scripts "$_staging_dir" 2>/dev/null; then
+    err "Failed to extract scripts. Is the deploy file valid?"
+    return 1
+  fi
+
+  # Compare with installed files
+  local -A FILE_MAP=(
+    ["seafile-config-fixes.sh"]="/opt/seafile-config-fixes.sh"
+    ["update.sh"]="/opt/update.sh"
+    ["seafile-cli.sh"]="/usr/local/bin/seafile"
+    ["seafile-env-sync.sh"]="/opt/seafile/seafile-env-sync.sh"
+    ["seafile-config-ui.py"]="/opt/seafile/seafile-config-ui.py"
+    ["config-ui.html"]="/opt/seafile/config-ui.html"
+    ["seafile-config-server.sh"]="/opt/seafile/seafile-config-server.sh"
+    ["seafile-storage-sync.sh"]="/opt/seafile/seafile-storage-sync.sh"
+    ["seafile-recovery-finalize.sh"]="/opt/seafile/seafile-recovery-finalize.sh"
+  )
+
+  echo -e "  ${BOLD}Changes:${NC}"
+  local unchanged=0
+  local -a changed_files=()
+  for name in "${!FILE_MAP[@]}"; do
+    local staged="${_staging_dir}/${name}"
+    local installed="${FILE_MAP[$name]}"
+    if [[ ! -f "$staged" || ! -s "$staged" ]]; then
+      continue
+    fi
+    if [[ ! -f "$installed" ]]; then
+      echo -e "    ${GREEN}+${NC}  ${name}  ${DIM}(new)${NC}"
+      changed_files+=("$name")
+    elif ! diff -q "$staged" "$installed" &>/dev/null; then
+      local lines_changed
+      lines_changed=$(diff "$installed" "$staged" 2>/dev/null | grep -c '^[<>]' || echo "?")
+      echo -e "    ${YELLOW}~${NC}  ${name}  ${DIM}(${lines_changed} lines changed)${NC}"
+      changed_files+=("$name")
+    else
+      ((unchanged++))
+    fi
+  done
+
+  if [[ ${#changed_files[@]} -eq 0 ]]; then
+    echo -e "    ${DIM}All scripts are up to date.${NC}"
+    echo ""
+    ok "Nothing to update."
+    return 0
+  fi
+
+  echo -e "    ${DIM}(${unchanged} unchanged)${NC}"
+  echo ""
+
+  # Confirm
+  echo -ne "  ${BOLD}Apply updates? [Y/n]:${NC} "
+  read -r _confirm
+  if [[ "${_confirm,,}" == "n" ]]; then
+    info "Cancelled."
+    return 0
+  fi
+
+  # Backup current scripts
+  local backup_dir="/opt/seafile/.script-backups/$(date '+%Y-%m-%d_%H%M%S')"
+  mkdir -p "$backup_dir"
+  for name in "${changed_files[@]}"; do
+    local installed="${FILE_MAP[$name]}"
+    if [[ -f "$installed" ]]; then
+      cp "$installed" "${backup_dir}/${name}"
+    fi
+  done
+  info "Backup saved to ${backup_dir}/"
+
+  # Replace files
+  for name in "${changed_files[@]}"; do
+    local staged="${_staging_dir}/${name}"
+    local installed="${FILE_MAP[$name]}"
+    cp "$staged" "$installed"
+    chmod +x "$installed" 2>/dev/null || true
+  done
+
+  # Restart lightweight services (not Seafile containers)
+  info "Restarting management services..."
+  systemctl restart seafile-env-sync 2>/dev/null || true
+  systemctl restart seafile-config-ui 2>/dev/null || true
+
+  echo ""
+  ok "Management scripts updated (${#changed_files[@]} files)."
+  echo ""
+  echo -e "  ${DIM}Your running Seafile containers are not affected.${NC}"
+  echo -e "  ${DIM}Run 'seafile fix' to regenerate config files with the updated scripts.${NC}"
+  echo -e "  ${DIM}Run 'seafile update' for a full reconcile.${NC}"
+  echo ""
+  echo -e "  ${DIM}To roll back: cp ${backup_dir}/* to their original paths${NC}"
 }
 
 # --- Dispatch ----------------------------------------------------------------
@@ -5684,6 +5879,7 @@ case "$CMD" in
   migrate) cmd_migrate ;;
   gitops)  cmd_gitops ;;
   gc)      cmd_gc "$@" ;;
+  self-update) cmd_self_update ;;
   help|--help|-h) cmd_help ;;
   *)
     err "Unknown command: $CMD"
@@ -7693,7 +7889,7 @@ if [[ "${BACKUP_ENABLED:-false}" == "true" ]]; then
       case "$_BK_STYPE" in
         nfs)
           if [[ -n "${BACKUP_NFS_SERVER:-}" && -n "${BACKUP_NFS_EXPORT:-}" ]]; then
-            echo "${BACKUP_NFS_SERVER}:${BACKUP_NFS_EXPORT} ${_BK_DEST} nfs auto,x-systemd.automount,_netdev,nfsvers=4,rsize=1048576,wsize=1048576,hard,timeo=600,retrans=2,nofail 0 0" >> /etc/fstab
+            echo "${BACKUP_NFS_SERVER}:${BACKUP_NFS_EXPORT} ${_BK_DEST} nfs auto,_netdev,x-systemd.required-by=docker.service,x-systemd.before=docker.service,nfsvers=4,rsize=1048576,wsize=1048576,hard,timeo=600,retrans=2,nofail 0 0" >> /etc/fstab
             info "Added backup NFS entry to /etc/fstab."
           fi
           ;;
@@ -7705,7 +7901,7 @@ if [[ "${BACKUP_ENABLED:-false}" == "true" ]]; then
               [[ -n "${BACKUP_SMB_DOMAIN:-}" ]] && echo "domain=${BACKUP_SMB_DOMAIN}" >> "$_bk_creds"
               chmod 600 "$_bk_creds"
             fi
-            echo "//${BACKUP_SMB_SERVER}/${BACKUP_SMB_SHARE} ${_BK_DEST} cifs credentials=${_bk_creds},auto,x-systemd.automount,_netdev,nofail,uid=0,gid=0,file_mode=0700,dir_mode=0700 0 0" >> /etc/fstab
+            echo "//${BACKUP_SMB_SERVER}/${BACKUP_SMB_SHARE} ${_BK_DEST} cifs credentials=${_bk_creds},auto,_netdev,x-systemd.required-by=docker.service,x-systemd.before=docker.service,nofail,uid=0,gid=0,file_mode=0700,dir_mode=0700 0 0" >> /etc/fstab
             info "Added backup SMB entry to /etc/fstab."
           fi
           ;;
@@ -8760,10 +8956,10 @@ METADATA_PATH=/opt/seafile-metadata
 SEADOC_DATA_PATH=/opt/seadoc-data
 
 # Mount options — only the options for your STORAGE_TYPE are used.
-NFS_OPTIONS=auto,x-systemd.automount,_netdev,nfsvers=4,rsize=1048576,wsize=1048576,hard,timeo=600,retrans=2,nofail
-SMB_OPTIONS=auto,x-systemd.automount,_netdev,nofail,uid=0,gid=0,file_mode=0700,dir_mode=0700
-GLUSTER_OPTIONS=defaults,_netdev,nofail
-ISCSI_OPTIONS=_netdev,auto,nofail
+NFS_OPTIONS=auto,_netdev,x-systemd.required-by=docker.service,x-systemd.before=docker.service,nfsvers=4,rsize=1048576,wsize=1048576,hard,timeo=600,retrans=2,nofail
+SMB_OPTIONS=auto,_netdev,x-systemd.required-by=docker.service,x-systemd.before=docker.service,nofail,uid=0,gid=0,file_mode=0700,dir_mode=0700
+GLUSTER_OPTIONS=defaults,_netdev,x-systemd.required-by=docker.service,x-systemd.before=docker.service,nofail
+ISCSI_OPTIONS=_netdev,auto,x-systemd.required-by=docker.service,x-systemd.before=docker.service,nofail
 
 
 # =============================================================================
@@ -9383,7 +9579,7 @@ _enable_metadata_all() {
   local repos_json
   repos_json=$(curl -sf -H "Host: ${host_hdr}" \
     -H "Authorization: Token ${token}" \
-    "${api_base}/api/v2.1/repos/?type=mine" 2>/dev/null || true)
+    "${api_base}/api2/repos/" 2>/dev/null || true)
 
   [[ -z "$repos_json" ]] && { info "No libraries found (fresh install — none exist yet)."; return 0; }
 
@@ -9406,6 +9602,65 @@ for r in repos:
 
   info "Extended Properties enabled on all existing libraries."
   info "New libraries will need Extended Properties enabled individually or via: seafile metadata --enable-all"
+}
+
+# ---------------------------------------------------------------------------
+# Reset metadata on all libraries (disable + re-enable) — used after migration
+# to rebuild indexes when the old DB has stale metadata flags.
+# ---------------------------------------------------------------------------
+_reset_metadata_all() {
+  local admin_email="${INIT_SEAFILE_ADMIN_EMAIL:-}"
+  local admin_pass="${INIT_SEAFILE_ADMIN_PASSWORD:-}"
+  local caddy_port="${CADDY_PORT:-7080}"
+  local host_hdr="${SEAFILE_SERVER_HOSTNAME:-localhost}"
+  local api_base="http://localhost:${caddy_port}"
+
+  [[ -z "$admin_email" || -z "$admin_pass" ]] && return 0
+
+  info "Resetting Extended Properties on all libraries (disable → re-enable)..."
+
+  local token_response
+  token_response=$(curl -sf -H "Host: ${host_hdr}" \
+    -d "username=${admin_email}&password=${admin_pass}" \
+    "${api_base}/api2/auth-token/" 2>/dev/null || true)
+
+  if [[ -z "$token_response" ]]; then
+    warn "Could not authenticate to Seafile API — metadata reset skipped."
+    warn "Fix manually: for each library, toggle Extended Properties off then on."
+    return 0
+  fi
+
+  local token
+  token=$(echo "$token_response" | python3 -c "import sys,json; print(json.load(sys.stdin).get('token',''))" 2>/dev/null || true)
+  [[ -z "$token" ]] && { warn "API auth failed — metadata reset skipped."; return 0; }
+
+  # Use admin list-all endpoint to get all repos
+  local repos_json
+  repos_json=$(curl -sf -H "Host: ${host_hdr}" \
+    -H "Authorization: Token ${token}" \
+    "${api_base}/api2/repos/" 2>/dev/null || true)
+
+  [[ -z "$repos_json" ]] && { info "No libraries found — nothing to reset."; return 0; }
+
+  echo "$repos_json" | python3 -c "
+import sys, json
+data = json.load(sys.stdin)
+repos = data.get('repos', data) if isinstance(data, dict) else data
+for r in repos:
+    print(r['id'])
+" 2>/dev/null | while IFS= read -r repo_id; do
+    [[ -z "$repo_id" ]] && continue
+    # Disable metadata
+    curl -sf -X DELETE -H "Host: ${host_hdr}" \
+      -H "Authorization: Token ${token}" \
+      "${api_base}/api/v2.1/repos/${repo_id}/metadata/" >/dev/null 2>&1 || true
+    # Re-enable metadata
+    curl -sf -X PUT -H "Host: ${host_hdr}" \
+      -H "Authorization: Token ${token}" \
+      "${api_base}/api/v2.1/repos/${repo_id}/metadata/" >/dev/null 2>&1 || true
+  done
+
+  info "Metadata reset complete — indexes will rebuild in the background."
 }
 
 # ---------------------------------------------------------------------------
@@ -11669,12 +11924,19 @@ COMPOSEEOF
         info "SECRET_KEY written to config for preservation."
       fi
 
-      # Verify existing data
-      if [[ -d "${_SF_VOL}/seafile-data" ]]; then
+      # Verify existing data — check both possible layouts
+      if [[ -d "${_SF_VOL}/seafile/seafile-data" ]]; then
+        _data_size=$(du -sh "${_SF_VOL}/seafile/seafile-data" 2>/dev/null | cut -f1)
+        info "Existing seafile-data found at ${_SF_VOL}/seafile/seafile-data (${_data_size})."
+      elif [[ -d "${_SF_VOL}/seafile-data" ]]; then
         _data_size=$(du -sh "${_SF_VOL}/seafile-data" 2>/dev/null | cut -f1)
-        info "Existing seafile-data found (${_data_size})."
+        info "Existing seafile-data found at ${_SF_VOL}/seafile-data (${_data_size})."
+        info "Moving to expected path: ${_SF_VOL}/seafile/seafile-data..."
+        mkdir -p "${_SF_VOL}/seafile"
+        mv "${_SF_VOL}/seafile-data" "${_SF_VOL}/seafile/seafile-data"
+        info "Data relocated."
       else
-        warn "No seafile-data directory found at ${_SF_VOL}/seafile-data."
+        warn "No seafile-data directory found under ${_SF_VOL}."
         warn "File storage will be empty. If this is unexpected, check your volume mount."
       fi
 
@@ -11755,7 +12017,8 @@ COMPOSEEOF
         # Detect source layout and copy appropriately
         if [[ -d "${MIGRATE_DATA_DIR}/seafile-data" ]]; then
           info "Copying seafile-data (this may take a while for large libraries)..."
-          rsync -a --info=progress2 "${MIGRATE_DATA_DIR}/seafile-data/" "${_SF_VOL}/seafile-data/"
+          mkdir -p "${_SF_VOL}/seafile/seafile-data"
+          rsync -a --info=progress2 "${MIGRATE_DATA_DIR}/seafile-data/" "${_SF_VOL}/seafile/seafile-data/"
           info "File data copied."
         fi
 
@@ -11932,7 +12195,7 @@ COMPOSEEOF
 
       # Stage 3: Rsync file data from remote
       info "Stage 3: Copying file data from remote server (this may take a while)..."
-      mkdir -p "${_SF_VOL}/seafile-data"
+      mkdir -p "${_SF_VOL}/seafile/seafile-data"
 
       # Ensure rsync is available on the remote server
       if ! $_SSH_CMD "command -v rsync" &>/dev/null; then
@@ -11968,7 +12231,7 @@ COMPOSEEOF
         rsync -avz --info=progress2 \
           -e "ssh -o ConnectTimeout=30 -o ServerAliveInterval=60 -p ${MIGRATE_SSH_PORT:-22}" \
           "${MIGRATE_SSH_USER:-root}@${MIGRATE_SSH_HOST}:${_remote_data_path}" \
-          "${_SF_VOL}/seafile-data/"
+          "${_SF_VOL}/seafile/seafile-data/"
         info "File data transfer complete."
       else
         warn "Remote seafile-data directory not found under ${_REMOTE_DATA}."
@@ -12043,7 +12306,15 @@ COMPOSEEOF
   # Enable Extended Properties on all libraries (if any exist)
   # Wait briefly for Seafile to finish initializing after config-fixes restart
   sleep 10
-  _enable_metadata_all
+  if [[ "$SETUP_MODE" == "migrate" ]]; then
+    # Migration: the old database may have metadata flags set but the new
+    # metadata server has no index. Reset metadata (disable + re-enable)
+    # to force re-indexing on all libraries.
+    info "Resetting metadata on migrated libraries (disable + re-enable)..."
+    _reset_metadata_all
+  else
+    _enable_metadata_all
+  fi
 
   # Save .env snapshot for future diffs
   cp "$ENV_FILE" /opt/seafile/.env.snapshot

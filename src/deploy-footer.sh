@@ -758,11 +758,54 @@ preflight_env_check() {
 
 
 # ---------------------------------------------------------------------------
+# Self-update: extract embedded scripts to a staging directory
+# Usage: bash seafile-deploy.sh --extract-scripts /path/to/staging/
+# ---------------------------------------------------------------------------
+if [[ "${1:-}" == "--extract-scripts" ]]; then
+  _STAGING="${2:-}"
+  [[ -z "$_STAGING" ]] && { echo "Usage: bash $0 --extract-scripts /path/to/staging/"; exit 1; }
+  mkdir -p "$_STAGING"
+
+  # Extract setup.sh from this script
+  _SETUP_CONTENT=$(extract_setup)
+
+  # Helper: extract heredoc content between markers
+  _extract() {
+    local marker="$1" outfile="$2"
+    echo "$_SETUP_CONTENT" | sed -n "/<<.*'${marker}'/,/^${marker}$/{/<<.*'${marker}'/d;/^${marker}$/d;p;}" > "${_STAGING}/${outfile}"
+  }
+
+  _extract "FIXESEMBEDEOF"       "seafile-config-fixes.sh"
+  _extract "UPDATESHEOF"         "update.sh"
+  _extract "CLIFILE"             "seafile-cli.sh"
+  _extract "SYNSCRIPTEOF"        "seafile-env-sync.sh"
+  _extract "CONFIGUIPYEOF"       "seafile-config-ui.py"
+  _extract "CONFIGUIHTMLEOF"     "config-ui.html"
+  _extract "CONFIGSERVEREOF"     "seafile-config-server.sh"
+  _extract "STORAGESYNCSCRIPT"   "seafile-storage-sync.sh"
+  _extract "FINALIZEEOF"         "seafile-recovery-finalize.sh"
+
+  # Also extract the deploy script version string
+  grep "^DEPLOY_VERSION=" "$0" > "${_STAGING}/.version" 2>/dev/null || echo "DEPLOY_VERSION=unknown" > "${_STAGING}/.version"
+
+  echo "Scripts extracted to ${_STAGING}/"
+  exit 0
+fi
+
+# ---------------------------------------------------------------------------
 # Pre-flight: must run as root
 # ---------------------------------------------------------------------------
 if [[ $EUID -ne 0 ]]; then
   echo -e "\n  ${RED}This script must be run as root.${NC}  Try: sudo bash $0\n"
   exit 1
+fi
+
+# ---------------------------------------------------------------------------
+# Save a copy of this script for self-update extraction
+# ---------------------------------------------------------------------------
+if [[ -f "$0" ]]; then
+  cp "$0" /opt/seafile-deploy.sh 2>/dev/null || true
+  chmod +x /opt/seafile-deploy.sh 2>/dev/null || true
 fi
 
 # ---------------------------------------------------------------------------

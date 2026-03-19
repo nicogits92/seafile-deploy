@@ -2368,7 +2368,7 @@ cmd_metadata() {
   local repos_json
   repos_json=$(curl -sf -H "Host: ${host_hdr}" \
     -H "Authorization: Token ${token}" \
-    "${api_base}/api/v2.1/repos/?type=mine" 2>/dev/null || true)
+    "${api_base}/api2/repos/" 2>/dev/null || true)
 
   if [[ -z "$repos_json" ]]; then
     # Try admin endpoint
@@ -3217,6 +3217,7 @@ cmd_help() {
   printf "  ${BOLD}%-24s${NC} %s\n" "gc"                  "Run garbage collection"
   printf "  ${BOLD}%-24s${NC} %s\n" "gc --status"         "Show GC schedule, last run, and log tail"
   printf "  ${BOLD}%-24s${NC} %s\n" "gitops"              "GitOps listener status and recent activity"
+  printf "  ${BOLD}%-24s${NC} %s\n" "self-update"          "Update management scripts from /opt/seafile-deploy.sh"
   printf "  ${BOLD}%-24s${NC} %s\n" "help"                "Show this help"
   echo ""
   rule
@@ -3225,6 +3226,132 @@ cmd_help() {
   echo -e "  ${DIM}  seafile config smtp${NC}"
   echo -e "  ${DIM}  seafile config storage --status${NC}"
   echo -e "  ${DIM}  seafile logs seafile${NC}\n"
+}
+
+# ===========================================================================
+# SELF-UPDATE — extract updated scripts from local seafile-deploy.sh
+# ===========================================================================
+cmd_self_update() {
+  heading "Self-Update"
+
+  local deploy_script="/opt/seafile-deploy.sh"
+
+  if [[ ! -f "$deploy_script" ]]; then
+    err "seafile-deploy.sh not found at ${deploy_script}"
+    echo ""
+    echo -e "  ${DIM}To update, copy the new seafile-deploy.sh to /opt/:${NC}"
+    echo -e "    ${BOLD}scp seafile-deploy.sh root@this-server:/opt/seafile-deploy.sh${NC}"
+    echo -e "  ${DIM}Then run: seafile self-update${NC}"
+    return 1
+  fi
+
+  # Check version
+  local new_version
+  new_version=$(grep "^DEPLOY_VERSION=" "$deploy_script" 2>/dev/null | head -1 | cut -d'"' -f2 || echo "unknown")
+  local cur_installed
+  cur_installed=$(grep "^DEPLOY_VERSION=" /usr/local/bin/seafile 2>/dev/null | head -1 | cut -d'"' -f2 || echo "unknown")
+
+  echo -e "  Installed version:    ${BOLD}${cur_installed}${NC}"
+  echo -e "  Deploy script version: ${BOLD}${new_version}${NC}"
+  echo ""
+
+  # Extract scripts to staging
+  info "Extracting scripts from ${deploy_script}..."
+  local _staging_dir
+  _staging_dir=$(mktemp -d /tmp/seafile-update-staging.XXXXXX)
+  chmod 700 "$_staging_dir"
+  trap 'rm -rf "$_staging_dir" 2>/dev/null' EXIT
+
+  if ! bash "$deploy_script" --extract-scripts "$_staging_dir" 2>/dev/null; then
+    err "Failed to extract scripts. Is the deploy file valid?"
+    return 1
+  fi
+
+  # Compare with installed files
+  local -A FILE_MAP=(
+    ["seafile-config-fixes.sh"]="/opt/seafile-config-fixes.sh"
+    ["update.sh"]="/opt/update.sh"
+    ["seafile-cli.sh"]="/usr/local/bin/seafile"
+    ["seafile-env-sync.sh"]="/opt/seafile/seafile-env-sync.sh"
+    ["seafile-config-ui.py"]="/opt/seafile/seafile-config-ui.py"
+    ["config-ui.html"]="/opt/seafile/config-ui.html"
+    ["seafile-config-server.sh"]="/opt/seafile/seafile-config-server.sh"
+    ["seafile-storage-sync.sh"]="/opt/seafile/seafile-storage-sync.sh"
+    ["seafile-recovery-finalize.sh"]="/opt/seafile/seafile-recovery-finalize.sh"
+  )
+
+  echo -e "  ${BOLD}Changes:${NC}"
+  local unchanged=0
+  local -a changed_files=()
+  for name in "${!FILE_MAP[@]}"; do
+    local staged="${_staging_dir}/${name}"
+    local installed="${FILE_MAP[$name]}"
+    if [[ ! -f "$staged" || ! -s "$staged" ]]; then
+      continue
+    fi
+    if [[ ! -f "$installed" ]]; then
+      echo -e "    ${GREEN}+${NC}  ${name}  ${DIM}(new)${NC}"
+      changed_files+=("$name")
+    elif ! diff -q "$staged" "$installed" &>/dev/null; then
+      local lines_changed
+      lines_changed=$(diff "$installed" "$staged" 2>/dev/null | grep -c '^[<>]' || echo "?")
+      echo -e "    ${YELLOW}~${NC}  ${name}  ${DIM}(${lines_changed} lines changed)${NC}"
+      changed_files+=("$name")
+    else
+      ((unchanged++))
+    fi
+  done
+
+  if [[ ${#changed_files[@]} -eq 0 ]]; then
+    echo -e "    ${DIM}All scripts are up to date.${NC}"
+    echo ""
+    ok "Nothing to update."
+    return 0
+  fi
+
+  echo -e "    ${DIM}(${unchanged} unchanged)${NC}"
+  echo ""
+
+  # Confirm
+  echo -ne "  ${BOLD}Apply updates? [Y/n]:${NC} "
+  read -r _confirm
+  if [[ "${_confirm,,}" == "n" ]]; then
+    info "Cancelled."
+    return 0
+  fi
+
+  # Backup current scripts
+  local backup_dir="/opt/seafile/.script-backups/$(date '+%Y-%m-%d_%H%M%S')"
+  mkdir -p "$backup_dir"
+  for name in "${changed_files[@]}"; do
+    local installed="${FILE_MAP[$name]}"
+    if [[ -f "$installed" ]]; then
+      cp "$installed" "${backup_dir}/${name}"
+    fi
+  done
+  info "Backup saved to ${backup_dir}/"
+
+  # Replace files
+  for name in "${changed_files[@]}"; do
+    local staged="${_staging_dir}/${name}"
+    local installed="${FILE_MAP[$name]}"
+    cp "$staged" "$installed"
+    chmod +x "$installed" 2>/dev/null || true
+  done
+
+  # Restart lightweight services (not Seafile containers)
+  info "Restarting management services..."
+  systemctl restart seafile-env-sync 2>/dev/null || true
+  systemctl restart seafile-config-ui 2>/dev/null || true
+
+  echo ""
+  ok "Management scripts updated (${#changed_files[@]} files)."
+  echo ""
+  echo -e "  ${DIM}Your running Seafile containers are not affected.${NC}"
+  echo -e "  ${DIM}Run 'seafile fix' to regenerate config files with the updated scripts.${NC}"
+  echo -e "  ${DIM}Run 'seafile update' for a full reconcile.${NC}"
+  echo ""
+  echo -e "  ${DIM}To roll back: cp ${backup_dir}/* to their original paths${NC}"
 }
 
 # --- Dispatch ----------------------------------------------------------------
@@ -3248,6 +3375,7 @@ case "$CMD" in
   migrate) cmd_migrate ;;
   gitops)  cmd_gitops ;;
   gc)      cmd_gc "$@" ;;
+  self-update) cmd_self_update ;;
   help|--help|-h) cmd_help ;;
   *)
     err "Unknown command: $CMD"
