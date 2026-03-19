@@ -2399,7 +2399,7 @@ for r in repos:
   local count=0 enabled=0 failed=0
   while IFS= read -r repo_id; do
     [[ -z "$repo_id" ]] && continue
-    ((count++))
+    count=$((count + 1))
     local result
     result=$(curl -sf -X PUT -H "Host: ${host_hdr}" \
       -H "Authorization: Token ${token}" \
@@ -2408,9 +2408,9 @@ for r in repos:
       "${api_base}/api/v2.1/repos/${repo_id}/metadata/" 2>/dev/null || true)
 
     if [[ -n "$result" ]]; then
-      ((enabled++))
+      enabled=$((enabled + 1))
     else
-      ((failed++))
+      failed=$((failed + 1))
     fi
   done <<< "$repo_ids"
 
@@ -3257,10 +3257,9 @@ cmd_self_update() {
 
   # Extract scripts to staging
   info "Extracting scripts from ${deploy_script}..."
-  local _staging_dir
   _staging_dir=$(mktemp -d /tmp/seafile-update-staging.XXXXXX)
   chmod 700 "$_staging_dir"
-  trap 'rm -rf "$_staging_dir" 2>/dev/null' EXIT
+  trap 'rm -rf "${_staging_dir:-}" 2>/dev/null' RETURN
 
   if ! bash "$deploy_script" --extract-scripts "$_staging_dir" 2>/dev/null; then
     err "Failed to extract scripts. Is the deploy file valid?"
@@ -3298,7 +3297,7 @@ cmd_self_update() {
       echo -e "    ${YELLOW}~${NC}  ${name}  ${DIM}(${lines_changed} lines changed)${NC}"
       changed_files+=("$name")
     else
-      ((unchanged++))
+      unchanged=$((unchanged + 1))
     fi
   done
 
