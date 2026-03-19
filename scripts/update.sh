@@ -579,7 +579,7 @@ AUDIT_ENABLED=true
 # Changes take effect after running: seafile update
 #
 # Custom assets (logo, favicon, login background) are stored at:
-#   ${SEAFILE_VOLUME}/seahub/media/custom/
+#   ${SEAFILE_VOLUME}/seafile/seahub-data/custom/
 # Upload them via the web configuration panel (Branding tab) or copy
 # them manually. All paths below are relative to the media directory.
 # =============================================================================

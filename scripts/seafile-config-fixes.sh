@@ -141,7 +141,7 @@ if [ ! -d "$CONF_DIR" ]; then
 fi
 
 # Ensure custom branding directory exists
-CUSTOM_DIR="${SEAFILE_VOLUME}/seahub/media/custom"
+CUSTOM_DIR="${SEAFILE_VOLUME}/seafile/seahub-data/custom"
 mkdir -p "$CUSTOM_DIR" 2>/dev/null || true
 
 # ---------------------------------------------------------------------------

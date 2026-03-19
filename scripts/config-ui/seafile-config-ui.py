@@ -359,7 +359,7 @@ class ConfigHandler(http.server.BaseHTTPRequestHandler):
         elif self.path == '/api/branding':
             env = load_env()
             custom_dir = os.path.join(env.get('SEAFILE_VOLUME', '/opt/seafile-data'),
-                                      'seahub', 'media', 'custom')
+                                      'seafile', 'seahub-data', 'custom')
             assets = {}
             for name in os.listdir(custom_dir) if os.path.isdir(custom_dir) else []:
                 fpath = os.path.join(custom_dir, name)
@@ -463,6 +463,32 @@ class ConfigHandler(http.server.BaseHTTPRequestHandler):
         elif self.path == '/api/upload/branding':
             self._handle_upload_branding(body, content_type)
 
+        elif self.path == '/api/branding/apply':
+            try:
+                data = json.loads(body)
+                updates = data.get('updates', {})
+                # Only allow branding-related keys
+                allowed = {'LOGO_PATH', 'LOGO_WIDTH', 'LOGO_HEIGHT', 'LOGIN_BG_IMAGE_PATH',
+                           'FAVICON_PATH', 'BRANDING_CSS', 'SITE_NAME', 'SITE_TITLE'}
+                filtered = {k: v for k, v in updates.items() if k in allowed}
+                if filtered:
+                    save_env(filtered)
+                apply_config()
+                self._json_response({'status': 'applied', 'updated': list(filtered.keys())})
+            except json.JSONDecodeError:
+                self._json_response({'error': 'Invalid JSON'}, 400)
+
+        elif self.path == '/api/branding/restore':
+            # Clear all branding vars back to defaults
+            defaults = {
+                'LOGO_PATH': '', 'LOGO_WIDTH': '149', 'LOGO_HEIGHT': '32',
+                'LOGIN_BG_IMAGE_PATH': '', 'FAVICON_PATH': '', 'BRANDING_CSS': '',
+                'SITE_NAME': 'Seafile', 'SITE_TITLE': 'Seafile'
+            }
+            save_env(defaults)
+            apply_config()
+            self._json_response({'status': 'restored'})
+
         elif self.path == '/api/upload/deploy-script':
             self._handle_upload_deploy(body)
 
@@ -518,7 +544,7 @@ class ConfigHandler(http.server.BaseHTTPRequestHandler):
         """Handle branding asset upload (logo, favicon, login background)."""
         env = load_env()
         custom_dir = os.path.join(env.get('SEAFILE_VOLUME', '/opt/seafile-data'),
-                                  'seahub', 'media', 'custom')
+                                  'seafile', 'seahub-data', 'custom')
         os.makedirs(custom_dir, exist_ok=True)
 
         # Parse multipart form data
@@ -545,8 +571,8 @@ class ConfigHandler(http.server.BaseHTTPRequestHandler):
             self._json_response({'error': f'Invalid file type {ext} for {asset_type}'}, 400)
             return
 
-        # Sanitize filename: asset_type + original extension
-        safe_name = f'{asset_type}{ext}'
+        # Keep original filename but sanitize (alphanum, dash, underscore, dot)
+        safe_name = re.sub(r'[^a-zA-Z0-9._-]', '_', filename)
         dest_path = os.path.join(custom_dir, safe_name)
 
         try:
@@ -556,20 +582,16 @@ class ConfigHandler(http.server.BaseHTTPRequestHandler):
             self._json_response({'error': f'Write failed: {e}'}, 500)
             return
 
-        # Update .env with the custom/ relative path
+        # Stage the .env change but DON'T apply yet — user must confirm
         env_path = f'custom/{safe_name}'
-        updates = {info['env_key']: env_path}
-        save_env(updates)
-
-        # Auto-apply config so branding takes effect immediately
-        apply_config()
 
         self._json_response({
-            'status': 'uploaded',
+            'status': 'staged',
             'file': safe_name,
+            'original_name': filename,
             'env_key': info['env_key'],
             'env_value': env_path,
-            'applied': True
+            'size': len(file_data)
         })
 
     def _handle_upload_deploy(self, body):

@@ -550,7 +550,7 @@ AUDIT_ENABLED=true
 # Changes take effect after running: seafile update
 #
 # Custom assets (logo, favicon, login background) are stored at:
-#   ${SEAFILE_VOLUME}/seahub/media/custom/
+#   ${SEAFILE_VOLUME}/seafile/seahub-data/custom/
 # Upload them via the web configuration panel (Branding tab) or copy
 # them manually. All paths below are relative to the media directory.
 # =============================================================================
@@ -1865,7 +1865,7 @@ mkdir -p /opt/seadoc-data
 mkdir -p "${THUMBNAIL_PATH:-/opt/seafile-thumbnails}"
 mkdir -p "${METADATA_PATH:-/opt/seafile-metadata}"
 # Custom branding assets (logo, favicon, login background)
-mkdir -p "${STORAGE_MOUNT}/seahub/media/custom" 2>/dev/null || true
+mkdir -p "${STORAGE_MOUNT}/seafile/seahub-data/custom" 2>/dev/null || true
 if [[ "$SETUP_MODE" == "install" || "$SETUP_MODE" == "migrate" ]]; then
   mkdir -p "$STORAGE_MOUNT"
 fi
@@ -6387,7 +6387,7 @@ class ConfigHandler(http.server.BaseHTTPRequestHandler):
         elif self.path == '/api/branding':
             env = load_env()
             custom_dir = os.path.join(env.get('SEAFILE_VOLUME', '/opt/seafile-data'),
-                                      'seahub', 'media', 'custom')
+                                      'seafile', 'seahub-data', 'custom')
             assets = {}
             for name in os.listdir(custom_dir) if os.path.isdir(custom_dir) else []:
                 fpath = os.path.join(custom_dir, name)
@@ -6491,6 +6491,32 @@ class ConfigHandler(http.server.BaseHTTPRequestHandler):
         elif self.path == '/api/upload/branding':
             self._handle_upload_branding(body, content_type)
 
+        elif self.path == '/api/branding/apply':
+            try:
+                data = json.loads(body)
+                updates = data.get('updates', {})
+                # Only allow branding-related keys
+                allowed = {'LOGO_PATH', 'LOGO_WIDTH', 'LOGO_HEIGHT', 'LOGIN_BG_IMAGE_PATH',
+                           'FAVICON_PATH', 'BRANDING_CSS', 'SITE_NAME', 'SITE_TITLE'}
+                filtered = {k: v for k, v in updates.items() if k in allowed}
+                if filtered:
+                    save_env(filtered)
+                apply_config()
+                self._json_response({'status': 'applied', 'updated': list(filtered.keys())})
+            except json.JSONDecodeError:
+                self._json_response({'error': 'Invalid JSON'}, 400)
+
+        elif self.path == '/api/branding/restore':
+            # Clear all branding vars back to defaults
+            defaults = {
+                'LOGO_PATH': '', 'LOGO_WIDTH': '149', 'LOGO_HEIGHT': '32',
+                'LOGIN_BG_IMAGE_PATH': '', 'FAVICON_PATH': '', 'BRANDING_CSS': '',
+                'SITE_NAME': 'Seafile', 'SITE_TITLE': 'Seafile'
+            }
+            save_env(defaults)
+            apply_config()
+            self._json_response({'status': 'restored'})
+
         elif self.path == '/api/upload/deploy-script':
             self._handle_upload_deploy(body)
 
@@ -6546,7 +6572,7 @@ class ConfigHandler(http.server.BaseHTTPRequestHandler):
         """Handle branding asset upload (logo, favicon, login background)."""
         env = load_env()
         custom_dir = os.path.join(env.get('SEAFILE_VOLUME', '/opt/seafile-data'),
-                                  'seahub', 'media', 'custom')
+                                  'seafile', 'seahub-data', 'custom')
         os.makedirs(custom_dir, exist_ok=True)
 
         # Parse multipart form data
@@ -6573,8 +6599,8 @@ class ConfigHandler(http.server.BaseHTTPRequestHandler):
             self._json_response({'error': f'Invalid file type {ext} for {asset_type}'}, 400)
             return
 
-        # Sanitize filename: asset_type + original extension
-        safe_name = f'{asset_type}{ext}'
+        # Keep original filename but sanitize (alphanum, dash, underscore, dot)
+        safe_name = re.sub(r'[^a-zA-Z0-9._-]', '_', filename)
         dest_path = os.path.join(custom_dir, safe_name)
 
         try:
@@ -6584,20 +6610,16 @@ class ConfigHandler(http.server.BaseHTTPRequestHandler):
             self._json_response({'error': f'Write failed: {e}'}, 500)
             return
 
-        # Update .env with the custom/ relative path
+        # Stage the .env change but DON'T apply yet — user must confirm
         env_path = f'custom/{safe_name}'
-        updates = {info['env_key']: env_path}
-        save_env(updates)
-
-        # Auto-apply config so branding takes effect immediately
-        apply_config()
 
         self._json_response({
-            'status': 'uploaded',
+            'status': 'staged',
             'file': safe_name,
+            'original_name': filename,
             'env_key': info['env_key'],
             'env_value': env_path,
-            'applied': True
+            'size': len(file_data)
         })
 
     def _handle_upload_deploy(self, body):
@@ -6784,6 +6806,8 @@ nav button.on{border-color:#999;color:#1a1a1a;font-weight:500}
 .uz-preview{font-size:12px;color:#1d9e75;margin-bottom:8px}
 .uz-actions{display:flex;align-items:center;gap:8px;justify-content:center}
 .uz-status{font-size:12px}
+.uz-thumb{text-align:center}
+.uz-thumb img{border:1px solid #e0e0dc}
 </style>
 </head>
 <body>
@@ -7088,7 +7112,12 @@ function renderSections(schedules){
           + uploadZone('login_bg','Login background image','JPG or PNG · covers the login page background'))
         + grp('<div class="grp-t">Custom CSS</div>'
           + uploadZone('css','Custom CSS file','Upload a .css file for advanced style overrides')
-          + field('BRANDING_CSS','CSS path','Set automatically when you upload a CSS file')))
+          + field('BRANDING_CSS','CSS path','Set automatically when you upload a CSS file'))
+        + '<div class="grp" style="display:flex;gap:8px;align-items:center">'
+          + '<button class="btn btn-p" id="apply-branding-btn" onclick="applyBranding()" style="display:none">Apply branding</button>'
+          + '<button class="btn" id="restore-branding-btn" onclick="restoreBrandingDefaults()">Restore defaults</button>'
+          + '<span id="branding-apply-status" style="font-size:12px;margin-left:8px"></span>'
+        + '</div>')
 
     + sec('backup','Backup','Daily backup of database dumps and file data to a separate storage location.',
         grp(toggle('BACKUP_ENABLED','Enable automated backup','Database dumps + file data rsync','bk-fields')
@@ -7331,10 +7360,12 @@ function wireConditionalMap(envKey, valMap, hideClass){
 function uploadZone(type, label, hint){
   var envKey = {logo:'LOGO_PATH',favicon:'FAVICON_PATH',login_bg:'LOGIN_BG_IMAGE_PATH',css:'BRANDING_CSS',deploy:''}[type]||'';
   var curVal = envKey ? (ENV[envKey]||'') : '';
-  var preview = (type!=='css'&&type!=='deploy'&&curVal) ? '<div class="uz-preview" id="uz-prev-'+type+'">Current: '+esc(curVal)+'</div>' : '';
+  var preview = curVal ? '<div class="uz-preview" id="uz-prev-'+type+'">Current: '+esc(curVal)+'</div>' : '<div class="uz-preview" id="uz-prev-'+type+'"></div>';
+  var thumbId = 'uz-thumb-'+type;
   return '<div class="uz" id="uz-'+type+'" ondragover="event.preventDefault();this.classList.add(\'uz-over\')" ondragleave="this.classList.remove(\'uz-over\')" ondrop="handleDrop(event,\''+type+'\')">'
     +'<div class="uz-label">'+label+'</div>'
     +'<div class="uz-hint">'+hint+'</div>'
+    +'<div class="uz-thumb" id="'+thumbId+'"></div>'
     +preview
     +'<div class="uz-actions">'
     +'<label class="btn" style="cursor:pointer"><input type="file" style="display:none" onchange="handleFile(this.files[0],\''+type+'\')">Browse files</label>'
@@ -7349,11 +7380,23 @@ function handleDrop(e,type){
   if(f) handleFile(f,type);
 }
 
+var _brandingStaged = {};  // {type: {env_key, env_value, file, original_name}}
+
 function handleFile(file,type){
   if(!file) return;
   var status = document.getElementById('uz-s-'+type);
   status.textContent = 'Uploading...';
   status.style.color = '#888';
+
+  // Show local preview for images
+  var thumb = document.getElementById('uz-thumb-'+type);
+  if(thumb && type!=='css' && type!=='deploy' && file.type.startsWith('image/')){
+    var reader = new FileReader();
+    reader.onload = function(e){
+      thumb.innerHTML = '<img src="'+e.target.result+'" style="max-width:200px;max-height:80px;border-radius:4px;margin:8px 0">';
+    };
+    reader.readAsDataURL(file);
+  }
 
   if(type==='deploy'){
     // Deploy script — raw upload
@@ -7367,7 +7410,7 @@ function handleFile(file,type){
     return;
   }
 
-  // Branding asset — multipart with type field
+  // Branding asset — multipart upload (staged, not applied yet)
   var fd = new FormData();
   fd.append('file',file,file.name);
   fd.append('type',type);
@@ -7375,18 +7418,56 @@ function handleFile(file,type){
     .then(function(r){return r.json()})
     .then(function(r){
       if(r.error){status.textContent='Error: '+r.error;status.style.color='#e24b4a';return;}
-      status.textContent='Uploaded and applied: '+r.file;status.style.color='#1d9e75';
-      // Update ENV and preview
-      if(r.env_key){
-        ENV[r.env_key]=r.env_value;
-        var prev=document.getElementById('uz-prev-'+type);
-        if(prev) prev.textContent='Current: '+r.env_value;
-        else{
-          var zone=document.getElementById('uz-'+type);
-          if(zone){var d=document.createElement('div');d.className='uz-preview';d.id='uz-prev-'+type;d.textContent='Current: '+r.env_value;zone.insertBefore(d,zone.querySelector('.uz-actions'));}
-        }
-      }
+      status.innerHTML = '<span style="color:#c78c20">Staged: '+esc(r.original_name||r.file)+' — click Apply branding to activate</span>';
+      _brandingStaged[type] = r;
+      // Update preview text
+      var prev = document.getElementById('uz-prev-'+type);
+      if(prev) prev.textContent = 'New: '+esc(r.original_name||r.file)+' ('+Math.round(r.size/1024)+'KB)';
+      // Show the apply button
+      var ab = document.getElementById('apply-branding-btn');
+      if(ab) ab.style.display = '';
     }).catch(function(e){status.textContent='Upload failed';status.style.color='#e24b4a'});
+}
+
+function applyBranding(){
+  var btn = document.getElementById('apply-branding-btn');
+  var st = document.getElementById('branding-apply-status');
+  btn.disabled = true; btn.textContent = 'Applying...';
+
+  // Collect all staged + text field changes
+  var updates = {};
+  for(var type in _brandingStaged){
+    var s = _brandingStaged[type];
+    if(s.env_key) updates[s.env_key] = s.env_value;
+  }
+  // Also include text fields
+  ['SITE_NAME','SITE_TITLE','LOGO_WIDTH','LOGO_HEIGHT','BRANDING_CSS'].forEach(function(k){
+    var el = document.querySelector('[data-key="'+k+'"]');
+    if(el && el.value !== (ORIGINAL[k]||'')) updates[k] = el.value;
+  });
+
+  api('POST','/api/branding/apply',{updates:updates}).then(function(r){
+    btn.disabled = false; btn.textContent = 'Apply branding';
+    if(r.error){st.textContent='Error: '+r.error;st.style.color='#e24b4a';return;}
+    st.innerHTML = '<span style="color:#1d9e75">Branding applied! Changes will appear after page reload.</span>';
+    _brandingStaged = {};
+    // Update ORIGINAL so "Save and apply" doesn't see stale diffs
+    for(var k in updates) ORIGINAL[k] = updates[k];
+  });
+}
+
+function restoreBrandingDefaults(){
+  if(!confirm('Restore all branding to Seafile defaults? Custom files will remain on disk but will no longer be used.')) return;
+  var btn = document.getElementById('restore-branding-btn');
+  var st = document.getElementById('branding-apply-status');
+  btn.disabled = true;
+  api('POST','/api/branding/restore',{}).then(function(r){
+    btn.disabled = false;
+    if(r.error){st.textContent='Error: '+r.error;st.style.color='#e24b4a';return;}
+    st.innerHTML = '<span style="color:#1d9e75">Defaults restored. Reload the page to see updated fields.</span>';
+    // Clear staged
+    _brandingStaged = {};
+  });
 }
 
 function loadBrandingInfo(){
@@ -7613,7 +7694,7 @@ if [ ! -d "$CONF_DIR" ]; then
 fi
 
 # Ensure custom branding directory exists
-CUSTOM_DIR="${SEAFILE_VOLUME}/seahub/media/custom"
+CUSTOM_DIR="${SEAFILE_VOLUME}/seafile/seahub-data/custom"
 mkdir -p "$CUSTOM_DIR" 2>/dev/null || true
 
 # ---------------------------------------------------------------------------
@@ -9284,7 +9365,7 @@ AUDIT_ENABLED=true
 # Changes take effect after running: seafile update
 #
 # Custom assets (logo, favicon, login background) are stored at:
-#   ${SEAFILE_VOLUME}/seahub/media/custom/
+#   ${SEAFILE_VOLUME}/seafile/seahub-data/custom/
 # Upload them via the web configuration panel (Branding tab) or copy
 # them manually. All paths below are relative to the media directory.
 # =============================================================================
