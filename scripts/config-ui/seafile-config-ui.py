@@ -354,6 +354,34 @@ class ConfigHandler(http.server.BaseHTTPRequestHandler):
             })
         elif self.path == '/api/operations':
             self._json_response(_ops_status)
+        elif self.path == '/api/branding':
+            env = load_env()
+            custom_dir = os.path.join(env.get('SEAFILE_VOLUME', '/opt/seafile-data'),
+                                      'seahub', 'media', 'custom')
+            assets = {}
+            for name in os.listdir(custom_dir) if os.path.isdir(custom_dir) else []:
+                fpath = os.path.join(custom_dir, name)
+                if os.path.isfile(fpath):
+                    assets[name] = {
+                        'size': os.path.getsize(fpath),
+                        'modified': os.path.getmtime(fpath)
+                    }
+            # Read current deploy version
+            deploy_version = 'unknown'
+            if os.path.isfile('/opt/seafile-deploy.sh'):
+                try:
+                    with open('/opt/seafile-deploy.sh', 'r') as f:
+                        for line in f:
+                            if line.startswith('DEPLOY_VERSION='):
+                                deploy_version = line.split('=', 1)[1].strip().strip('"')
+                                break
+                except Exception:
+                    pass
+            self._json_response({
+                'assets': assets,
+                'custom_dir': custom_dir,
+                'deploy_version': deploy_version,
+            })
         else:
             self.send_error(404)
 
@@ -363,6 +391,7 @@ class ConfigHandler(http.server.BaseHTTPRequestHandler):
 
         length = int(self.headers.get('Content-Length', 0))
         body = self.rfile.read(length)
+        content_type = self.headers.get('Content-Type', 'application/json')
 
         if self.path == '/api/env':
             try:
@@ -429,8 +458,175 @@ class ConfigHandler(http.server.BaseHTTPRequestHandler):
             except json.JSONDecodeError:
                 self._json_response({'error': 'Invalid JSON'}, 400)
 
+        elif self.path == '/api/upload/branding':
+            self._handle_upload_branding(body, content_type)
+
+        elif self.path == '/api/upload/deploy-script':
+            self._handle_upload_deploy(body)
+
+        elif self.path == '/api/self-update':
+            cmd = ['bash', '/opt/seafile-deploy.sh', '--extract-scripts', '/tmp/_ui_update_staging']
+            try:
+                subprocess.run(cmd, capture_output=True, timeout=30)
+            except Exception as e:
+                self._json_response({'error': str(e)}, 500)
+                return
+            # Apply updates using the same logic as CLI self-update
+            file_map = {
+                'seafile-config-fixes.sh': '/opt/seafile-config-fixes.sh',
+                'update.sh': '/opt/update.sh',
+                'seafile-cli.sh': '/usr/local/bin/seafile',
+                'seafile-env-sync.sh': '/opt/seafile/seafile-env-sync.sh',
+                'seafile-config-ui.py': '/opt/seafile/seafile-config-ui.py',
+                'config-ui.html': '/opt/seafile/config-ui.html',
+                'seafile-config-server.sh': '/opt/seafile/seafile-config-server.sh',
+                'seafile-storage-sync.sh': '/opt/seafile/seafile-storage-sync.sh',
+                'seafile-recovery-finalize.sh': '/opt/seafile/seafile-recovery-finalize.sh',
+            }
+            staging = '/tmp/_ui_update_staging'
+            changed = []
+            import filecmp
+            backup_dir = f'/opt/seafile/.script-backups/{time.strftime("%Y-%m-%d_%H%M%S")}'
+            os.makedirs(backup_dir, exist_ok=True)
+            for name, dest in file_map.items():
+                src = os.path.join(staging, name)
+                if os.path.isfile(src) and os.path.getsize(src) > 0:
+                    if not os.path.isfile(dest) or not filecmp.cmp(src, dest, shallow=False):
+                        if os.path.isfile(dest):
+                            import shutil
+                            shutil.copy2(dest, os.path.join(backup_dir, name))
+                        shutil.copy2(src, dest)
+                        os.chmod(dest, 0o755)
+                        changed.append(name)
+            # Cleanup staging
+            import shutil
+            shutil.rmtree(staging, ignore_errors=True)
+            # Restart management services
+            subprocess.run(['systemctl', 'restart', 'seafile-env-sync'], capture_output=True)
+            self._json_response({
+                'status': 'updated',
+                'changed': changed,
+                'backup': backup_dir
+            })
+
         else:
             self.send_error(404)
+
+    def _handle_upload_branding(self, body, content_type):
+        """Handle branding asset upload (logo, favicon, login background)."""
+        env = load_env()
+        custom_dir = os.path.join(env.get('SEAFILE_VOLUME', '/opt/seafile-data'),
+                                  'seahub', 'media', 'custom')
+        os.makedirs(custom_dir, exist_ok=True)
+
+        # Parse multipart form data
+        file_data, filename, form_fields = self._parse_multipart(body, content_type)
+        if file_data is None:
+            self._json_response({'error': 'No file in upload'}, 400)
+            return
+
+        asset_type = form_fields.get('type', 'logo')
+        allowed_types = {
+            'logo': {'exts': ['.png', '.jpg', '.jpeg', '.svg', '.gif'], 'env_key': 'LOGO_PATH'},
+            'favicon': {'exts': ['.png', '.ico', '.svg'], 'env_key': 'FAVICON_PATH'},
+            'login_bg': {'exts': ['.png', '.jpg', '.jpeg', '.svg', '.webp'], 'env_key': 'LOGIN_BG_IMAGE_PATH'},
+            'css': {'exts': ['.css'], 'env_key': 'BRANDING_CSS'},
+        }
+
+        if asset_type not in allowed_types:
+            self._json_response({'error': f'Unknown asset type: {asset_type}'}, 400)
+            return
+
+        info = allowed_types[asset_type]
+        ext = os.path.splitext(filename)[1].lower()
+        if ext not in info['exts']:
+            self._json_response({'error': f'Invalid file type {ext} for {asset_type}'}, 400)
+            return
+
+        # Sanitize filename: asset_type + original extension
+        safe_name = f'{asset_type}{ext}'
+        dest_path = os.path.join(custom_dir, safe_name)
+
+        try:
+            with open(dest_path, 'wb') as f:
+                f.write(file_data)
+        except Exception as e:
+            self._json_response({'error': f'Write failed: {e}'}, 500)
+            return
+
+        # Update .env with the custom/ relative path
+        env_path = f'custom/{safe_name}'
+        updates = {info['env_key']: env_path}
+        save_env(updates)
+
+        self._json_response({
+            'status': 'uploaded',
+            'file': safe_name,
+            'env_key': info['env_key'],
+            'env_value': env_path
+        })
+
+    def _handle_upload_deploy(self, body):
+        """Handle deploy script upload for self-update."""
+        if len(body) < 1000:
+            self._json_response({'error': 'File too small — likely not a valid deploy script'}, 400)
+            return
+        try:
+            with open('/opt/seafile-deploy.sh', 'wb') as f:
+                f.write(body)
+            os.chmod('/opt/seafile-deploy.sh', 0o755)
+            self._json_response({'status': 'uploaded', 'size': len(body)})
+        except Exception as e:
+            self._json_response({'error': f'Write failed: {e}'}, 500)
+
+    def _parse_multipart(self, body, content_type):
+        """Parse multipart/form-data. Returns (file_bytes, filename, form_fields)."""
+        if 'multipart/form-data' not in content_type:
+            # Not multipart — treat entire body as the file
+            return body, 'upload.bin', {}
+
+        boundary = None
+        for part in content_type.split(';'):
+            part = part.strip()
+            if part.startswith('boundary='):
+                boundary = part[9:].strip('"')
+                break
+        if not boundary:
+            return None, None, {}
+
+        boundary_bytes = f'--{boundary}'.encode()
+        parts = body.split(boundary_bytes)
+        file_data = None
+        filename = 'upload.bin'
+        form_fields = {}
+
+        for part in parts:
+            if not part or part == b'--\r\n' or part == b'--':
+                continue
+            # Split headers from body
+            if b'\r\n\r\n' in part:
+                header_section, part_body = part.split(b'\r\n\r\n', 1)
+            elif b'\n\n' in part:
+                header_section, part_body = part.split(b'\n\n', 1)
+            else:
+                continue
+
+            headers = header_section.decode('utf-8', errors='replace')
+            # Strip trailing boundary markers from body
+            if part_body.endswith(b'\r\n'):
+                part_body = part_body[:-2]
+
+            # Extract field name and filename
+            name_match = re.search(r'name="([^"]+)"', headers)
+            fname_match = re.search(r'filename="([^"]+)"', headers)
+
+            if fname_match:
+                filename = fname_match.group(1)
+                file_data = part_body
+            elif name_match:
+                form_fields[name_match.group(1)] = part_body.decode('utf-8', errors='replace').strip()
+
+        return file_data, filename, form_fields
 
     def _serve_html(self):
         try:

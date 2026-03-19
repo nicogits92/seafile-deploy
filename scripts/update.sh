@@ -147,6 +147,12 @@ _DEFAULTS=(
   "AUDIT_ENABLED=true"
   "SITE_NAME=Seafile"
   "SITE_TITLE=Seafile"
+  "LOGO_PATH="
+  "LOGO_WIDTH=149"
+  "LOGO_HEIGHT=32"
+  "LOGIN_BG_IMAGE_PATH="
+  "FAVICON_PATH="
+  "BRANDING_CSS="
   "SEAFDAV_ENABLED=false"
   "LDAP_ENABLED=false"
   "LDAP_LOGIN_ATTR=mail"
@@ -571,12 +577,34 @@ AUDIT_ENABLED=true
 # =============================================================================
 # Customise the Seafile web interface appearance.
 # Changes take effect after running: seafile update
+#
+# Custom assets (logo, favicon, login background) are stored at:
+#   ${SEAFILE_VOLUME}/seahub/media/custom/
+# Upload them via the web configuration panel (Branding tab) or copy
+# them manually. All paths below are relative to the media directory.
 # =============================================================================
 
-# Site name shown in browser tab and emails.
+# Site name shown in emails and notifications.
 SITE_NAME=Seafile
-# Site title shown on the login page.
+# Site title shown in the browser tab.
 SITE_TITLE=Seafile
+
+# Logo shown in the top-left of the web interface.
+# Default dimensions: 149px wide × 32px tall.
+# Upload a logo via the web panel or copy to the custom/ directory.
+LOGO_PATH=
+LOGO_WIDTH=149
+LOGO_HEIGHT=32
+
+# Login page background image. Leave blank for the Seafile default.
+LOGIN_BG_IMAGE_PATH=
+
+# Browser tab / bookmark icon. Leave blank for the Seafile default.
+FAVICON_PATH=
+
+# Custom CSS file for advanced styling. Leave blank for none.
+# Example: upload custom.css via the web panel.
+BRANDING_CSS=
 
 
 # =============================================================================

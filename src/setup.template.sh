@@ -364,6 +364,8 @@ mkdir -p /opt/seafile-caddy/config
 mkdir -p /opt/seadoc-data
 mkdir -p "${THUMBNAIL_PATH:-/opt/seafile-thumbnails}"
 mkdir -p "${METADATA_PATH:-/opt/seafile-metadata}"
+# Custom branding assets (logo, favicon, login background)
+mkdir -p "${STORAGE_MOUNT}/seahub/media/custom" 2>/dev/null || true
 if [[ "$SETUP_MODE" == "install" || "$SETUP_MODE" == "migrate" ]]; then
   mkdir -p "$STORAGE_MOUNT"
 fi

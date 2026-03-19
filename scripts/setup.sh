@@ -118,6 +118,12 @@ _DEFAULTS=(
   "AUDIT_ENABLED=true"
   "SITE_NAME=Seafile"
   "SITE_TITLE=Seafile"
+  "LOGO_PATH="
+  "LOGO_WIDTH=149"
+  "LOGO_HEIGHT=32"
+  "LOGIN_BG_IMAGE_PATH="
+  "FAVICON_PATH="
+  "BRANDING_CSS="
   "SEAFDAV_ENABLED=false"
   "LDAP_ENABLED=false"
   "LDAP_LOGIN_ATTR=mail"
@@ -542,12 +548,34 @@ AUDIT_ENABLED=true
 # =============================================================================
 # Customise the Seafile web interface appearance.
 # Changes take effect after running: seafile update
+#
+# Custom assets (logo, favicon, login background) are stored at:
+#   ${SEAFILE_VOLUME}/seahub/media/custom/
+# Upload them via the web configuration panel (Branding tab) or copy
+# them manually. All paths below are relative to the media directory.
 # =============================================================================
 
-# Site name shown in browser tab and emails.
+# Site name shown in emails and notifications.
 SITE_NAME=Seafile
-# Site title shown on the login page.
+# Site title shown in the browser tab.
 SITE_TITLE=Seafile
+
+# Logo shown in the top-left of the web interface.
+# Default dimensions: 149px wide × 32px tall.
+# Upload a logo via the web panel or copy to the custom/ directory.
+LOGO_PATH=
+LOGO_WIDTH=149
+LOGO_HEIGHT=32
+
+# Login page background image. Leave blank for the Seafile default.
+LOGIN_BG_IMAGE_PATH=
+
+# Browser tab / bookmark icon. Leave blank for the Seafile default.
+FAVICON_PATH=
+
+# Custom CSS file for advanced styling. Leave blank for none.
+# Example: upload custom.css via the web panel.
+BRANDING_CSS=
 
 
 # =============================================================================
@@ -1836,6 +1864,8 @@ mkdir -p /opt/seafile-caddy/config
 mkdir -p /opt/seadoc-data
 mkdir -p "${THUMBNAIL_PATH:-/opt/seafile-thumbnails}"
 mkdir -p "${METADATA_PATH:-/opt/seafile-metadata}"
+# Custom branding assets (logo, favicon, login background)
+mkdir -p "${STORAGE_MOUNT}/seahub/media/custom" 2>/dev/null || true
 if [[ "$SETUP_MODE" == "install" || "$SETUP_MODE" == "migrate" ]]; then
   mkdir -p "$STORAGE_MOUNT"
 fi
@@ -6352,6 +6382,34 @@ class ConfigHandler(http.server.BaseHTTPRequestHandler):
             })
         elif self.path == '/api/operations':
             self._json_response(_ops_status)
+        elif self.path == '/api/branding':
+            env = load_env()
+            custom_dir = os.path.join(env.get('SEAFILE_VOLUME', '/opt/seafile-data'),
+                                      'seahub', 'media', 'custom')
+            assets = {}
+            for name in os.listdir(custom_dir) if os.path.isdir(custom_dir) else []:
+                fpath = os.path.join(custom_dir, name)
+                if os.path.isfile(fpath):
+                    assets[name] = {
+                        'size': os.path.getsize(fpath),
+                        'modified': os.path.getmtime(fpath)
+                    }
+            # Read current deploy version
+            deploy_version = 'unknown'
+            if os.path.isfile('/opt/seafile-deploy.sh'):
+                try:
+                    with open('/opt/seafile-deploy.sh', 'r') as f:
+                        for line in f:
+                            if line.startswith('DEPLOY_VERSION='):
+                                deploy_version = line.split('=', 1)[1].strip().strip('"')
+                                break
+                except Exception:
+                    pass
+            self._json_response({
+                'assets': assets,
+                'custom_dir': custom_dir,
+                'deploy_version': deploy_version,
+            })
         else:
             self.send_error(404)
 
@@ -6361,6 +6419,7 @@ class ConfigHandler(http.server.BaseHTTPRequestHandler):
 
         length = int(self.headers.get('Content-Length', 0))
         body = self.rfile.read(length)
+        content_type = self.headers.get('Content-Type', 'application/json')
 
         if self.path == '/api/env':
             try:
@@ -6427,8 +6486,175 @@ class ConfigHandler(http.server.BaseHTTPRequestHandler):
             except json.JSONDecodeError:
                 self._json_response({'error': 'Invalid JSON'}, 400)
 
+        elif self.path == '/api/upload/branding':
+            self._handle_upload_branding(body, content_type)
+
+        elif self.path == '/api/upload/deploy-script':
+            self._handle_upload_deploy(body)
+
+        elif self.path == '/api/self-update':
+            cmd = ['bash', '/opt/seafile-deploy.sh', '--extract-scripts', '/tmp/_ui_update_staging']
+            try:
+                subprocess.run(cmd, capture_output=True, timeout=30)
+            except Exception as e:
+                self._json_response({'error': str(e)}, 500)
+                return
+            # Apply updates using the same logic as CLI self-update
+            file_map = {
+                'seafile-config-fixes.sh': '/opt/seafile-config-fixes.sh',
+                'update.sh': '/opt/update.sh',
+                'seafile-cli.sh': '/usr/local/bin/seafile',
+                'seafile-env-sync.sh': '/opt/seafile/seafile-env-sync.sh',
+                'seafile-config-ui.py': '/opt/seafile/seafile-config-ui.py',
+                'config-ui.html': '/opt/seafile/config-ui.html',
+                'seafile-config-server.sh': '/opt/seafile/seafile-config-server.sh',
+                'seafile-storage-sync.sh': '/opt/seafile/seafile-storage-sync.sh',
+                'seafile-recovery-finalize.sh': '/opt/seafile/seafile-recovery-finalize.sh',
+            }
+            staging = '/tmp/_ui_update_staging'
+            changed = []
+            import filecmp
+            backup_dir = f'/opt/seafile/.script-backups/{time.strftime("%Y-%m-%d_%H%M%S")}'
+            os.makedirs(backup_dir, exist_ok=True)
+            for name, dest in file_map.items():
+                src = os.path.join(staging, name)
+                if os.path.isfile(src) and os.path.getsize(src) > 0:
+                    if not os.path.isfile(dest) or not filecmp.cmp(src, dest, shallow=False):
+                        if os.path.isfile(dest):
+                            import shutil
+                            shutil.copy2(dest, os.path.join(backup_dir, name))
+                        shutil.copy2(src, dest)
+                        os.chmod(dest, 0o755)
+                        changed.append(name)
+            # Cleanup staging
+            import shutil
+            shutil.rmtree(staging, ignore_errors=True)
+            # Restart management services
+            subprocess.run(['systemctl', 'restart', 'seafile-env-sync'], capture_output=True)
+            self._json_response({
+                'status': 'updated',
+                'changed': changed,
+                'backup': backup_dir
+            })
+
         else:
             self.send_error(404)
+
+    def _handle_upload_branding(self, body, content_type):
+        """Handle branding asset upload (logo, favicon, login background)."""
+        env = load_env()
+        custom_dir = os.path.join(env.get('SEAFILE_VOLUME', '/opt/seafile-data'),
+                                  'seahub', 'media', 'custom')
+        os.makedirs(custom_dir, exist_ok=True)
+
+        # Parse multipart form data
+        file_data, filename, form_fields = self._parse_multipart(body, content_type)
+        if file_data is None:
+            self._json_response({'error': 'No file in upload'}, 400)
+            return
+
+        asset_type = form_fields.get('type', 'logo')
+        allowed_types = {
+            'logo': {'exts': ['.png', '.jpg', '.jpeg', '.svg', '.gif'], 'env_key': 'LOGO_PATH'},
+            'favicon': {'exts': ['.png', '.ico', '.svg'], 'env_key': 'FAVICON_PATH'},
+            'login_bg': {'exts': ['.png', '.jpg', '.jpeg', '.svg', '.webp'], 'env_key': 'LOGIN_BG_IMAGE_PATH'},
+            'css': {'exts': ['.css'], 'env_key': 'BRANDING_CSS'},
+        }
+
+        if asset_type not in allowed_types:
+            self._json_response({'error': f'Unknown asset type: {asset_type}'}, 400)
+            return
+
+        info = allowed_types[asset_type]
+        ext = os.path.splitext(filename)[1].lower()
+        if ext not in info['exts']:
+            self._json_response({'error': f'Invalid file type {ext} for {asset_type}'}, 400)
+            return
+
+        # Sanitize filename: asset_type + original extension
+        safe_name = f'{asset_type}{ext}'
+        dest_path = os.path.join(custom_dir, safe_name)
+
+        try:
+            with open(dest_path, 'wb') as f:
+                f.write(file_data)
+        except Exception as e:
+            self._json_response({'error': f'Write failed: {e}'}, 500)
+            return
+
+        # Update .env with the custom/ relative path
+        env_path = f'custom/{safe_name}'
+        updates = {info['env_key']: env_path}
+        save_env(updates)
+
+        self._json_response({
+            'status': 'uploaded',
+            'file': safe_name,
+            'env_key': info['env_key'],
+            'env_value': env_path
+        })
+
+    def _handle_upload_deploy(self, body):
+        """Handle deploy script upload for self-update."""
+        if len(body) < 1000:
+            self._json_response({'error': 'File too small — likely not a valid deploy script'}, 400)
+            return
+        try:
+            with open('/opt/seafile-deploy.sh', 'wb') as f:
+                f.write(body)
+            os.chmod('/opt/seafile-deploy.sh', 0o755)
+            self._json_response({'status': 'uploaded', 'size': len(body)})
+        except Exception as e:
+            self._json_response({'error': f'Write failed: {e}'}, 500)
+
+    def _parse_multipart(self, body, content_type):
+        """Parse multipart/form-data. Returns (file_bytes, filename, form_fields)."""
+        if 'multipart/form-data' not in content_type:
+            # Not multipart — treat entire body as the file
+            return body, 'upload.bin', {}
+
+        boundary = None
+        for part in content_type.split(';'):
+            part = part.strip()
+            if part.startswith('boundary='):
+                boundary = part[9:].strip('"')
+                break
+        if not boundary:
+            return None, None, {}
+
+        boundary_bytes = f'--{boundary}'.encode()
+        parts = body.split(boundary_bytes)
+        file_data = None
+        filename = 'upload.bin'
+        form_fields = {}
+
+        for part in parts:
+            if not part or part == b'--\r\n' or part == b'--':
+                continue
+            # Split headers from body
+            if b'\r\n\r\n' in part:
+                header_section, part_body = part.split(b'\r\n\r\n', 1)
+            elif b'\n\n' in part:
+                header_section, part_body = part.split(b'\n\n', 1)
+            else:
+                continue
+
+            headers = header_section.decode('utf-8', errors='replace')
+            # Strip trailing boundary markers from body
+            if part_body.endswith(b'\r\n'):
+                part_body = part_body[:-2]
+
+            # Extract field name and filename
+            name_match = re.search(r'name="([^"]+)"', headers)
+            fname_match = re.search(r'filename="([^"]+)"', headers)
+
+            if fname_match:
+                filename = fname_match.group(1)
+                file_data = part_body
+            elif name_match:
+                form_fields[name_match.group(1)] = part_body.decode('utf-8', errors='replace').strip()
+
+        return file_data, filename, form_fields
 
     def _serve_html(self):
         try:
@@ -6545,6 +6771,13 @@ nav button.on{border-color:#999;color:#1a1a1a;font-weight:500}
 .welcome h2{font-size:22px;font-weight:500;margin-bottom:8px}
 .welcome p{font-size:14px;color:#666;max-width:500px;margin:0 auto 2rem}
 @media(max-width:600px){.lbl{flex:0 0 100%;margin-bottom:2px}.row{flex-wrap:wrap}.hdr{flex-wrap:wrap;gap:8px}}
+.uz{border:2px dashed #d0d0cc;border-radius:8px;padding:16px;text-align:center;transition:border-color .2s,background .2s}
+.uz-over{border-color:#2d6cd3;background:rgba(45,108,211,0.04)}
+.uz-label{font-weight:600;margin-bottom:4px}
+.uz-hint{font-size:12px;color:#888;margin-bottom:8px}
+.uz-preview{font-size:12px;color:#1d9e75;margin-bottom:8px}
+.uz-actions{display:flex;align-items:center;gap:8px;justify-content:center}
+.uz-status{font-size:12px}
 </style>
 </head>
 <body>
@@ -6579,6 +6812,7 @@ var TABS = [
   {id:'email',label:'Email'},
   {id:'ldap',label:'LDAP'},
   {id:'features',label:'Features'},
+  {id:'branding',label:'Branding'},
   {id:'backup',label:'Backup'},
   {id:'advanced',label:'Advanced'},
   {id:'operations',label:'Operations'}
@@ -6726,15 +6960,23 @@ function updateSched(id){
 }
 
 function renderSections(schedules){
+  var st = ENV.STORAGE_TYPE || 'nfs';
+  var bst = ENV.BACKUP_STORAGE_TYPE || 'nfs';
+  var dbi = ENV.DB_INTERNAL || 'true';
+  var os_ = ENV.OFFICE_SUITE || 'collabora';
+
   var el = $('#sections');
   el.innerHTML = ''
     + sec('server','Server','Core server identity and access settings.',
         grp(field('SEAFILE_SERVER_HOSTNAME','Hostname','Public hostname users will access Seafile at')
           + field('SEAFILE_SERVER_PROTOCOL','Protocol',null,{options:['https','http']})
           + field('TIME_ZONE','Time zone',null)
-          + field('INIT_SEAFILE_ADMIN_EMAIL','Admin email',null)
-          + field('SITE_NAME','Site name','Shown in browser tab and emails')
-          + field('SITE_TITLE','Site title','Shown on the login page')))
+          + field('INIT_SEAFILE_ADMIN_EMAIL','Admin email',null))
+        + grp('<div class="grp-t">Portainer</div>'
+          + field('PORTAINER_MANAGED','Portainer managed',null,{options:[{value:'false',label:'No'},{value:'true',label:'Yes'}]})
+          + '<div id="portainer-fields" style="'+(ENV.PORTAINER_MANAGED==='true'?'':'display:none')+'">'
+          + field('PORTAINER_STACK_WEBHOOK','Stack webhook URL','Portainer → Stacks → Webhooks → copy URL')
+          + '</div>'))
 
     + sec('storage','Storage','Where Seafile file data is stored. Changing storage type requires data migration.',
         grp(field('STORAGE_TYPE','Storage type',null,{options:[
@@ -6742,11 +6984,30 @@ function renderSections(schedules){
             {value:'glusterfs',label:'GlusterFS'},{value:'iscsi',label:'iSCSI'},
             {value:'local',label:'Local disk'}]})
           + field('SEAFILE_VOLUME','Mount point',null))
-        + grp(field('NFS_SERVER','NFS server',null) + field('NFS_EXPORT','NFS export',null)))
+        + '<div id="st-nfs" class="cond-st" style="'+(st==='nfs'?'':'display:none')+'">'
+          + grp(field('NFS_SERVER','NFS server',null) + field('NFS_EXPORT','NFS export',null))+'</div>'
+        + '<div id="st-smb" class="cond-st" style="'+(st==='smb'?'':'display:none')+'">'
+          + grp(field('SMB_SERVER','SMB server',null) + field('SMB_SHARE','Share name',null)
+            + field('SMB_USERNAME','Username',null) + field('SMB_PASSWORD','Password',null,{password:true})
+            + field('SMB_DOMAIN','Domain','Leave blank if none'))+'</div>'
+        + '<div id="st-glusterfs" class="cond-st" style="'+(st==='glusterfs'?'':'display:none')+'">'
+          + grp(field('GLUSTER_SERVER','GlusterFS server',null) + field('GLUSTER_VOLUME','Volume name',null))+'</div>'
+        + '<div id="st-iscsi" class="cond-st" style="'+(st==='iscsi'?'':'display:none')+'">'
+          + grp(field('ISCSI_PORTAL','iSCSI portal','IP:port of target')
+            + field('ISCSI_TARGET_IQN','Target IQN',null) + field('ISCSI_FILESYSTEM','Filesystem',null,{options:['ext4','xfs']})
+            + field('ISCSI_CHAP_USERNAME','CHAP username','Leave blank to disable CHAP')
+            + field('ISCSI_CHAP_PASSWORD','CHAP password',null,{password:true}))+'</div>')
 
     + sec('database','Database','Seafile uses MariaDB for user accounts, library metadata, and sharing data.',
-        grp(field('DB_INTERNAL','Database type',null,{options:[{value:'true',label:'Bundled (internal)'},{value:'false',label:'External server'}]})
-          + field('DB_INTERNAL_VOLUME','DB volume','Local path for bundled MariaDB data',{readonly:true})))
+        grp(field('DB_INTERNAL','Database type',null,{options:[{value:'true',label:'Bundled (internal)'},{value:'false',label:'External server'}]}))
+        + '<div id="db-int" class="cond-db" style="'+(dbi==='true'?'':'display:none')+'">'
+          + grp(field('DB_INTERNAL_VOLUME','DB volume','Local path for bundled MariaDB data'))+'</div>'
+        + '<div id="db-ext" class="cond-db" style="'+(dbi==='false'?'':'display:none')+'">'
+          + grp(field('SEAFILE_MYSQL_DB_HOST','Database host','IP or hostname of your MySQL/MariaDB server')
+            + field('SEAFILE_MYSQL_DB_PORT','Port',null)
+            + field('SEAFILE_MYSQL_DB_USER','Database user',null)
+            + field('SEAFILE_MYSQL_DB_PASSWORD','Database password',null,{password:true})
+            + field('INIT_SEAFILE_MYSQL_ROOT_PASSWORD','Root password',null,{password:true}))+'</div>')
 
     + sec('proxy','Proxy','How external traffic reaches Seafile.',
         grp(field('PROXY_TYPE','Proxy type',null,{options:[
@@ -6758,7 +7019,14 @@ function renderSections(schedules){
     + sec('office','Office suite','In-browser document editing for Word, Excel, and PowerPoint files.',
         grp(field('OFFICE_SUITE','Office suite',null,{options:[
             {value:'collabora',label:'Collabora Online'},{value:'onlyoffice',label:'OnlyOffice'},
-            {value:'none',label:'None — file sync only'}]})))
+            {value:'none',label:'None — file sync only'}]}))
+        + '<div id="off-collabora" class="cond-off" style="'+(os_==='collabora'?'':'display:none')+'">'
+          + grp(field('COLLABORA_ADMIN_USER','Admin user',null)
+            + field('COLLABORA_ADMIN_PASSWORD','Admin password',null,{password:true})
+            + field('COLLABORA_IMAGE','Image tag',null))+'</div>'
+        + '<div id="off-onlyoffice" class="cond-off" style="'+(os_==='onlyoffice'?'':'display:none')+'">'
+          + grp(field('ONLYOFFICE_JWT_SECRET','JWT secret',null,{password:true})
+            + field('ONLYOFFICE_IMAGE','Image tag',null))+'</div>')
 
     + sec('email','Email / SMTP','Required for password resets, share notifications, and file update digests.',
         grp(toggle('SMTP_ENABLED','Enable email','Send notifications and password reset emails','smtp-fields')
@@ -6799,13 +7067,33 @@ function renderSections(schedules){
         + grp('<div class="grp-t">Schedules</div>'
           + '<div class="row"><span class="lbl">GC schedule</span><div class="val">'+schedPicker('gc',schedules.gc)+'</div></div>'))
 
+    + sec('branding','Branding','Customize the Seafile web interface with your own logos and colors.',
+        grp('<div class="grp-t">Site identity</div>'
+          + field('SITE_NAME','Site name','Shown in emails and notifications')
+          + field('SITE_TITLE','Site title','Shown in the browser tab'))
+        + grp('<div class="grp-t">Logo</div>'
+          + uploadZone('logo','Logo','PNG, JPG, or SVG · default size: 149 × 32 px')
+          + '<div style="display:flex;gap:12px;margin-top:8px">'
+          + '<div style="flex:1">'+field('LOGO_WIDTH','Width (px)',null)+'</div>'
+          + '<div style="flex:1">'+field('LOGO_HEIGHT','Height (px)',null)+'</div></div>')
+        + grp('<div class="grp-t">Favicon</div>'
+          + uploadZone('favicon','Favicon','PNG or ICO · shown in browser tabs and bookmarks'))
+        + grp('<div class="grp-t">Login background</div>'
+          + uploadZone('login_bg','Login background image','JPG or PNG · covers the login page background'))
+        + grp('<div class="grp-t">Custom CSS</div>'
+          + uploadZone('css','Custom CSS file','Upload a .css file for advanced style overrides')
+          + field('BRANDING_CSS','CSS path','Set automatically when you upload a CSS file')))
+
     + sec('backup','Backup','Daily backup of database dumps and file data to a separate storage location.',
         grp(toggle('BACKUP_ENABLED','Enable automated backup','Database dumps + file data rsync','bk-fields')
           + '<div class="expand" id="bk-fields" style="'+(ENV.BACKUP_ENABLED==='true'?'':'display:none')+'">'
           + field('BACKUP_STORAGE_TYPE','Destination type',null,{options:[
               {value:'nfs',label:'NFS share'},{value:'smb',label:'SMB/CIFS share'},{value:'local',label:'Local path'}]})
-          + field('BACKUP_NFS_SERVER','NFS server',null)
-          + field('BACKUP_NFS_EXPORT','NFS export',null)
+          + '<div id="bk-nfs" class="cond-bk" style="'+(bst==='nfs'?'':'display:none')+'">'
+            + field('BACKUP_NFS_SERVER','NFS server',null) + field('BACKUP_NFS_EXPORT','NFS export',null)+'</div>'
+          + '<div id="bk-smb" class="cond-bk" style="'+(bst==='smb'?'':'display:none')+'">'
+            + field('BACKUP_SMB_SERVER','SMB server',null) + field('BACKUP_SMB_SHARE','Share name',null)
+            + field('BACKUP_SMB_USERNAME','Username',null) + field('BACKUP_SMB_PASSWORD','Password',null,{password:true})+'</div>'
           + field('BACKUP_MOUNT','Mount point',null)
           + '<div class="row"><span class="lbl">Backup schedule</span><div class="val">'+schedPicker('bk',schedules.backup)+'</div></div>'
           + '</div>'))
@@ -6818,14 +7106,28 @@ function renderSections(schedules){
           + field('CADDY_IMAGE','Caddy',null)
           + field('SEAFILE_REDIS_IMAGE','Redis',null)));
 
-  // Operations tab is built separately (not from .env fields)
+  // Operations tab
   var opsHtml = sec('operations','Operations','Run these from your browser instead of the command line.',
     opCard('update','Server update','Pull latest images, apply config, restart containers. Same as: seafile update')
     + opCard('gc','Garbage collection','Reclaim storage from deleted files. Next scheduled run follows GC schedule.')
     + opCard('backup','Backup now','Database dump + file data rsync to backup destination. Same as: seafile backup')
-    + opCard('apt','System packages','Update Debian packages (apt-get upgrade). Security patches are applied daily by unattended-upgrades.'));
+    + opCard('apt','System packages','Update Debian packages (apt-get upgrade). Security patches are applied daily by unattended-upgrades.')
+    + '<div class="grp op-card"><div class="grp-t">Self-update</div>'
+    + '<p class="desc" style="margin-bottom:8px">Update seafile-deploy management scripts. Does not affect running containers.</p>'
+    + '<div id="deploy-ver" style="font-size:12px;color:#888;margin-bottom:8px">Loading version...</div>'
+    + uploadZone('deploy','Upload new seafile-deploy.sh','Drop the updated script here, then click Apply')
+    + '<div style="margin-top:8px"><button class="btn btn-p" id="self-update-btn" onclick="runSelfUpdate()">Apply self-update</button>'
+    + '<span id="self-update-status" style="margin-left:8px;font-size:12px"></span></div></div>');
   el.innerHTML += opsHtml;
   loadOpsStatus();
+  loadBrandingInfo();
+
+  // Wire up conditional field visibility
+  wireConditional('STORAGE_TYPE','cond-st','st-');
+  wireConditional('BACKUP_STORAGE_TYPE','cond-bk','bk-');
+  wireConditionalMap('DB_INTERNAL',{'true':'db-int','false':'db-ext'},'cond-db');
+  wireConditionalMap('OFFICE_SUITE',{'collabora':'off-collabora','onlyoffice':'off-onlyoffice'},'cond-off');
+  wireConditionalMap('PORTAINER_MANAGED',{'true':'portainer-fields'},'');
 }
 
 function sec(id, title, desc, content){
@@ -6994,6 +7296,115 @@ function pollStatus(){
 function copyCode(btn){
   var code = btn.parentElement.textContent.replace('Copy','').trim();
   navigator.clipboard.writeText(code).then(function(){btn.textContent='Copied';setTimeout(function(){btn.textContent='Copy'},1500)});
+}
+
+// --- Conditional field visibility ---
+function wireConditional(envKey, hideClass, idPrefix){
+  var sel = document.querySelector('select[data-key="'+envKey+'"]');
+  if(!sel) return;
+  var orig = sel.onchange;
+  sel.addEventListener('change', function(){
+    document.querySelectorAll('.'+hideClass).forEach(function(el){el.style.display='none'});
+    var target = document.getElementById(idPrefix+sel.value);
+    if(target) target.style.display='';
+  });
+}
+function wireConditionalMap(envKey, valMap, hideClass){
+  var sel = document.querySelector('select[data-key="'+envKey+'"]');
+  if(!sel) return;
+  sel.addEventListener('change', function(){
+    if(hideClass) document.querySelectorAll('.'+hideClass).forEach(function(el){el.style.display='none'});
+    for(var v in valMap){
+      var t = document.getElementById(valMap[v]);
+      if(t) t.style.display = (sel.value===v) ? '' : 'none';
+    }
+  });
+}
+
+// --- Upload zones ---
+function uploadZone(type, label, hint){
+  var envKey = {logo:'LOGO_PATH',favicon:'FAVICON_PATH',login_bg:'LOGIN_BG_IMAGE_PATH',css:'BRANDING_CSS',deploy:''}[type]||'';
+  var curVal = envKey ? (ENV[envKey]||'') : '';
+  var preview = (type!=='css'&&type!=='deploy'&&curVal) ? '<div class="uz-preview" id="uz-prev-'+type+'">Current: '+esc(curVal)+'</div>' : '';
+  return '<div class="uz" id="uz-'+type+'" ondragover="event.preventDefault();this.classList.add(\'uz-over\')" ondragleave="this.classList.remove(\'uz-over\')" ondrop="handleDrop(event,\''+type+'\')">'
+    +'<div class="uz-label">'+label+'</div>'
+    +'<div class="uz-hint">'+hint+'</div>'
+    +preview
+    +'<div class="uz-actions">'
+    +'<label class="btn" style="cursor:pointer"><input type="file" style="display:none" onchange="handleFile(this.files[0],\''+type+'\')">Browse files</label>'
+    +'<span class="uz-status" id="uz-s-'+type+'"></span>'
+    +'</div></div>';
+}
+
+function handleDrop(e,type){
+  e.preventDefault();
+  e.currentTarget.classList.remove('uz-over');
+  var f = e.dataTransfer.files[0];
+  if(f) handleFile(f,type);
+}
+
+function handleFile(file,type){
+  if(!file) return;
+  var status = document.getElementById('uz-s-'+type);
+  status.textContent = 'Uploading...';
+  status.style.color = '#888';
+
+  if(type==='deploy'){
+    // Deploy script — raw upload
+    fetch(API_BASE+'/api/upload/deploy-script',{method:'POST',body:file})
+      .then(function(r){return r.json()})
+      .then(function(r){
+        if(r.error){status.textContent='Error: '+r.error;status.style.color='#e24b4a';return;}
+        status.textContent='Uploaded ('+Math.round(r.size/1024)+'KB)';status.style.color='#1d9e75';
+        loadBrandingInfo();
+      }).catch(function(e){status.textContent='Upload failed';status.style.color='#e24b4a'});
+    return;
+  }
+
+  // Branding asset — multipart with type field
+  var fd = new FormData();
+  fd.append('file',file,file.name);
+  fd.append('type',type);
+  fetch(API_BASE+'/api/upload/branding',{method:'POST',body:fd})
+    .then(function(r){return r.json()})
+    .then(function(r){
+      if(r.error){status.textContent='Error: '+r.error;status.style.color='#e24b4a';return;}
+      status.textContent='Uploaded: '+r.file;status.style.color='#1d9e75';
+      // Update ENV and preview
+      if(r.env_key){
+        ENV[r.env_key]=r.env_value;
+        var prev=document.getElementById('uz-prev-'+type);
+        if(prev) prev.textContent='Current: '+r.env_value;
+        else{
+          var zone=document.getElementById('uz-'+type);
+          if(zone){var d=document.createElement('div');d.className='uz-preview';d.id='uz-prev-'+type;d.textContent='Current: '+r.env_value;zone.insertBefore(d,zone.querySelector('.uz-actions'));}
+        }
+      }
+    }).catch(function(e){status.textContent='Upload failed';status.style.color='#e24b4a'});
+}
+
+function loadBrandingInfo(){
+  api('GET','/api/branding').then(function(r){
+    if(r.error) return;
+    var ve=document.getElementById('deploy-ver');
+    if(ve) ve.textContent='Deploy version: '+(r.deploy_version||'unknown');
+  });
+}
+
+function runSelfUpdate(){
+  var btn=document.getElementById('self-update-btn');
+  var st=document.getElementById('self-update-status');
+  btn.disabled=true;btn.textContent='Updating...';st.textContent='';
+  api('POST','/api/self-update',{}).then(function(r){
+    btn.disabled=false;btn.textContent='Apply self-update';
+    if(r.error){st.textContent='Error: '+r.error;st.style.color='#e24b4a';return;}
+    if(r.changed && r.changed.length>0){
+      st.innerHTML='<span style="color:#1d9e75">Updated '+r.changed.length+' files.</span> Backup: '+esc(r.backup||'');
+    } else {
+      st.innerHTML='<span style="color:#1d9e75">All scripts already up to date.</span>';
+    }
+    loadBrandingInfo();
+  });
 }
 
 init();
@@ -7195,6 +7606,10 @@ if [ ! -d "$CONF_DIR" ]; then
   The seafile container must have started at least once before running this script."
 fi
 
+# Ensure custom branding directory exists
+CUSTOM_DIR="${SEAFILE_VOLUME}/seahub/media/custom"
+mkdir -p "$CUSTOM_DIR" 2>/dev/null || true
+
 # ---------------------------------------------------------------------------
 # Steps
 # ---------------------------------------------------------------------------
@@ -7390,12 +7805,24 @@ _session_age="${SESSION_COOKIE_AGE:-0}"
 _history_days="${FILE_HISTORY_KEEP_DAYS:-0}"
 _site_name="${SITE_NAME:-Seafile}"
 _site_title="${SITE_TITLE:-Seafile}"
+_logo_path="${LOGO_PATH:-}"
+_logo_width="${LOGO_WIDTH:-149}"
+_logo_height="${LOGO_HEIGHT:-32}"
+_login_bg="${LOGIN_BG_IMAGE_PATH:-}"
+_favicon="${FAVICON_PATH:-}"
+_branding_css="${BRANDING_CSS:-}"
 
 cat << USERSEOF
 # --- User and library settings ---
 FORCE_PASSWORD_CHANGE = False
 SITE_NAME = '${_site_name}'
 SITE_TITLE = '${_site_title}'
+$([ -n "$_logo_path" ] && echo "LOGO_PATH = '${_logo_path}'")
+$([ -n "$_logo_path" ] && echo "LOGO_WIDTH = ${_logo_width}")
+$([ -n "$_logo_path" ] && echo "LOGO_HEIGHT = ${_logo_height}")
+$([ -n "$_login_bg" ] && echo "LOGIN_BG_IMAGE_PATH = '${_login_bg}'")
+$([ -n "$_favicon" ] && echo "FAVICON_PATH = '${_favicon}'")
+$([ -n "$_branding_css" ] && echo "BRANDING_CSS = '${_branding_css}'")
 $([ "$_quota" != "0" ] && echo "USER_DEFAULT_QUOTA = ${_quota} * 1024")
 $([ "$_max_upload" != "0" ] && echo "MAX_UPLOAD_SIZE = ${_max_upload}")
 $([ "$_trash" != "0" ] && echo "TRASH_CLEAN_AFTER_DAYS = ${_trash}")
@@ -8419,6 +8846,12 @@ _DEFAULTS=(
   "AUDIT_ENABLED=true"
   "SITE_NAME=Seafile"
   "SITE_TITLE=Seafile"
+  "LOGO_PATH="
+  "LOGO_WIDTH=149"
+  "LOGO_HEIGHT=32"
+  "LOGIN_BG_IMAGE_PATH="
+  "FAVICON_PATH="
+  "BRANDING_CSS="
   "SEAFDAV_ENABLED=false"
   "LDAP_ENABLED=false"
   "LDAP_LOGIN_ATTR=mail"
@@ -8843,12 +9276,34 @@ AUDIT_ENABLED=true
 # =============================================================================
 # Customise the Seafile web interface appearance.
 # Changes take effect after running: seafile update
+#
+# Custom assets (logo, favicon, login background) are stored at:
+#   ${SEAFILE_VOLUME}/seahub/media/custom/
+# Upload them via the web configuration panel (Branding tab) or copy
+# them manually. All paths below are relative to the media directory.
 # =============================================================================
 
-# Site name shown in browser tab and emails.
+# Site name shown in emails and notifications.
 SITE_NAME=Seafile
-# Site title shown on the login page.
+# Site title shown in the browser tab.
 SITE_TITLE=Seafile
+
+# Logo shown in the top-left of the web interface.
+# Default dimensions: 149px wide × 32px tall.
+# Upload a logo via the web panel or copy to the custom/ directory.
+LOGO_PATH=
+LOGO_WIDTH=149
+LOGO_HEIGHT=32
+
+# Login page background image. Leave blank for the Seafile default.
+LOGIN_BG_IMAGE_PATH=
+
+# Browser tab / bookmark icon. Leave blank for the Seafile default.
+FAVICON_PATH=
+
+# Custom CSS file for advanced styling. Leave blank for none.
+# Example: upload custom.css via the web panel.
+BRANDING_CSS=
 
 
 # =============================================================================

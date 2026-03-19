@@ -140,6 +140,10 @@ if [ ! -d "$CONF_DIR" ]; then
   The seafile container must have started at least once before running this script."
 fi
 
+# Ensure custom branding directory exists
+CUSTOM_DIR="${SEAFILE_VOLUME}/seahub/media/custom"
+mkdir -p "$CUSTOM_DIR" 2>/dev/null || true
+
 # ---------------------------------------------------------------------------
 # Steps
 # ---------------------------------------------------------------------------
@@ -335,12 +339,24 @@ _session_age="${SESSION_COOKIE_AGE:-0}"
 _history_days="${FILE_HISTORY_KEEP_DAYS:-0}"
 _site_name="${SITE_NAME:-Seafile}"
 _site_title="${SITE_TITLE:-Seafile}"
+_logo_path="${LOGO_PATH:-}"
+_logo_width="${LOGO_WIDTH:-149}"
+_logo_height="${LOGO_HEIGHT:-32}"
+_login_bg="${LOGIN_BG_IMAGE_PATH:-}"
+_favicon="${FAVICON_PATH:-}"
+_branding_css="${BRANDING_CSS:-}"
 
 cat << USERSEOF
 # --- User and library settings ---
 FORCE_PASSWORD_CHANGE = False
 SITE_NAME = '${_site_name}'
 SITE_TITLE = '${_site_title}'
+$([ -n "$_logo_path" ] && echo "LOGO_PATH = '${_logo_path}'")
+$([ -n "$_logo_path" ] && echo "LOGO_WIDTH = ${_logo_width}")
+$([ -n "$_logo_path" ] && echo "LOGO_HEIGHT = ${_logo_height}")
+$([ -n "$_login_bg" ] && echo "LOGIN_BG_IMAGE_PATH = '${_login_bg}'")
+$([ -n "$_favicon" ] && echo "FAVICON_PATH = '${_favicon}'")
+$([ -n "$_branding_css" ] && echo "BRANDING_CSS = '${_branding_css}'")
 $([ "$_quota" != "0" ] && echo "USER_DEFAULT_QUOTA = ${_quota} * 1024")
 $([ "$_max_upload" != "0" ] && echo "MAX_UPLOAD_SIZE = ${_max_upload}")
 $([ "$_trash" != "0" ] && echo "TRASH_CLEAN_AFTER_DAYS = ${_trash}")

@@ -457,6 +457,20 @@ _print_config_review() {
   fi
   echo ""
 
+  # ── Branding ──────────────────────────────────────────────────────────────
+  if [[ -n "${LOGO_PATH:-}" || -n "${FAVICON_PATH:-}" || -n "${LOGIN_BG_IMAGE_PATH:-}" || -n "${BRANDING_CSS:-}" || "${SITE_NAME:-Seafile}" != "Seafile" || "${SITE_TITLE:-Seafile}" != "Seafile" ]]; then
+    echo -e "  ${BOLD}Branding${NC}"
+    printf "    %-42s %b\n" "SITE_NAME"              "$(_pfv SITE_NAME)"
+    printf "    %-42s %b\n" "SITE_TITLE"             "$(_pfv SITE_TITLE)"
+    [[ -n "${LOGO_PATH:-}" ]]          && printf "    %-42s %b\n" "LOGO_PATH"     "${LOGO_PATH}"
+    [[ -n "${LOGO_PATH:-}" ]]          && printf "    %-42s %b\n" "LOGO_WIDTH"    "${LOGO_WIDTH:-149}"
+    [[ -n "${LOGO_PATH:-}" ]]          && printf "    %-42s %b\n" "LOGO_HEIGHT"   "${LOGO_HEIGHT:-32}"
+    [[ -n "${LOGIN_BG_IMAGE_PATH:-}" ]] && printf "    %-42s %b\n" "LOGIN_BG_IMAGE_PATH" "${LOGIN_BG_IMAGE_PATH}"
+    [[ -n "${FAVICON_PATH:-}" ]]       && printf "    %-42s %b\n" "FAVICON_PATH"  "${FAVICON_PATH}"
+    [[ -n "${BRANDING_CSS:-}" ]]       && printf "    %-42s %b\n" "BRANDING_CSS"  "${BRANDING_CSS}"
+    echo ""
+  fi
+
   # ── Optional Features ──────────────────────────────────────────────────────
   echo -e "  ${BOLD}Optional Features${NC}"
   printf "    %-42s %b\n" "CLAMAV_ENABLED"          "$(_pfv CLAMAV_ENABLED)"
