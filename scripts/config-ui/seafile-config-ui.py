@@ -264,6 +264,8 @@ def human_to_cron(freq, time_str, day=0):
     """Convert frequency/time/day to cron string."""
     try:
         h, m = time_str.split(':')
+        h = str(int(h))  # strip leading zeros: '02' -> '2'
+        m = str(int(m))  # strip leading zeros: '00' -> '0'
     except ValueError:
         h, m = '2', '0'
     if freq == 'hourly':
@@ -559,11 +561,15 @@ class ConfigHandler(http.server.BaseHTTPRequestHandler):
         updates = {info['env_key']: env_path}
         save_env(updates)
 
+        # Auto-apply config so branding takes effect immediately
+        apply_config()
+
         self._json_response({
             'status': 'uploaded',
             'file': safe_name,
             'env_key': info['env_key'],
-            'env_value': env_path
+            'env_value': env_path,
+            'applied': True
         })
 
     def _handle_upload_deploy(self, body):

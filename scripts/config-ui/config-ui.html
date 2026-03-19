@@ -669,7 +669,7 @@ function handleFile(file,type){
     .then(function(r){return r.json()})
     .then(function(r){
       if(r.error){status.textContent='Error: '+r.error;status.style.color='#e24b4a';return;}
-      status.textContent='Uploaded: '+r.file;status.style.color='#1d9e75';
+      status.textContent='Uploaded and applied: '+r.file;status.style.color='#1d9e75';
       // Update ENV and preview
       if(r.env_key){
         ENV[r.env_key]=r.env_value;
