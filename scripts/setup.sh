@@ -121,7 +121,6 @@ _DEFAULTS=(
   "LOGO_PATH="
   "LOGO_WIDTH=149"
   "LOGO_HEIGHT=32"
-  "LOGIN_BG_IMAGE_PATH="
   "FAVICON_PATH="
   "BRANDING_CSS="
   "SEAFDAV_ENABLED=false"
@@ -567,8 +566,11 @@ LOGO_PATH=
 LOGO_WIDTH=149
 LOGO_HEIGHT=32
 
-# Login page background image. Leave blank for the Seafile default.
-LOGIN_BG_IMAGE_PATH=
+# Login page background image.
+# Seafile 13 uses a hardcoded path: custom/login-bg.jpg
+# Upload via the web panel (Branding tab) or copy manually to:
+#   ${SEAFILE_VOLUME}/seafile/seahub-data/custom/login-bg.jpg
+# Delete the file to restore the default seasonal backgrounds.
 
 # Browser tab / bookmark icon. Leave blank for the Seafile default.
 FAVICON_PATH=
@@ -6496,7 +6498,7 @@ class ConfigHandler(http.server.BaseHTTPRequestHandler):
                 data = json.loads(body)
                 updates = data.get('updates', {})
                 # Only allow branding-related keys
-                allowed = {'LOGO_PATH', 'LOGO_WIDTH', 'LOGO_HEIGHT', 'LOGIN_BG_IMAGE_PATH',
+                allowed = {'LOGO_PATH', 'LOGO_WIDTH', 'LOGO_HEIGHT',
                            'FAVICON_PATH', 'BRANDING_CSS', 'SITE_NAME', 'SITE_TITLE'}
                 filtered = {k: v for k, v in updates.items() if k in allowed}
                 if filtered:
@@ -6507,15 +6509,25 @@ class ConfigHandler(http.server.BaseHTTPRequestHandler):
                 self._json_response({'error': 'Invalid JSON'}, 400)
 
         elif self.path == '/api/branding/restore':
-            # Clear all branding vars back to defaults
+            # Clear all branding vars back to defaults and remove custom files
             defaults = {
                 'LOGO_PATH': '', 'LOGO_WIDTH': '149', 'LOGO_HEIGHT': '32',
-                'LOGIN_BG_IMAGE_PATH': '', 'FAVICON_PATH': '', 'BRANDING_CSS': '',
+                'FAVICON_PATH': '', 'BRANDING_CSS': '',
                 'SITE_NAME': 'Seafile', 'SITE_TITLE': 'Seafile'
             }
             save_env(defaults)
+            # Delete custom branding files (but not the directory)
+            env = load_env()
+            custom_dir = os.path.join(env.get('SEAFILE_VOLUME', '/opt/seafile-data'),
+                                      'seafile', 'seahub-data', 'custom')
+            deleted = []
+            for f in os.listdir(custom_dir) if os.path.isdir(custom_dir) else []:
+                fpath = os.path.join(custom_dir, f)
+                if os.path.isfile(fpath):
+                    os.remove(fpath)
+                    deleted.append(f)
             apply_config()
-            self._json_response({'status': 'restored'})
+            self._json_response({'status': 'restored', 'deleted': deleted})
 
         elif self.path == '/api/upload/deploy-script':
             self._handle_upload_deploy(body)
@@ -6585,7 +6597,7 @@ class ConfigHandler(http.server.BaseHTTPRequestHandler):
         allowed_types = {
             'logo': {'exts': ['.png', '.jpg', '.jpeg', '.svg', '.gif'], 'env_key': 'LOGO_PATH'},
             'favicon': {'exts': ['.png', '.ico', '.svg'], 'env_key': 'FAVICON_PATH'},
-            'login_bg': {'exts': ['.png', '.jpg', '.jpeg', '.svg', '.webp'], 'env_key': 'LOGIN_BG_IMAGE_PATH'},
+            'login_bg': {'exts': ['.png', '.jpg', '.jpeg', '.svg', '.webp'], 'env_key': '', 'fixed_name': 'login-bg.jpg'},
             'css': {'exts': ['.css'], 'env_key': 'BRANDING_CSS'},
         }
 
@@ -6599,8 +6611,11 @@ class ConfigHandler(http.server.BaseHTTPRequestHandler):
             self._json_response({'error': f'Invalid file type {ext} for {asset_type}'}, 400)
             return
 
-        # Keep original filename but sanitize (alphanum, dash, underscore, dot)
-        safe_name = re.sub(r'[^a-zA-Z0-9._-]', '_', filename)
+        # Keep original filename but sanitize — or use fixed name if required
+        if 'fixed_name' in info:
+            safe_name = info['fixed_name']
+        else:
+            safe_name = re.sub(r'[^a-zA-Z0-9._-]', '_', filename)
         dest_path = os.path.join(custom_dir, safe_name)
 
         try:
@@ -6610,16 +6625,21 @@ class ConfigHandler(http.server.BaseHTTPRequestHandler):
             self._json_response({'error': f'Write failed: {e}'}, 500)
             return
 
-        # Stage the .env change but DON'T apply yet — user must confirm
+        # Stage the .env change (if applicable) — user must confirm
         env_path = f'custom/{safe_name}'
+        env_key = info.get('env_key', '')
+        if env_key:
+            # Don't apply yet — user must click Apply
+            pass
 
         self._json_response({
             'status': 'staged',
             'file': safe_name,
             'original_name': filename,
-            'env_key': info['env_key'],
-            'env_value': env_path,
-            'size': len(file_data)
+            'env_key': env_key,
+            'env_value': env_path if env_key else '',
+            'size': len(file_data),
+            'needs_restart': asset_type == 'login_bg'
         })
 
     def _handle_upload_deploy(self, body):
@@ -7109,12 +7129,12 @@ function renderSections(schedules){
         + grp('<div class="grp-t">Favicon</div>'
           + uploadZone('favicon','Favicon','PNG or ICO · shown in browser tabs and bookmarks'))
         + grp('<div class="grp-t">Login background</div>'
-          + uploadZone('login_bg','Login background image','JPG or PNG · covers the login page background'))
+          + uploadZone('login_bg','Login background image','JPG or PNG · saved as login-bg.jpg · delete to restore seasonal defaults'))
         + grp('<div class="grp-t">Custom CSS</div>'
           + uploadZone('css','Custom CSS file','Upload a .css file for advanced style overrides')
           + field('BRANDING_CSS','CSS path','Set automatically when you upload a CSS file'))
         + '<div class="grp" style="display:flex;gap:8px;align-items:center">'
-          + '<button class="btn btn-p" id="apply-branding-btn" onclick="applyBranding()" style="display:none">Apply branding</button>'
+          + '<button class="btn btn-p" id="apply-branding-btn" onclick="applyBranding()">Apply branding</button>'
           + '<button class="btn" id="restore-branding-btn" onclick="restoreBrandingDefaults()">Restore defaults</button>'
           + '<span id="branding-apply-status" style="font-size:12px;margin-left:8px"></span>'
         + '</div>')
@@ -7358,7 +7378,7 @@ function wireConditionalMap(envKey, valMap, hideClass){
 
 // --- Upload zones ---
 function uploadZone(type, label, hint){
-  var envKey = {logo:'LOGO_PATH',favicon:'FAVICON_PATH',login_bg:'LOGIN_BG_IMAGE_PATH',css:'BRANDING_CSS',deploy:''}[type]||'';
+  var envKey = {logo:'LOGO_PATH',favicon:'FAVICON_PATH',login_bg:'',css:'BRANDING_CSS',deploy:''}[type]||'';
   var curVal = envKey ? (ENV[envKey]||'') : '';
   var preview = curVal ? '<div class="uz-preview" id="uz-prev-'+type+'">Current: '+esc(curVal)+'</div>' : '<div class="uz-preview" id="uz-prev-'+type+'"></div>';
   var thumbId = 'uz-thumb-'+type;
@@ -7418,14 +7438,14 @@ function handleFile(file,type){
     .then(function(r){return r.json()})
     .then(function(r){
       if(r.error){status.textContent='Error: '+r.error;status.style.color='#e24b4a';return;}
-      status.innerHTML = '<span style="color:#c78c20">Staged: '+esc(r.original_name||r.file)+' — click Apply branding to activate</span>';
+      var msg = 'Staged: '+esc(r.original_name||r.file);
+      if(r.file !== r.original_name) msg += ' → saved as '+esc(r.file);
+      msg += ' — click Apply branding to activate';
+      status.innerHTML = '<span style="color:#c78c20">'+msg+'</span>';
       _brandingStaged[type] = r;
       // Update preview text
       var prev = document.getElementById('uz-prev-'+type);
       if(prev) prev.textContent = 'New: '+esc(r.original_name||r.file)+' ('+Math.round(r.size/1024)+'KB)';
-      // Show the apply button
-      var ab = document.getElementById('apply-branding-btn');
-      if(ab) ab.style.display = '';
     }).catch(function(e){status.textContent='Upload failed';status.style.color='#e24b4a'});
 }
 
@@ -7457,14 +7477,17 @@ function applyBranding(){
 }
 
 function restoreBrandingDefaults(){
-  if(!confirm('Restore all branding to Seafile defaults? Custom files will remain on disk but will no longer be used.')) return;
+  if(!confirm('Restore all branding to Seafile defaults? This will delete all custom files (logo, favicon, background, CSS) and reset site name and title.')) return;
   var btn = document.getElementById('restore-branding-btn');
   var st = document.getElementById('branding-apply-status');
   btn.disabled = true;
   api('POST','/api/branding/restore',{}).then(function(r){
     btn.disabled = false;
     if(r.error){st.textContent='Error: '+r.error;st.style.color='#e24b4a';return;}
-    st.innerHTML = '<span style="color:#1d9e75">Defaults restored. Reload the page to see updated fields.</span>';
+    var msg = 'Defaults restored.';
+    if(r.deleted && r.deleted.length>0) msg += ' Removed: '+r.deleted.join(', ')+'.';
+    msg += ' Reload the page to see updated fields.';
+    st.innerHTML = '<span style="color:#1d9e75">'+msg+'</span>';
     // Clear staged
     _brandingStaged = {};
   });
@@ -7895,7 +7918,6 @@ _site_title="${SITE_TITLE:-Seafile}"
 _logo_path="${LOGO_PATH:-}"
 _logo_width="${LOGO_WIDTH:-149}"
 _logo_height="${LOGO_HEIGHT:-32}"
-_login_bg="${LOGIN_BG_IMAGE_PATH:-}"
 _favicon="${FAVICON_PATH:-}"
 _branding_css="${BRANDING_CSS:-}"
 
@@ -7907,7 +7929,6 @@ SITE_TITLE = '${_site_title}'
 $([ -n "$_logo_path" ] && echo "LOGO_PATH = '${_logo_path}'")
 $([ -n "$_logo_path" ] && echo "LOGO_WIDTH = ${_logo_width}")
 $([ -n "$_logo_path" ] && echo "LOGO_HEIGHT = ${_logo_height}")
-$([ -n "$_login_bg" ] && echo "LOGIN_BG_IMAGE_PATH = '${_login_bg}'")
 $([ -n "$_favicon" ] && echo "FAVICON_PATH = '${_favicon}'")
 $([ -n "$_branding_css" ] && echo "BRANDING_CSS = '${_branding_css}'")
 $([ "$_quota" != "0" ] && echo "USER_DEFAULT_QUOTA = ${_quota} * 1024")
@@ -8936,7 +8957,6 @@ _DEFAULTS=(
   "LOGO_PATH="
   "LOGO_WIDTH=149"
   "LOGO_HEIGHT=32"
-  "LOGIN_BG_IMAGE_PATH="
   "FAVICON_PATH="
   "BRANDING_CSS="
   "SEAFDAV_ENABLED=false"
@@ -9382,8 +9402,11 @@ LOGO_PATH=
 LOGO_WIDTH=149
 LOGO_HEIGHT=32
 
-# Login page background image. Leave blank for the Seafile default.
-LOGIN_BG_IMAGE_PATH=
+# Login page background image.
+# Seafile 13 uses a hardcoded path: custom/login-bg.jpg
+# Upload via the web panel (Branding tab) or copy manually to:
+#   ${SEAFILE_VOLUME}/seafile/seahub-data/custom/login-bg.jpg
+# Delete the file to restore the default seasonal backgrounds.
 
 # Browser tab / bookmark icon. Leave blank for the Seafile default.
 FAVICON_PATH=

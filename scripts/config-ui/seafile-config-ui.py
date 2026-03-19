@@ -468,7 +468,7 @@ class ConfigHandler(http.server.BaseHTTPRequestHandler):
                 data = json.loads(body)
                 updates = data.get('updates', {})
                 # Only allow branding-related keys
-                allowed = {'LOGO_PATH', 'LOGO_WIDTH', 'LOGO_HEIGHT', 'LOGIN_BG_IMAGE_PATH',
+                allowed = {'LOGO_PATH', 'LOGO_WIDTH', 'LOGO_HEIGHT',
                            'FAVICON_PATH', 'BRANDING_CSS', 'SITE_NAME', 'SITE_TITLE'}
                 filtered = {k: v for k, v in updates.items() if k in allowed}
                 if filtered:
@@ -479,15 +479,25 @@ class ConfigHandler(http.server.BaseHTTPRequestHandler):
                 self._json_response({'error': 'Invalid JSON'}, 400)
 
         elif self.path == '/api/branding/restore':
-            # Clear all branding vars back to defaults
+            # Clear all branding vars back to defaults and remove custom files
             defaults = {
                 'LOGO_PATH': '', 'LOGO_WIDTH': '149', 'LOGO_HEIGHT': '32',
-                'LOGIN_BG_IMAGE_PATH': '', 'FAVICON_PATH': '', 'BRANDING_CSS': '',
+                'FAVICON_PATH': '', 'BRANDING_CSS': '',
                 'SITE_NAME': 'Seafile', 'SITE_TITLE': 'Seafile'
             }
             save_env(defaults)
+            # Delete custom branding files (but not the directory)
+            env = load_env()
+            custom_dir = os.path.join(env.get('SEAFILE_VOLUME', '/opt/seafile-data'),
+                                      'seafile', 'seahub-data', 'custom')
+            deleted = []
+            for f in os.listdir(custom_dir) if os.path.isdir(custom_dir) else []:
+                fpath = os.path.join(custom_dir, f)
+                if os.path.isfile(fpath):
+                    os.remove(fpath)
+                    deleted.append(f)
             apply_config()
-            self._json_response({'status': 'restored'})
+            self._json_response({'status': 'restored', 'deleted': deleted})
 
         elif self.path == '/api/upload/deploy-script':
             self._handle_upload_deploy(body)
@@ -557,7 +567,7 @@ class ConfigHandler(http.server.BaseHTTPRequestHandler):
         allowed_types = {
             'logo': {'exts': ['.png', '.jpg', '.jpeg', '.svg', '.gif'], 'env_key': 'LOGO_PATH'},
             'favicon': {'exts': ['.png', '.ico', '.svg'], 'env_key': 'FAVICON_PATH'},
-            'login_bg': {'exts': ['.png', '.jpg', '.jpeg', '.svg', '.webp'], 'env_key': 'LOGIN_BG_IMAGE_PATH'},
+            'login_bg': {'exts': ['.png', '.jpg', '.jpeg', '.svg', '.webp'], 'env_key': '', 'fixed_name': 'login-bg.jpg'},
             'css': {'exts': ['.css'], 'env_key': 'BRANDING_CSS'},
         }
 
@@ -571,8 +581,11 @@ class ConfigHandler(http.server.BaseHTTPRequestHandler):
             self._json_response({'error': f'Invalid file type {ext} for {asset_type}'}, 400)
             return
 
-        # Keep original filename but sanitize (alphanum, dash, underscore, dot)
-        safe_name = re.sub(r'[^a-zA-Z0-9._-]', '_', filename)
+        # Keep original filename but sanitize — or use fixed name if required
+        if 'fixed_name' in info:
+            safe_name = info['fixed_name']
+        else:
+            safe_name = re.sub(r'[^a-zA-Z0-9._-]', '_', filename)
         dest_path = os.path.join(custom_dir, safe_name)
 
         try:
@@ -582,16 +595,21 @@ class ConfigHandler(http.server.BaseHTTPRequestHandler):
             self._json_response({'error': f'Write failed: {e}'}, 500)
             return
 
-        # Stage the .env change but DON'T apply yet — user must confirm
+        # Stage the .env change (if applicable) — user must confirm
         env_path = f'custom/{safe_name}'
+        env_key = info.get('env_key', '')
+        if env_key:
+            # Don't apply yet — user must click Apply
+            pass
 
         self._json_response({
             'status': 'staged',
             'file': safe_name,
             'original_name': filename,
-            'env_key': info['env_key'],
-            'env_value': env_path,
-            'size': len(file_data)
+            'env_key': env_key,
+            'env_value': env_path if env_key else '',
+            'size': len(file_data),
+            'needs_restart': asset_type == 'login_bg'
         })
 
     def _handle_upload_deploy(self, body):

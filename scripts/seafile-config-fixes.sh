@@ -342,7 +342,6 @@ _site_title="${SITE_TITLE:-Seafile}"
 _logo_path="${LOGO_PATH:-}"
 _logo_width="${LOGO_WIDTH:-149}"
 _logo_height="${LOGO_HEIGHT:-32}"
-_login_bg="${LOGIN_BG_IMAGE_PATH:-}"
 _favicon="${FAVICON_PATH:-}"
 _branding_css="${BRANDING_CSS:-}"
 
@@ -354,7 +353,6 @@ SITE_TITLE = '${_site_title}'
 $([ -n "$_logo_path" ] && echo "LOGO_PATH = '${_logo_path}'")
 $([ -n "$_logo_path" ] && echo "LOGO_WIDTH = ${_logo_width}")
 $([ -n "$_logo_path" ] && echo "LOGO_HEIGHT = ${_logo_height}")
-$([ -n "$_login_bg" ] && echo "LOGIN_BG_IMAGE_PATH = '${_login_bg}'")
 $([ -n "$_favicon" ] && echo "FAVICON_PATH = '${_favicon}'")
 $([ -n "$_branding_css" ] && echo "BRANDING_CSS = '${_branding_css}'")
 $([ "$_quota" != "0" ] && echo "USER_DEFAULT_QUOTA = ${_quota} * 1024")

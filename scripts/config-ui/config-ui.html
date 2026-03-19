@@ -381,12 +381,12 @@ function renderSections(schedules){
         + grp('<div class="grp-t">Favicon</div>'
           + uploadZone('favicon','Favicon','PNG or ICO · shown in browser tabs and bookmarks'))
         + grp('<div class="grp-t">Login background</div>'
-          + uploadZone('login_bg','Login background image','JPG or PNG · covers the login page background'))
+          + uploadZone('login_bg','Login background image','JPG or PNG · saved as login-bg.jpg · delete to restore seasonal defaults'))
         + grp('<div class="grp-t">Custom CSS</div>'
           + uploadZone('css','Custom CSS file','Upload a .css file for advanced style overrides')
           + field('BRANDING_CSS','CSS path','Set automatically when you upload a CSS file'))
         + '<div class="grp" style="display:flex;gap:8px;align-items:center">'
-          + '<button class="btn btn-p" id="apply-branding-btn" onclick="applyBranding()" style="display:none">Apply branding</button>'
+          + '<button class="btn btn-p" id="apply-branding-btn" onclick="applyBranding()">Apply branding</button>'
           + '<button class="btn" id="restore-branding-btn" onclick="restoreBrandingDefaults()">Restore defaults</button>'
           + '<span id="branding-apply-status" style="font-size:12px;margin-left:8px"></span>'
         + '</div>')
@@ -630,7 +630,7 @@ function wireConditionalMap(envKey, valMap, hideClass){
 
 // --- Upload zones ---
 function uploadZone(type, label, hint){
-  var envKey = {logo:'LOGO_PATH',favicon:'FAVICON_PATH',login_bg:'LOGIN_BG_IMAGE_PATH',css:'BRANDING_CSS',deploy:''}[type]||'';
+  var envKey = {logo:'LOGO_PATH',favicon:'FAVICON_PATH',login_bg:'',css:'BRANDING_CSS',deploy:''}[type]||'';
   var curVal = envKey ? (ENV[envKey]||'') : '';
   var preview = curVal ? '<div class="uz-preview" id="uz-prev-'+type+'">Current: '+esc(curVal)+'</div>' : '<div class="uz-preview" id="uz-prev-'+type+'"></div>';
   var thumbId = 'uz-thumb-'+type;
@@ -690,14 +690,14 @@ function handleFile(file,type){
     .then(function(r){return r.json()})
     .then(function(r){
       if(r.error){status.textContent='Error: '+r.error;status.style.color='#e24b4a';return;}
-      status.innerHTML = '<span style="color:#c78c20">Staged: '+esc(r.original_name||r.file)+' — click Apply branding to activate</span>';
+      var msg = 'Staged: '+esc(r.original_name||r.file);
+      if(r.file !== r.original_name) msg += ' → saved as '+esc(r.file);
+      msg += ' — click Apply branding to activate';
+      status.innerHTML = '<span style="color:#c78c20">'+msg+'</span>';
       _brandingStaged[type] = r;
       // Update preview text
       var prev = document.getElementById('uz-prev-'+type);
       if(prev) prev.textContent = 'New: '+esc(r.original_name||r.file)+' ('+Math.round(r.size/1024)+'KB)';
-      // Show the apply button
-      var ab = document.getElementById('apply-branding-btn');
-      if(ab) ab.style.display = '';
     }).catch(function(e){status.textContent='Upload failed';status.style.color='#e24b4a'});
 }
 
@@ -729,14 +729,17 @@ function applyBranding(){
 }
 
 function restoreBrandingDefaults(){
-  if(!confirm('Restore all branding to Seafile defaults? Custom files will remain on disk but will no longer be used.')) return;
+  if(!confirm('Restore all branding to Seafile defaults? This will delete all custom files (logo, favicon, background, CSS) and reset site name and title.')) return;
   var btn = document.getElementById('restore-branding-btn');
   var st = document.getElementById('branding-apply-status');
   btn.disabled = true;
   api('POST','/api/branding/restore',{}).then(function(r){
     btn.disabled = false;
     if(r.error){st.textContent='Error: '+r.error;st.style.color='#e24b4a';return;}
-    st.innerHTML = '<span style="color:#1d9e75">Defaults restored. Reload the page to see updated fields.</span>';
+    var msg = 'Defaults restored.';
+    if(r.deleted && r.deleted.length>0) msg += ' Removed: '+r.deleted.join(', ')+'.';
+    msg += ' Reload the page to see updated fields.';
+    st.innerHTML = '<span style="color:#1d9e75">'+msg+'</span>';
     // Clear staged
     _brandingStaged = {};
   });

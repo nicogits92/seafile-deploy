@@ -150,7 +150,6 @@ _DEFAULTS=(
   "LOGO_PATH="
   "LOGO_WIDTH=149"
   "LOGO_HEIGHT=32"
-  "LOGIN_BG_IMAGE_PATH="
   "FAVICON_PATH="
   "BRANDING_CSS="
   "SEAFDAV_ENABLED=false"
@@ -596,8 +595,11 @@ LOGO_PATH=
 LOGO_WIDTH=149
 LOGO_HEIGHT=32
 
-# Login page background image. Leave blank for the Seafile default.
-LOGIN_BG_IMAGE_PATH=
+# Login page background image.
+# Seafile 13 uses a hardcoded path: custom/login-bg.jpg
+# Upload via the web panel (Branding tab) or copy manually to:
+#   ${SEAFILE_VOLUME}/seafile/seahub-data/custom/login-bg.jpg
+# Delete the file to restore the default seasonal backgrounds.
 
 # Browser tab / bookmark icon. Leave blank for the Seafile default.
 FAVICON_PATH=
